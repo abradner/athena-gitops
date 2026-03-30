@@ -1,0 +1,17 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hello-world-route
+  namespace: default
+spec:
+  parentRefs:
+  # This attaches to the gateway we deployed in the default namespace earlier
+  - name: homelab-gateway
+    namespace: default
+  hostnames:
+  # Change this to whatever FQDN you are pointing at HAProxy!
+  - "hello.bradner.net" 
+  rules:
+  - backendRefs:
+    - name: hello-world-svc
+      port: 80
