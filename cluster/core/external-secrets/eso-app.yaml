@@ -12,6 +12,9 @@ spec:
     helm:
       # This forces Helm to parse the version correctly and generate modern APIs
       kubeVersion: "1.34.0" 
+      parameters:
+      - name: installCRDs
+        value: "true"
   destination:
     server: https://kubernetes.default.svc
     namespace: external-secrets
