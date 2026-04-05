@@ -1,0 +1,210 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-core-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-core/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-error-handling-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-error-handling/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-ext-gw-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-ext-gw/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-keycloak-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-keycloak/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-ops-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-ops/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-simulator-core-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-simulator-core/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-simulator-ui-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-simulator-ui/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-sla-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-sla/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-ui-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-ui/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pmn-ui-api-dev4
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abradner/pmn-workloads.git
+    targetRevision: HEAD
+    path: pmn-ui-api/overlay/dev4
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pmn-dev4
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
