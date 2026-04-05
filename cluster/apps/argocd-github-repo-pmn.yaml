@@ -1,0 +1,28 @@
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: argocd-github-repo-pmn
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  refreshInterval: "1h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: repo-pmn-workloads
+    template:
+      metadata:
+        labels:
+          argocd.argoproj.io/secret-type: repository
+      data:
+        type: git
+        url: https://github.com/abradner/pmn-workloads.git
+        username: abradner
+        password: "{{ .github_pat }}"
+  data:
+    - secretKey: github_pat
+      remoteRef:
+        key: github-pmn-workloads
+        property: password
