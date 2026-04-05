@@ -1,0 +1,10 @@
+context: athena
+contexts:
+    athena:
+        endpoints:
+            - 10.10.80.150
+            - 10.10.80.151
+            - 10.10.80.152
+        ca: {{ certs.os.crt }}
+        crt: {{ talosconfig.admin.crt }}
+        key: {{ talosconfig.admin.key }}

@@ -1,0 +1,5 @@
+# Generated (hydrated) YAML files — contain secrets, never commit
+controlplane.yaml
+worker.yaml
+secrets.yaml
+talosconfig.yaml
