@@ -6,7 +6,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
-  refreshInterval: "10m"
+  refreshInterval: "6h"
   secretStoreRef:
     name: onepassword-backend
     kind: ClusterSecretStore
