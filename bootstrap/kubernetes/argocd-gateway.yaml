@@ -23,6 +23,8 @@ spec:
   parentRefs:
   - name: homelab-gateway
     namespace: default
+  hostnames:
+  - argo.athena.asn.casa
   rules:
   - backendRefs:
     - name: argocd-server

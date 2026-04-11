@@ -1,0 +1,15 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: headlamp-ui
+  namespace: headlamp
+spec:
+  parentRefs:
+  - name: homelab-gateway
+    namespace: default
+  hostnames:
+  - headlamp.athena.asn.casa
+  rules:
+  - backendRefs:
+    - name: headlamp
+      port: 80

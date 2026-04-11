@@ -30,7 +30,21 @@ helm install cilium oci://quay.io/cilium/charts/cilium \
   --set gatewayAPI.enabled=true \
   --set gatewayAPI.enableAlpn=true \
   --set gatewayAPI.enableAppProtocol=true \
-  --set l2announcements.enabled=true
+  --set l2announcements.enabled=true \
+  --set hubble.relay.enabled=true \
+  --set hubble.ui.enabled=true
+
+
+# Metrics Server
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm install metrics-server metrics-server/metrics-server \
+  --namespace kube-system \
+  --set args={--kubelet-insecure-tls}
+
+# Headlamp UI
+helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
+helm install headlamp headlamp/headlamp \
+  --namespace headlamp --create-namespace
 
 
 # Create a gateway
@@ -44,8 +58,13 @@ kubectl rollout restart deploy argocd-server -n argocd
 
 # Add it to the gateway
 kubectl apply -f argocd-gateway.yaml
+kubectl apply -f hubble-gateway.yaml
+kubectl apply -f headlamp-gateway.yaml
 
 # verify and get the initial admin password
 
 kubectl get gateway homelab-gateway
+echo "ArgoCD Admin Password:"
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+echo "Headlamp Token:"
+kubectl create token headlamp --namespace headlamp
