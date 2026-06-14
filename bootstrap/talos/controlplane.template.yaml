@@ -18,7 +18,7 @@ machine:
 
     # Used to provide additional options to the kubelet.
     kubelet:
-        image: ghcr.io/siderolabs/kubelet:v1.34.1 # The `image` field is an optional reference to an alternative kubelet image.
+        image: ghcr.io/siderolabs/kubelet:v1.36.1 # The `image` field is an optional reference to an alternative kubelet image.
         defaultRuntimeSeccompProfileEnabled: true # Enable container runtime default Seccomp profile.
         disableManifestsDirectory: true # The `disableManifestsDirectory` field configures the kubelet to get static pod manifests from the /etc/kubernetes/manifests directory.
         
@@ -189,8 +189,9 @@ machine:
     # Used to provide instructions for installations.
     install:
         disk: /dev/sda # The disk used for installations.
-        image: ghcr.io/siderolabs/installer:v1.11.5 # Allows for supplying the image used to perform the installation.
+        image: ghcr.io/siderolabs/installer:v1.13.4 # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
+        grubUseUKICmdline: true # Indicates if legacy GRUB bootloader should use kernel cmdline from the UKI instead of building it on the host.
         
         # # Look up disk using disk attributes like model, size, serial and others.
         # diskSelector:
@@ -231,9 +232,6 @@ machine:
 
     # Features describe individual Talos features that can be switched on or off.
     features:
-        rbac: true # Enable role-based access control (RBAC).
-        stableHostname: true # Enable stable default hostname.
-        apidCheckExtKeyUsage: true # Enable checks for extended key usage of client certificates in apid.
         diskQuotaSupport: true # Enable XFS project quota support for EPHEMERAL partition and user disks.
         # KubePrism - local proxy/load balancer on defined port that will distribute
         kubePrism:
@@ -344,7 +342,7 @@ machine:
     # kernel:
     #     # Kernel modules to load.
     #     modules:
-    #         - name: brtfs # Module name.
+    #         - name: btrfs # Module name.
 
     # # Configures the seccomp profiles for the machine.
     # seccompProfiles:
@@ -397,7 +395,7 @@ cluster:
             name: none # Name of CNI to use.
         #     # URLs containing manifests to apply for the CNI.
         #     urls:
-        #         - https://docs.projectcalico.org/archive/v3.20/manifests/canal.yaml
+        #         - https://raw.githubusercontent.com/projectcalico/calico/v3.31.5/manifests/canal.yaml
     token: {{ secrets.bootstraptoken }} # The [bootstrap token](https://kubernetes.io/docs/reference/access-authn-authz/bootstrap-tokens/) used to join the cluster.
     secretboxEncryptionSecret: {{ secrets.secretboxencryptionsecret }} # A key used for the [encryption of secret data at rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/).
     # The base64 encoded root certificate authority used by Kubernetes.
@@ -413,11 +411,10 @@ cluster:
         key: {{ certs.k8sserviceaccount.key }}
     # API server specific configuration options.
     apiServer:
-        image: registry.k8s.io/kube-apiserver:v1.34.1 # The container image used in the API server manifest.
+        image: registry.k8s.io/kube-apiserver:v1.36.1 # The container image used in the API server manifest.
         # Extra certificate subject alternative names for the API server's certificate.
         certSANs:
             - in.k8s.asn.casa
-        disablePodSecurityPolicy: true # Disable PodSecurityPolicy in the API server and default manifests.
         # Configure the API server admission plugins.
         admissionControl:
             - name: PodSecurity # Name is the name of the admission controller.
@@ -471,16 +468,16 @@ cluster:
         #         timeout: 3s
     # Controller manager server specific configuration options.
     controllerManager:
-        image: registry.k8s.io/kube-controller-manager:v1.34.1 # The container image used in the controller manager manifest.
+        image: registry.k8s.io/kube-controller-manager:v1.36.1 # The container image used in the controller manager manifest.
     # Kube-proxy server-specific configuration options
     proxy:
-        # image: registry.k8s.io/kube-proxy:v1.34.1 # The container image used in the kube-proxy manifest.
+        # image: registry.k8s.io/kube-proxy:v1.36.1 # The container image used in the kube-proxy manifest.
 
         # # Disable kube-proxy deployment on cluster bootstrap.
         disabled: true
     # Scheduler server specific configuration options.
     scheduler:
-        image: registry.k8s.io/kube-scheduler:v1.34.1 # The container image used in the scheduler manifest.
+        image: registry.k8s.io/kube-scheduler:v1.36.1 # The container image used in the scheduler manifest.
     # Configures cluster member discovery.
     discovery:
         enabled: true # Enable the cluster membership discovery feature.
@@ -501,7 +498,7 @@ cluster:
             key: {{ certs.etcd.key }}
         
         # # The container image used to create the etcd service.
-        # image: gcr.io/etcd-development/etcd:v3.6.5
+        # image: registry.k8s.io/etcd:v3.6.12
 
         # # The `advertisedSubnets` field configures the networks to pick etcd advertised IP from.
         # advertisedSubnets:
@@ -528,7 +525,7 @@ cluster:
 
     # # Core DNS specific configuration options.
     # coreDNS:
-    #     image: registry.k8s.io/coredns/coredns:v1.12.4 # The `image` field is an override to the default coredns image.
+    #     image: registry.k8s.io/coredns/coredns:v1.14.2 # The `image` field is an override to the default coredns image.
 
     # # External cloud provider configuration.
     # externalCloudProvider:
@@ -549,3 +546,11 @@ cluster:
 
     # # Allows running workload on control-plane nodes.
     # allowSchedulingOnControlPlanes: true
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: stable # A method to automatically generate a hostname for the machine.
+
+# # A static hostname to set for the machine.
+# hostname: controlplane1
+# hostname: controlplane1.example.org

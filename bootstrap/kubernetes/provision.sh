@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Install gateway-api (1.2.0 because later breaks cilium 1.19 due to naming changes)
+# Install gateway-api (1.2.1 because later breaks cilium 1.19 due to naming changes)
 
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/experimental-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/experimental-install.yaml
 
 
 # Install helm
@@ -17,7 +17,7 @@ sudo apt-get install helm
 # Cilium
 
 helm install cilium oci://quay.io/cilium/charts/cilium \
-  --version 1.19.2 \
+  --version 1.19.4 \
   --namespace kube-system \
   --set ipam.mode=kubernetes \
   --set kubeProxyReplacement=true \
@@ -35,16 +35,7 @@ helm install cilium oci://quay.io/cilium/charts/cilium \
   --set hubble.ui.enabled=true
 
 
-# Metrics Server
-helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
-helm install metrics-server metrics-server/metrics-server \
-  --namespace kube-system \
-  --set args={--kubelet-insecure-tls}
 
-# Headlamp UI
-helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
-helm install headlamp headlamp/headlamp \
-  --namespace headlamp --create-namespace
 
 
 # Create a gateway
@@ -59,12 +50,9 @@ kubectl rollout restart deploy argocd-server -n argocd
 # Add it to the gateway
 kubectl apply -f argocd-gateway.yaml
 kubectl apply -f hubble-gateway.yaml
-kubectl apply -f headlamp-gateway.yaml
 
 # verify and get the initial admin password
 
 kubectl get gateway homelab-gateway
 echo "ArgoCD Admin Password:"
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-echo "Headlamp Token:"
-kubectl create token headlamp --namespace headlamp

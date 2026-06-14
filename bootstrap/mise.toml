@@ -1,6 +1,23 @@
 [tools]
-kubectl = "1.34"
-talosctl = "1.11"
+#kubectl = "1.34"
+#talosctl = "1.11"
+
+kubectl = "1.36"
+talosctl = "1.13"
 
 [env]
 _.source = "../athena.zsh"
+
+[hooks.enter]
+shell = "zsh"
+script = 'eval "$(talosctl completion zsh)"'
+
+[hooks.leave]
+shell = "zsh"
+script = '''
+  # 1. Clear the autocomplete service binding for talosctl
+  unset "_comps[talosctl]"
+
+  # 2. Safely wipe the autocomplete functions from memory
+  unfunction _talosctl __talosctl_debug 2>/dev/null
+'''
