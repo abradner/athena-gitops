@@ -1,0 +1,33 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  yaml-syntax:
+    name: YAML syntax (yq)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # yq (mikefarah) is preinstalled on ubuntu-latest runners
+      - run: ./scripts/validate_yaml.sh
+
+  k8s-schema:
+    name: Kubernetes schema (kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+      # bootstrap/ is excluded: talos templates use {{ }} placeholders and
+      # aren't valid k8s manifests until hydrated.
+      - name: Validate manifests
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            root-app.yaml cluster/
