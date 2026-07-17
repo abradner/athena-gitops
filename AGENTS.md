@@ -18,7 +18,7 @@ Segmented into `talos/` and `kubernetes/`:
 See [`bootstrap/README.md`](bootstrap/README.md) for the full order of operations.
 
 ### `cluster/apps/`
-Overarching ArgoCD `Application` custom resources. These establish sync targets linking ArgoCD to upstream workload repositories (e.g., `pmn-workloads`).
+Overarching ArgoCD sync targets linking ArgoCD to upstream workload repositories (e.g., `pmn-workloads`). The `pmn` suite is defined by a single `ApplicationSet` (`pmn-appset.yaml`) whose matrix generator expands service × environment lists into per-app `Application` resources — add an environment or service by appending to the relevant list, not by adding per-env manifest files.
 
 ### `cluster/core/`
 Foundational cluster integrations:
@@ -26,7 +26,7 @@ Foundational cluster integrations:
 - ArgoCD GitHub repository authentication via an `ExternalSecret` (`argocd-github-repo-pmn.yaml`) that maps a GitHub PAT from 1Password into the ArgoCD control plane.
 
 ## Agent Guidelines & Operation
-- **Argo App Instantiation**: The `GenerateArgocd` orchestrator in `tools-workflow` generates `cluster/apps/` manifests, establishing sync targets per application and environment.
+- **Argo App Instantiation**: The `pmn` ApplicationSet in `cluster/apps/pmn-appset.yaml` generates sync targets per application and environment. (Historically the `GenerateArgocd` orchestrator in `tools-workflow` emitted per-environment manifest files; if that tool still regenerates `pmn-dev*.yaml` files it must be updated to edit the ApplicationSet lists instead, or its output will conflict with the ApplicationSet-owned Applications.)
 - **Syntactic Validation Only**: This repository uses syntactical YAML verification. Do not attempt behavioural spec logic. A `.git/hooks/pre-commit` hook uses `yq` (via `mise.toml`) to run `./scripts/validate_yaml.sh`, preventing structurally invalid commits.
 - **Do Not Hardcode Secrets**: All sensitive values must be templated and sourced from 1Password. If you encounter plaintext certs or tokens in committed files, flag them immediately.
 
