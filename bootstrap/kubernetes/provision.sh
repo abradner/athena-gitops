@@ -1,49 +1,40 @@
 #!/bin/bash
+set -euo pipefail
 
-# Install gateway-api (1.2.1 because later breaks cilium 1.19 due to naming changes)
+# Pinned versions — bump deliberately, and keep in sync with what the cluster
+# is actually running so a disaster-recovery rebuild reproduces the same state.
+GATEWAY_API_VERSION="v1.2.1" # later versions break cilium 1.19 due to naming changes
+CILIUM_VERSION="1.19.4"
+ARGOCD_VERSION="${ARGOCD_VERSION:-stable}" # pin a tag (e.g. v3.1.0) for reproducible DR
 
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/experimental-install.yaml
+# Install gateway-api
 
+kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml"
 
-# Install helm
+# Install helm (skip if already present)
 
-sudo apt-get install curl gpg apt-transport-https --yes
-curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
-sudo apt-get update
-sudo apt-get install helm
+if ! command -v helm &> /dev/null; then
+  sudo apt-get install curl gpg apt-transport-https --yes
+  curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+  echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+  sudo apt-get update
+  sudo apt-get install helm
+fi
 
-# Cilium
+# Cilium — values live in cilium-values.yaml so CNI config is reviewable and reproducible
 
-helm install cilium oci://quay.io/cilium/charts/cilium \
-  --version 1.19.4 \
+helm upgrade --install cilium oci://quay.io/cilium/charts/cilium \
+  --version "$CILIUM_VERSION" \
   --namespace kube-system \
-  --set ipam.mode=kubernetes \
-  --set kubeProxyReplacement=true \
-  --set securityContext.capabilities.ciliumAgent="{CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}" \
-  --set securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
-  --set cgroup.autoMount.enabled=false \
-  --set cgroup.hostRoot=/sys/fs/cgroup \
-  --set k8sServiceHost=localhost \
-  --set k8sServicePort=7445 \
-  --set gatewayAPI.enabled=true \
-  --set gatewayAPI.enableAlpn=true \
-  --set gatewayAPI.enableAppProtocol=true \
-  --set l2announcements.enabled=true \
-  --set hubble.relay.enabled=true \
-  --set hubble.ui.enabled=true
-
-
-
-
+  -f cilium-values.yaml
 
 # Create a gateway
 kubectl apply -f gateway-homelab-pool.yaml
 
-# Install argo
-kubectl create namespace argocd
-kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+# Install argo (idempotent: safe to re-run)
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -n argocd --server-side --force-conflicts -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
 kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{"data":{"server.insecure":"true"}}'
 kubectl rollout restart deploy argocd-server -n argocd
 

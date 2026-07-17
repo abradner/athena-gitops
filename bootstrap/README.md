@@ -20,7 +20,8 @@ graph TD
 
 ```text
 bootstrap/
-├── athena.zsh              # Node IPs and cluster vars (sourced by apply scripts)
+├── athena.template.zsh     # Template for athena.zsh — copy and fill in real values
+├── athena.zsh              # Node IPs and cluster vars (gitignored; sourced by apply scripts)
 ├── mise.toml               # Tool versions (talosctl, etc.)
 ├── talos/
 │   ├── *.template.yaml     # Committed templates with {{ dotted.key }} placeholders
@@ -29,8 +30,14 @@ bootstrap/
 │   └── apply-worker.sh     # Applies worker.yaml to worker nodes
 └── kubernetes/
     ├── provision.sh        # Installs Gateway API, Helm, Cilium, and ArgoCD
+    ├── cilium-values.yaml  # Cilium Helm values (single source of truth for CNI config)
     └── load1p-account-token.sh # Injects 1Password Token for External Secrets
 ```
+
+> **Note:** `athena.zsh` is gitignored, so a fresh clone cannot run the DR
+> playbook until it is recreated from `athena.template.zsh`. Keep the real
+> copy backed up outside git (e.g. in the same 1Password vault as the Talos
+> secrets note).
 
 ## Order of Operations (Disaster Recovery Playbook)
 
@@ -106,9 +113,10 @@ Because the CNI is already active on the control plane, these nodes should succe
 ArgoCD is now running, but it cannot sync workloads from GitHub until the External Secrets Operator is authenticated to 1Password.
 
 1. **Inject 1Password Credentials:**
-   Edit `bootstrap/kubernetes/load1p-account-token.sh` to insert your active 1Password Service Account Token, then run it:
+   Export your active 1Password Service Account Token, then run the loader (the token is read from the environment — never edit it into the script):
 
    ```bash
+   export OP_SERVICE_ACCOUNT_TOKEN="$(op read 'op://<vault>/<item>/credential')"
    cd bootstrap/kubernetes
    ./load1p-account-token.sh
    cd ../../

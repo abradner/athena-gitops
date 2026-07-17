@@ -1,3 +1,7 @@
 *.crt
 *.key
 *.pem
+
+# Local cluster vars (node IPs etc). Copy from bootstrap/athena.template.zsh
+# and keep the real copy backed up outside git.
+bootstrap/athena.zsh
