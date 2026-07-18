@@ -47,7 +47,7 @@ spec:
       # Deliberately no resources-finalizer during the migration — see the
       # preserveResourcesOnDeletion note above.
     spec:
-      project: default
+      project: pmn
       source:
         repoURL: https://github.com/abradner/pmn-workloads.git
         targetRevision: HEAD

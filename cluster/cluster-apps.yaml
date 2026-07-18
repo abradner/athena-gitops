@@ -1,18 +1,21 @@
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: cluster-root
+  name: cluster-apps
   namespace: argocd
-  finalizers:
-  - resources-finalizer.argocd.argoproj.io
 spec:
-  project: default
+  project: core
   source:
     repoURL: 'https://github.com/abradner/athena-gitops.git'
-    targetRevision: HEAD
-    path: cluster
+    targetRevision: main
+    path: cluster/apps
     directory:
       recurse: true
+      # The hello-world canary's raw manifests are owned by their own
+      # Application (hello-world-app.yaml) so the canary can be paused or
+      # pruned independently — exclude them here to avoid double-tracking.
+      exclude: 'hello-world/*'
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: default
