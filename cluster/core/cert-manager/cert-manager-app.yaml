@@ -1,0 +1,31 @@
+---
+# cert-manager install only — no Issuers/ClusterIssuers yet. Deciding the
+# issuance strategy (ACME with a DNS-01 solver for *.athena.asn.casa vs. a
+# private CA for LAN-only trust) comes first; issuers land in this directory
+# once that's chosen, and the Gateway gains an HTTPS listener referencing
+# the resulting certificates.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: core
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      parameters:
+        - name: crds.enabled
+          value: 'true'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
