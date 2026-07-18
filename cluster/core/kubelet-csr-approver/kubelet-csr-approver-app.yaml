@@ -1,0 +1,35 @@
+---
+# Approves kubelet serving-certificate CSRs, required by the Talos
+# machine.kubelet.extraConfig.serverTLSBootstrap: true setting in
+# bootstrap/talos/*.template.yaml. Applies on node (re)provision; with it
+# in place metrics-server verifies kubelet TLS properly.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubelet-csr-approver
+  namespace: argocd
+spec:
+  project: core
+  source:
+    repoURL: https://postfinance.github.io/kubelet-csr-approver
+    chart: kubelet-csr-approver
+    targetRevision: 1.2.2
+    helm:
+      valuesObject:
+        # Homelab: approve serving CSRs from any node name. Tighten to a
+        # regex over your talos hostnames if you want the belt and braces.
+        providerRegex: '.*'
+        bypassDnsResolution: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
