@@ -7,6 +7,8 @@ spec:
   parentRefs:
   - name: homelab-gateway
     namespace: default
+    # HTTPS only — plaintext hits the catch-all redirect route instead
+    sectionName: https-athena
   hostnames:
   - headlamp.athena.asn.casa
   rules:
