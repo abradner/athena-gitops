@@ -126,7 +126,7 @@ ArgoCD is now running, but it cannot sync workloads from GitHub until the Extern
    Instead of applying manifests manually, apply the top-level "App of Apps". This single command tells ArgoCD to recursively sync both `cluster/core` (External Secrets Operator) and `cluster/apps` (Workloads). ArgoCD respects sync waves, ensuring CRDs are installed before secret manifests are parsed.
 
    ```bash
-   kubectl apply -f root-app.yaml
+   kubectl apply -f cluster/root.yaml
    ```
 
    *(Note: You may see a `metadata.finalizers` warning from Kubernetes about the `resources-finalizer.argocd.argoproj.io` format. This is a harmless Kubernetes validation warning that can be safely ignored).*

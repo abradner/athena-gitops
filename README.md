@@ -11,17 +11,23 @@ via [External Secrets Operator](https://external-secrets.io/).
 | --- | --- |
 | `bootstrap/` | Day-0 provisioning and the [disaster-recovery playbook](bootstrap/README.md): Talos config templates, Cilium/Gateway API/Argo CD install scripts. |
 | `cluster/core/` | Foundational cluster services, synced by Argo CD: External Secrets Operator + 1Password `ClusterSecretStore`, metrics-server, Headlamp. |
-| `cluster/apps/` | Workload sync targets: the `pmn` ApplicationSet (per-service, per-environment apps from `pmn-workloads`) and repo credentials. |
-| `root-app.yaml` | The app-of-apps. Applied once during bootstrap; recursively syncs everything under `cluster/`. |
+| `cluster/apps/` | Workload sync targets: the `pmn` ApplicationSet (per-service, per-environment apps from `pmn-workloads`), repo credentials, and the hello-world canary. |
+| `cluster/root.yaml` | The app-of-apps root. Applied once during bootstrap, self-managing afterwards; syncs only the top level of `cluster/` (AppProjects + the two child apps below). |
+| `cluster/cluster-core.yaml`, `cluster/cluster-apps.yaml` | The two child Applications that own `cluster/core` and `cluster/apps` respectively. |
+| `cluster/projects.yaml` | AppProjects: `core` (this repo + pinned chart repos, infra namespaces) and `pmn` (`pmn-workloads` → `pmn-*` namespaces only). |
 | `scripts/validate_yaml.sh` | Syntactic YAML validation (yq), run by the pre-commit hook and CI. |
 
 ## How syncing works
 
-`root-app.yaml` points Argo CD at `cluster/` with `directory.recurse: true`,
-automated sync, prune, and self-heal enabled. **Anything merged to `main`
-applies to the cluster automatically** — including deletions. Sync-wave
+`cluster/root.yaml` syncs the top level of `cluster/` (non-recursive,
+prune off): the AppProjects and two child Applications. `cluster-core` and
+`cluster-apps` then recursively sync their directories with automated
+prune and self-heal. **Anything merged to `main` applies to the cluster
+automatically** — including deletions inside `core/` and `apps/`. Sync-wave
 annotations order CRD-dependent resources (e.g. the `ClusterSecretStore`
-waits for the External Secrets Operator).
+waits for the External Secrets Operator), and Applications are scoped to
+the `core`/`pmn` AppProjects to bound what each source repo can deploy
+and where.
 
 ## Validation
 
