@@ -1,9 +1,8 @@
 ---
-# cert-manager install only — no Issuers/ClusterIssuers yet. Deciding the
-# issuance strategy (ACME with a DNS-01 solver for *.athena.asn.casa vs. a
-# private CA for LAN-only trust) comes first; issuers land in this directory
-# once that's chosen, and the Gateway gains an HTTPS listener referencing
-# the resulting certificates.
+# cert-manager chart install. Issuance lives alongside it:
+# letsencrypt-issuers.yaml (ACME via Cloudflare DNS-01) and the Cloudflare
+# token ExternalSecret in this directory; the Certificates and the
+# Gateway's HTTPS listeners are in cluster/core/networking/.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
