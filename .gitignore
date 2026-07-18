@@ -3,5 +3,7 @@
 *.pem
 
 # Local cluster vars (node IPs etc). Copy from bootstrap/athena.template.zsh
-# and keep the real copy backed up outside git.
+# and keep the real copy backed up outside git. The root-level path is also
+# ignored defensively — bootstrap/mise.toml historically pointed there.
 bootstrap/athena.zsh
+/athena.zsh

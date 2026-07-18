@@ -12,6 +12,16 @@ metadata:
 spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
+  # Migration safety: the 20 pre-existing Applications are still tracked by
+  # cluster-root (prune: true), which deletes their Application CRs once the
+  # old pmn-dev*.yaml files leave main. With this flag (and no
+  # resources-finalizer on the generated apps) any such deletion orphans the
+  # workload resources instead of cascade-deleting them, and the regenerated
+  # Applications re-adopt them on the next sync. Once the handoff has settled
+  # you can flip this off / add the finalizer if you want removals from the
+  # lists below to cascade-delete workloads.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
   generators:
     - matrix:
         generators:
@@ -34,10 +44,8 @@ spec:
   template:
     metadata:
       name: '{{.app}}-{{.env}}'
-      # Cascade-delete workload resources when an app/env is removed from the
-      # lists above, matching the prune semantics of the root app.
-      finalizers:
-        - resources-finalizer.argocd.argoproj.io
+      # Deliberately no resources-finalizer during the migration — see the
+      # preserveResourcesOnDeletion note above.
     spec:
       project: default
       source:
