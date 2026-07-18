@@ -6,7 +6,9 @@ kubectl = "1.36"
 talosctl = "1.13"
 
 [env]
-_.source = "../athena.zsh"
+# Same file the talos apply scripts source (bootstrap/athena.zsh — paths here
+# are relative to this mise.toml). Copy bootstrap/athena.template.zsh to create it.
+_.source = "./athena.zsh"
 
 [hooks.enter]
 shell = "zsh"

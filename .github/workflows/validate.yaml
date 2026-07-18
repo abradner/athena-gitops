@@ -1,0 +1,42 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  yaml-syntax:
+    name: YAML syntax (yq)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pin yq rather than relying on the runner's preinstalled copy —
+      # validate_yaml.sh needs mikefarah yq 4 (same as mise.toml pins locally).
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.44.3
+        run: |
+          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+      - run: ./scripts/validate_yaml.sh
+
+  k8s-schema:
+    name: Kubernetes schema (kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.6.7
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+      # bootstrap/ is excluded: talos templates use {{ }} placeholders and
+      # aren't valid k8s manifests until hydrated.
+      - name: Validate manifests
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            root-app.yaml cluster/

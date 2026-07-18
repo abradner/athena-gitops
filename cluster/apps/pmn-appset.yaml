@@ -1,0 +1,69 @@
+---
+# Replaces the per-environment Application lists (formerly pmn-dev4.yaml /
+# pmn-dev5.yaml). Generated Application names are identical to the old ones
+# (e.g. pmn-core-dev4), so the ApplicationSet controller adopts the existing
+# apps in place. To add an environment, add one element to the env list; to
+# add a service, add one element to the app list.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: pmn
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  # Migration safety: the 20 pre-existing Applications are still tracked by
+  # cluster-root (prune: true), which deletes their Application CRs once the
+  # old pmn-dev*.yaml files leave main. With this flag (and no
+  # resources-finalizer on the generated apps) any such deletion orphans the
+  # workload resources instead of cascade-deleting them, and the regenerated
+  # Applications re-adopt them on the next sync. Once the handoff has settled
+  # you can flip this off / add the finalizer if you want removals from the
+  # lists below to cascade-delete workloads.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - env: dev4
+                - env: dev5
+          - list:
+              elements:
+                - app: pmn-core
+                - app: pmn-error-handling
+                - app: pmn-ext-gw
+                - app: pmn-keycloak
+                - app: pmn-ops
+                - app: pmn-simulator-core
+                - app: pmn-simulator-ui
+                - app: pmn-sla
+                - app: pmn-ui
+                - app: pmn-ui-api
+  template:
+    metadata:
+      name: '{{.app}}-{{.env}}'
+      # Deliberately no resources-finalizer during the migration — see the
+      # preserveResourcesOnDeletion note above.
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/abradner/pmn-workloads.git
+        targetRevision: HEAD
+        path: '{{.app}}/overlay/{{.env}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'pmn-{{.env}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m
