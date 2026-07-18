@@ -44,6 +44,19 @@ kubectl apply -f hubble-gateway.yaml
 
 # verify and get the initial admin password
 
+kubectl rollout status deploy argocd-server -n argocd --timeout=5m
 kubectl get gateway homelab-gateway
+
+# The initial admin secret is generated on argocd-server's first boot and can
+# lag the rollout. Poll for it, but never let the display step fail the script
+# (set -e) — on re-runs the secret may already have been rotated or deleted.
 echo "ArgoCD Admin Password:"
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+for _ in $(seq 1 30); do
+  if password="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)" && [ -n "$password" ]; then
+    echo "$password"
+    exit 0
+  fi
+  sleep 5
+done
+echo "⚠️ argocd-initial-admin-secret not available (server still starting, or secret already rotated/deleted)."
+echo "   Retry with: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
