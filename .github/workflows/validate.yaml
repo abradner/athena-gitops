@@ -11,7 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # yq (mikefarah) is preinstalled on ubuntu-latest runners
+      # Pin yq rather than relying on the runner's preinstalled copy —
+      # validate_yaml.sh needs mikefarah yq 4 (same as mise.toml pins locally).
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.44.3
+        run: |
+          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
       - run: ./scripts/validate_yaml.sh
 
   k8s-schema:
@@ -20,8 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.6.7
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz kubeconform
           sudo mv kubeconform /usr/local/bin/
       # bootstrap/ is excluded: talos templates use {{ }} placeholders and
       # aren't valid k8s manifests until hydrated.
