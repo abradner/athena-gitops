@@ -29,8 +29,9 @@ bootstrap/
 │   ├── apply-control.sh    # Applies controlplane.yaml to control plane nodes
 │   └── apply-worker.sh     # Applies worker.yaml to worker nodes
 └── kubernetes/
-    ├── provision.sh        # Installs Gateway API, Helm, Cilium, and ArgoCD
+    ├── provision.sh        # Installs Gateway API, Helm, Cilium, and ArgoCD (Helm chart)
     ├── cilium-values.yaml  # Cilium Helm values (single source of truth for CNI config)
+    ├── argocd-values.yaml  # ArgoCD bootstrap values (adopted by cluster/core/argocd after root sync)
     └── load1p-account-token.sh # Injects 1Password Token for External Secrets
 ```
 
