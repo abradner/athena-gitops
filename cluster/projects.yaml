@@ -19,6 +19,8 @@ spec:
     - 'https://kubernetes-sigs.github.io/headlamp/'
     - 'https://charts.external-secrets.io'
     - 'https://charts.jetstack.io'
+    - 'https://argoproj.github.io/argo-helm'
+    - 'https://postfinance.github.io/kubelet-csr-approver'
   destinations:
     - server: 'https://kubernetes.default.svc'
       namespace: argocd

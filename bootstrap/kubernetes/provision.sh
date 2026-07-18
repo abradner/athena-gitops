@@ -5,7 +5,9 @@ set -euo pipefail
 # is actually running so a disaster-recovery rebuild reproduces the same state.
 GATEWAY_API_VERSION="v1.2.1" # later versions break cilium 1.19 due to naming changes
 CILIUM_VERSION="1.19.4"
-ARGOCD_VERSION="${ARGOCD_VERSION:-stable}" # pin a tag (e.g. v3.1.0) for reproducible DR
+# Keep in sync with cluster/core/argocd/argocd-app.yaml — that Application
+# adopts this release once the root app syncs.
+ARGOCD_CHART_VERSION="7.6.12"
 
 # Install gateway-api
 
@@ -32,11 +34,14 @@ helm upgrade --install cilium oci://quay.io/cilium/charts/cilium \
 # Create a gateway
 kubectl apply -f gateway-homelab-pool.yaml
 
-# Install argo (idempotent: safe to re-run)
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argocd --server-side --force-conflicts -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
-kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{"data":{"server.insecure":"true"}}'
-kubectl rollout restart deploy argocd-server -n argocd
+# Install argo via the Helm chart (idempotent: safe to re-run). The release
+# is adopted by cluster/core/argocd/argocd-app.yaml after the root app is
+# applied, making later upgrades declarative.
+helm repo add argo https://argoproj.github.io/argo-helm --force-update
+helm upgrade --install argocd argo/argo-cd \
+  --version "$ARGOCD_CHART_VERSION" \
+  --namespace argocd --create-namespace \
+  -f argocd-values.yaml
 
 # Add it to the gateway
 kubectl apply -f argocd-gateway.yaml

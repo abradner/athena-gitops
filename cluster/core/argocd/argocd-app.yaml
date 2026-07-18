@@ -1,0 +1,40 @@
+---
+# Argo CD managing its own install. Bootstrap does the initial
+# `helm install argocd argo/argo-cd` (bootstrap/kubernetes/provision.sh);
+# once the root app is applied, this Application adopts the release and
+# upgrades become declarative (Renovate bumps targetRevision).
+#
+# Keep valuesObject in sync with bootstrap/kubernetes/argocd-values.yaml.
+# prune is deliberately off — Argo pruning parts of itself mid-upgrade is
+# the one place self-management can eat its own tail.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  project: core
+  source:
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-cd
+    targetRevision: 7.6.12
+    helm:
+      valuesObject:
+        configs:
+          params:
+            server.insecure: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
