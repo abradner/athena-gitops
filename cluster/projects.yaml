@@ -60,3 +60,29 @@ spec:
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: workloads
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: First-party apps (mcg, kaff, spritz) and the shared Temporal cluster
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: temporal
+    - server: 'https://kubernetes.default.svc'
+      namespace: mcg
+    - server: 'https://kubernetes.default.svc'
+      namespace: kaff
+    - server: 'https://kubernetes.default.svc'
+      namespace: spritz
+  # Workloads are namespace-scoped except for the Namespaces themselves,
+  # which each app dir declares explicitly.
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace

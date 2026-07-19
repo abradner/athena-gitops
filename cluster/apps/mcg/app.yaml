@@ -1,0 +1,80 @@
+---
+# mcg web. Single process — no background jobs yet. The image entrypoint
+# runs `rails db:prepare` before the server, so migrations apply on rollout.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcg-web
+  namespace: mcg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcg-web
+  template:
+    metadata:
+      labels:
+        app: mcg-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          # TODO: pin to a sha-<commit> tag once image publishing settles;
+          # :latest tracks main via the docker.yml workflow in the app repo.
+          image: ghcr.io/abradner/mcg:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: mcg-app
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcg-web
+  namespace: mcg
+spec:
+  selector:
+    app: mcg-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcg
+  namespace: mcg
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-mcg-rest
+  hostnames:
+    - "mcg.rest"
+  rules:
+    - backendRefs:
+        - name: mcg-web
+          port: 80

@@ -1,0 +1,28 @@
+---
+# Shared Temporal cluster for first-party workloads (kaff, spritz). Owned by
+# its own Application (cluster-apps excludes the temporal/ subtree) so it can
+# be paused or rolled independently of the apps that depend on it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: temporal
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/temporal
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: temporal
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,53 @@
+---
+# PreSync hook: create/upgrade the Temporal schemas on the managed Postgres.
+# Idempotent — create-database and setup-schema tolerate already-existing
+# state (|| true), update-schema is a no-op when current. Runs on every sync,
+# which is also how Temporal server version bumps pick up schema migrations.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: temporal-schema-setup
+  namespace: temporal
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: schema-setup
+          image: temporalio/admin-tools:1.31
+          env:
+            - name: SQL_HOST
+              value: postgres.infra.asn.casa
+            - name: SQL_PORT
+              value: "5432"
+            - name: SQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-db
+                  key: username
+            - name: SQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-db
+                  key: password
+          command:
+            - sh
+            - -c
+            - |
+              set -x
+              temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db temporal create-database || true
+              temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db temporal setup-schema -v 0.0 || true
+              temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+              temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db temporal_visibility create-database || true
+              temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db temporal_visibility setup-schema -v 0.0 || true
+              temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

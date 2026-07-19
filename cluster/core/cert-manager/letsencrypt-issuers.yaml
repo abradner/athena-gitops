@@ -1,7 +1,8 @@
 ---
-# Let's Encrypt via Cloudflare DNS-01 (both zones — asn.casa and
-# bradner.net — live in the same personal Cloudflare account; TLS is
-# terminated in-cluster at the Gateway, HAProxy passes :443 through).
+# Let's Encrypt via Cloudflare DNS-01 (all served zones — asn.casa,
+# bradner.net, mcg.rest, rabalex.wedding — live in the same personal
+# Cloudflare account; TLS is terminated in-cluster at the Gateway,
+# HAProxy passes :443 through).
 # The Cloudflare API token arrives via ESO (cloudflare-api-token secret in
 # the cert-manager namespace, where ClusterIssuers resolve solver secrets).
 #

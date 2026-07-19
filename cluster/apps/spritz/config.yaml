@@ -1,0 +1,21 @@
+---
+# Non-secret app config, shared by the web and worker deployments.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spritz-config
+  namespace: spritz
+data:
+  RAILS_ENV: production
+  RAILS_LOG_LEVEL: info
+  SPRITZ_DATABASE_HOST: postgres.infra.asn.casa
+  GARAGE_ENDPOINT: https://garage.infra.asn.casa
+  GARAGE_BUCKET: spritz-production
+  CANONICAL_HOST: rabalex.wedding
+  CONTACT_EMAIL: alex@bradner.net
+  FROM_EMAIL: noreply@rabalex.wedding
+  # TODO: set the real SMTP relay before relying on outbound mail.
+  SMTP_ADDRESS: CHANGEME.smtp.example
+  SMTP_DOMAIN: rabalex.wedding
+  TEMPORAL_HOST_PORT: temporal-frontend.temporal.svc.cluster.local:7233
+  TEMPORAL_NAMESPACE: spritz

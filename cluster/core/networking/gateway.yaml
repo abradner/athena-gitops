@@ -40,3 +40,36 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: hello-bradner-tls
+  - name: https-mcg-rest
+    port: 443
+    protocol: HTTPS
+    hostname: "mcg.rest"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: mcg-rest-tls
+  - name: https-kaff
+    port: 443
+    protocol: HTTPS
+    hostname: "kaff.asn.casa"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: kaff-asn-casa-tls
+  - name: https-rabalex
+    port: 443
+    protocol: HTTPS
+    hostname: "rabalex.wedding"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: rabalex-wedding-tls
