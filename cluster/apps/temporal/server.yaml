@@ -10,6 +10,9 @@ kind: Deployment
 metadata:
   name: temporal-server
   namespace: temporal
+  annotations:
+    # After the schema-setup Sync hook (wave 1) — schemas exist before boot.
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   replicas: 1
   strategy:
@@ -31,8 +34,11 @@ spec:
             - name: frontend
               containerPort: 7233
           env:
+            # config_template.yaml accepts only cassandra|mysql8|postgres12|
+            # postgres12_pgx — "postgresql" silently renders no persistence
+            # block at all.
             - name: DB
-              value: postgresql
+              value: postgres12
             - name: DB_PORT
               value: "5432"
             - name: POSTGRES_SEEDS
