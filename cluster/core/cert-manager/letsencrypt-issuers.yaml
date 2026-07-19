@@ -1,8 +1,10 @@
 ---
-# Let's Encrypt via Cloudflare DNS-01 (both zones live on Cloudflare; TLS
-# terminated in-cluster at the Gateway — HAProxy passes :443 through).
-# The Cloudflare API token arrives via ESO (cloudflare-api-token secret in
-# the cert-manager namespace, where ClusterIssuers resolve solver secrets).
+# Let's Encrypt via Cloudflare DNS-01. The two zones live in DIFFERENT
+# Cloudflare accounts, so each issuer carries one solver per account and
+# cert-manager picks the solver by dnsZones match (most specific wins).
+# Tokens arrive via ESO into the cert-manager namespace, where
+# ClusterIssuers resolve solver secrets.
+# TLS is terminated in-cluster at the Gateway — HAProxy passes :443 through.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -17,10 +19,21 @@ spec:
     privateKeySecretRef:
       name: letsencrypt-staging-account-key
     solvers:
-      - dns01:
+      - selector:
+          dnsZones:
+            - athena.asn.casa
+        dns01:
           cloudflare:
             apiTokenSecretRef:
-              name: cloudflare-api-token
+              name: cloudflare-asn-casa-token
+              key: api-token
+      - selector:
+          dnsZones:
+            - bradner.net
+        dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-bradner-net-token
               key: api-token
 ---
 apiVersion: cert-manager.io/v1
@@ -37,8 +50,19 @@ spec:
     privateKeySecretRef:
       name: letsencrypt-prod-account-key
     solvers:
-      - dns01:
+      - selector:
+          dnsZones:
+            - athena.asn.casa
+        dns01:
           cloudflare:
             apiTokenSecretRef:
-              name: cloudflare-api-token
+              name: cloudflare-asn-casa-token
+              key: api-token
+      - selector:
+          dnsZones:
+            - bradner.net
+        dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-bradner-net-token
               key: api-token
