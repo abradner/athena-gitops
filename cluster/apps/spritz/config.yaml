@@ -9,7 +9,8 @@ data:
   RAILS_ENV: production
   RAILS_LOG_LEVEL: info
   SPRITZ_DATABASE_HOST: postgres.infra.asn.casa
-  GARAGE_ENDPOINT: https://garage.infra.asn.casa
+  # garage's S3 API listens plain-HTTP on :3900 (internal network only).
+  GARAGE_ENDPOINT: http://garage.infra.asn.casa:3900
   GARAGE_BUCKET: spritz-production
   CANONICAL_HOST: rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
