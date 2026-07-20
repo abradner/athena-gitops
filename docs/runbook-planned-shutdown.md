@@ -29,6 +29,55 @@ The cluster's external dependencies, not the cluster itself:
 | **NTP** | Raspberry Pi workers have no RTC; Talos gates the boot sequence on time sync. If NTP is unreachable, workers stall at boot. | Talos default (pool.ntp.org) → needs WAN |
 | **Boot order** | Control plane must be up (and Cilium running) before workers try to join. | This runbook |
 
+## Additional dependencies once PRs #3 / #4 land
+
+PR #3 (root-app split, TLS at the Gateway, Argo CD self-management) and
+PR #4 (mcg / kaff / spritz + shared Temporal) add to the boot-time picture:
+
+- **External infra hosts become load-bearing.** The workloads depend on
+  the managed Postgres (`postgres.infra.asn.casa` — Temporal, mcg, kaff,
+  spritz), Garage S3 (`garage.infra.asn.casa:3900` — spritz), and HAProxy
+  in front of everything. If those boxes are also moving racks, extend the
+  ordering: shut the cluster down **before** Postgres (workloads write to
+  it), and on the way up bring **network → infra hosts → cluster**.
+  Workloads crashloop-then-recover if Postgres is late, but starting infra
+  first avoids the noise.
+- **Image pulls need WAN at boot.** The first-party apps run
+  `ghcr.io/…:latest` with `imagePullPolicy: Always`, so after a reboot the
+  kubelet contacts ghcr.io before starting each pod — *even when the image
+  is cached*. No internet → pods stay in `ImagePullBackOff`. Worse,
+  `:latest` means the cluster can come back running **newer code than it
+  went down with** if an app repo merged meanwhile. The manifests already
+  carry a TODO to pin `sha-` tags — do that (or freeze app-repo merges,
+  not just this repo) before the move.
+- **TLS is a non-issue for the move.** Gateway certificates live in
+  Secrets (persisted in etcd); cert-manager only needs Cloudflare/WAN at
+  renewal time, not at boot.
+- **Extra verification targets:** the hello-world canary
+  (`hello.bradner.net`) exercises gateway → TLS → route → pod → ESO in one
+  check; then Temporal UI and the three apps.
+
+### Rack move vs. planned reprovision — pick one at a time
+
+PR #3 notes a **cluster reprovision is planned after it lands** (kubelet
+`serverTLSBootstrap`, chart-based Argo CD). The move's downtime window is
+a tempting time to do it, but they are different procedures: a move is
+"power off, power on, touch nothing"; a reprovision is the DR playbook.
+Decide **before** powering anything off:
+
+- **Move only:** follow this runbook exactly. Note metrics-server will be
+  broken after #3 merges until the reprovision happens (it now expects
+  real kubelet certs) — that's unrelated to the move.
+- **Move + reprovision:** do the shutdown half of this runbook (the etcd
+  snapshot matters *more* here), move the hardware, then run the DR
+  playbook in `bootstrap/README.md` instead of the startup half. Expect
+  Let's Encrypt to reissue all Gateway certs on the fresh cluster — fine
+  once, but use `letsencrypt-staging` if you end up iterating.
+
+Don't decide mid-move, and don't reprovision a cluster you haven't first
+confirmed boots healthy in its new home unless you accept DR as the only
+path back.
+
 ## Before shutdown (while the cluster is still healthy)
 
 1. **Verify your access tooling works now**, not after the move:
@@ -47,9 +96,11 @@ The cluster's external dependencies, not the cluster itself:
    ```
 
 3. **Freeze GitOps input:** don't merge anything to `main` (here or in
-   `pmn-workloads`) until the cluster is verified healthy again. Auto-sync
-   with prune + self-heal means a merge queued while the cluster is down
-   applies the moment it boots — keep the restart variable-free.
+   `pmn-workloads` — and once PR #4 lands, the mcg/kaff/spritz app repos,
+   whose merges publish new `:latest` images) until the cluster is
+   verified healthy again. Auto-sync with prune + self-heal means a merge
+   queued while the cluster is down applies the moment it boots — keep
+   the restart variable-free.
 
 4. **Note the DHCP situation.** If the router/DHCP/DNS box is also moving,
    it must be up *before* any cluster node powers on, with reservations
