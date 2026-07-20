@@ -15,8 +15,10 @@ cluster reassembles itself on boot. For rebuilds, see
   automatically when the control-plane nodes boot — **no `talosctl
   bootstrap` is ever run on an existing cluster**.
 - There is no distributed storage layer (no Longhorn/Ceph) to quiesce.
-- Argo CD reconciles from `main` on boot. As long as `main` didn't change
-  while the cluster was off, "reconcile" is a no-op.
+- Argo CD reconciles from `main` on boot. If `main` didn't change while
+  the cluster was off, the desired state is unchanged — but Argo will
+  still re-sync/re-apply as workloads restart and report health; expect
+  sync activity, not literally nothing happening.
 
 ## What actually causes chaos on boot
 
@@ -92,6 +94,7 @@ path back.
    next to the Talos secrets note):
 
    ```bash
+   source bootstrap/athena.zsh
    talosctl --nodes "$BOOTSTRAP_NODE" etcd snapshot athena-pre-move.snapshot
    ```
 
