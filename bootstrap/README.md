@@ -2,6 +2,10 @@
 
 This directory contains the declarative infrastructure to provision and maintain the bare metal Kubernetes cluster using Talos. It also serves as the disaster recovery (DR) playbook for rebuilding the cluster from scratch.
 
+> **Planned power-down instead?** For a rack move or other planned full-cluster
+> shutdown, use [docs/runbook-planned-shutdown.md](../docs/runbook-planned-shutdown.md) —
+> nothing in this DR playbook needs to be re-run for that.
+
 ## Workflow
 
 ```mermaid
