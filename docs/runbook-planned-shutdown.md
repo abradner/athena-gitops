@@ -145,7 +145,7 @@ done
 
    ```bash
    source bootstrap/athena.zsh
-   talosctl --nodes "${CONTROL_PLANE_IP[@]}" health
+   IFS=,; talosctl --nodes "${CONTROL_PLANE_IP[*]}" health; unset IFS
    kubectl get nodes   # control-plane nodes Ready once Cilium is up
    ```
 
