@@ -1,0 +1,48 @@
+---
+# Retention sweep, run out-of-band on a schedule rather than piggybacked on
+# a request. counta issue #6 / R-004 (docs/repo-map.md in the counta repo):
+# `PenPurgeJob` previously only ran when someone happened to hit
+# `GET /api/pens` on the in-process async adapter, so it was dropped on
+# restart and an account nobody opens again was never swept — exactly the
+# guarantee the 2-year archived-pen retention policy depends on. This
+# CronJob makes the sweep unconditional instead of visit-triggered.
+#
+# Same image as the web Deployment; `bin/rails pens:purge` is the task
+# wrapping `PenPurgeJob.perform_now` (lib/tasks/pens.rake in the app repo).
+# Bypasses the entrypoint's db:prepare branch (that only fires for
+# `./bin/rails server`) since this only ever reads/deletes existing rows.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: counta-pens-purge
+  namespace: counta
+spec:
+  # Daily, off-peak UTC — no correctness dependency on the exact hour.
+  schedule: "0 9 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull
+          containers:
+            - name: purge
+              # TODO: pin to a sha-<commit> tag once image publishing settles.
+              image: ghcr.io/abradner/counta:latest
+              imagePullPolicy: Always
+              command: ["bin/rails", "pens:purge"]
+              envFrom:
+                - secretRef:
+                    name: counta-app
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 256Mi
+                limits:
+                  memory: 512Mi

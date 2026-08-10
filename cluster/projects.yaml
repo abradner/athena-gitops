@@ -69,7 +69,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
-  description: First-party apps (mcg, kaff, spritz) and the shared Temporal cluster
+  description: First-party apps (mcg, kaff, spritz, counta) and the shared Temporal cluster
   sourceRepos:
     - 'https://github.com/abradner/athena-gitops.git'
   destinations:
@@ -81,6 +81,8 @@ spec:
       namespace: kaff
     - server: 'https://kubernetes.default.svc'
       namespace: spritz
+    - server: 'https://kubernetes.default.svc'
+      namespace: counta
   # Workloads are namespace-scoped except for the Namespaces themselves,
   # which each app dir declares explicitly.
   clusterResourceWhitelist:

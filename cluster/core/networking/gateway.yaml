@@ -73,3 +73,14 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: rabalex-wedding-tls
+  - name: https-counta-click
+    port: 443
+    protocol: HTTPS
+    hostname: "counta.click"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: counta-click-tls

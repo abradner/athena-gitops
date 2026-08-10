@@ -81,3 +81,21 @@ spec:
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod
+---
+# counta.click's zone is in the same Cloudflare account as the other
+# domains this issuer already covers — no second solver needed.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: counta-click-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: counta-click-tls
+  dnsNames:
+    - "counta.click"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
