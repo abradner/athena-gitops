@@ -1,0 +1,122 @@
+---
+# spritz web (production). Entrypoint runs db:prepare on `rails server`, so
+# migrations apply on rollout (web container only — the worker never
+# triggers it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-web
+  namespace: spritz-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spritz-web
+  template:
+    metadata:
+      labels:
+        app: spritz-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          # TODO: pin to a sha-<commit> tag once image publishing settles.
+          image: ghcr.io/abradner/spritz:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Thruster defaults to :80, which a non-root container can't bind
+            # under Kubernetes (unprivileged port start is 1024).
+            - name: HTTP_PORT
+              value: "8080"
+          envFrom:
+            - configMapRef:
+                name: spritz-config
+            - secretRef:
+                name: spritz-app
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+---
+# Temporal worker — same image, run via rake.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-temporal-worker
+  namespace: spritz-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spritz-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: spritz-temporal-worker
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: worker
+          image: ghcr.io/abradner/spritz:latest
+          imagePullPolicy: Always
+          args: ["bundle", "exec", "rake", "temporal:run_worker"]
+          envFrom:
+            - configMapRef:
+                name: spritz-config
+            - secretRef:
+                name: spritz-app
+          resources:
+            requests:
+              cpu: 25m
+              memory: 384Mi
+            limits:
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spritz-web
+  namespace: spritz-production
+spec:
+  selector:
+    app: spritz-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: spritz
+  namespace: spritz-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-rabalex
+  hostnames:
+    - "rabalex.wedding"
+  rules:
+    - backendRefs:
+        - name: spritz-web
+          port: 80

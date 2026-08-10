@@ -15,7 +15,9 @@ spec:
       # Each app's raw manifests are owned by their own Application
       # (<name>-app.yaml) so they can be paused or pruned independently —
       # exclude the subtrees here to avoid double-tracking.
-      exclude: '{hello-world,temporal,mcg,kaff,spritz}/*'
+      # /** not /*: the group-env dirs nest one level deeper (asn-production/
+      # kaff/app.yaml) and a single * doesn't cross path separators.
+      exclude: '{hello-world,asn-production,asn-staging,spritz-production,spritz-staging}/**'
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: default

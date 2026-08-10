@@ -1,0 +1,28 @@
+---
+# Non-secret app config, shared by the web and worker deployments.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spritz-config
+  namespace: spritz-staging
+data:
+  RAILS_ENV: staging
+  RAILS_LOG_LEVEL: info
+  SPRITZ_DATABASE_HOST: postgres.infra.asn.casa
+  # garage's S3 API listens plain-HTTP on :3900 (internal network only).
+  GARAGE_ENDPOINT: http://garage.infra.asn.casa:3900
+  GARAGE_BUCKET: spritz-staging
+  CANONICAL_HOST: staging.rabalex.wedding
+  CONTACT_EMAIL: alex@bradner.net
+  FROM_EMAIL: noreply@rabalex.wedding
+  # Interim relay: Gmail (app password in the spritz-staging 1Password item;
+  # SMTP_USERNAME is the full Gmail address). Port 587/STARTTLS is hardcoded
+  # in the Rails env config, which matches Gmail. Caveats until a real
+  # transactional mailer replaces this: Gmail rewrites the From header to
+  # the authenticated account unless FROM_EMAIL is a configured send-as
+  # alias, and daily send caps are low (~500).
+  SMTP_ADDRESS: smtp.gmail.com
+  SMTP_DOMAIN: rabalex.wedding
+  # staging.rb uses in-process async adapters — no Solid Queue supervisor.
+  TEMPORAL_HOST_PORT: temporal-frontend.spritz-staging.svc.cluster.local:7233
+  TEMPORAL_NAMESPACE: spritz

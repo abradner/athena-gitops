@@ -69,20 +69,20 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
-  description: First-party apps (mcg, kaff, spritz) and the shared Temporal cluster
+  description: First-party apps, grouped per environment (asn-*, spritz-*, simplytics-*), each group-env namespace with its own Temporal instance
   sourceRepos:
     - 'https://github.com/abradner/athena-gitops.git'
+  # pmn-style namespace globs: one namespace per group per environment
+  # (asn-production, asn-staging, spritz-production, ... simplytics reserved).
   destinations:
     - server: 'https://kubernetes.default.svc'
-      namespace: temporal
+      namespace: 'asn-*'
     - server: 'https://kubernetes.default.svc'
-      namespace: mcg
+      namespace: 'spritz-*'
     - server: 'https://kubernetes.default.svc'
-      namespace: kaff
-    - server: 'https://kubernetes.default.svc'
-      namespace: spritz
-  # Workloads are namespace-scoped except for the Namespaces themselves,
-  # which each app dir declares explicitly.
+      namespace: 'simplytics-*'
+  # Workloads are namespace-scoped; namespaces come from CreateNamespace=true
+  # on each Application, whitelisted here for the dry-run's sake.
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace

@@ -73,3 +73,36 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: rabalex-wedding-tls
+  - name: https-kaff-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.kaff.asn.casa"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-kaff-asn-casa-tls
+  - name: https-mcg-rest-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.mcg.rest"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-mcg-rest-tls
+  - name: https-rabalex-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.rabalex.wedding"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-rabalex-wedding-tls

@@ -1,0 +1,75 @@
+---
+# Temporal Web UI for the asn-production instance. NOTE: no built-in auth — exposed on
+# the athena wildcard listener, which HAProxy src-gates to internal networks.
+# Delete the HTTPRoute if that listener ever becomes internet-reachable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal-ui
+  namespace: asn-production
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: temporal-ui
+  template:
+    metadata:
+      labels:
+        app: temporal-ui
+    spec:
+      containers:
+        - name: ui
+          image: temporalio/ui:2.52.0
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: temporal-frontend.asn-production.svc.cluster.local:7233
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-ui
+  namespace: asn-production
+spec:
+  selector:
+    app: temporal-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: temporal-ui
+  namespace: asn-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-athena
+  hostnames:
+    - "temporal-asn-production.athena.asn.casa"
+  rules:
+    - backendRefs:
+        - name: temporal-ui
+          port: 80
