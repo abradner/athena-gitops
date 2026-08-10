@@ -45,7 +45,9 @@ spec:
             # expanded into the Job logs.
             - |
               set -e
-              tool() { temporal-sql-tool --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db "$@"; }
+              # --plugin is load-bearing: the tool defaults to the MySQL driver
+              # (the old compose stack supplied it via SQL_PLUGIN env).
+              tool() { temporal-sql-tool --plugin postgres12 --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db "$@"; }
               tool temporal_asn_production create-database || true
               tool temporal_asn_production setup-schema -v 0.0 || true
               tool temporal_asn_production update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
