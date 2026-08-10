@@ -15,8 +15,13 @@ data:
   CANONICAL_HOST: rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
-  # TODO: set the real SMTP relay before relying on outbound mail.
-  SMTP_ADDRESS: CHANGEME.smtp.example
+  # Interim relay: Gmail (app password in the spritz-app 1Password item;
+  # SMTP_USERNAME is the full Gmail address). Port 587/STARTTLS is hardcoded
+  # in production.rb, which matches Gmail. Caveats until a real transactional
+  # mailer replaces this: Gmail rewrites the From header to the authenticated
+  # account unless FROM_EMAIL is a configured send-as alias, and daily send
+  # caps are low (~500).
+  SMTP_ADDRESS: smtp.gmail.com
   SMTP_DOMAIN: rabalex.wedding
   TEMPORAL_HOST_PORT: temporal-frontend.temporal.svc.cluster.local:7233
   TEMPORAL_NAMESPACE: spritz
