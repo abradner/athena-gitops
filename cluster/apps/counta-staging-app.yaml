@@ -1,0 +1,31 @@
+---
+# Counta (github.com/abradner/counta) — pen/dose click counter (staging),
+# served at staging.counta.click. Production is a real cutover: the Pi dev-server
+# currently serving counta.click retires once live (counta issue #10 /
+# R-005) — see the PR checklist.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: counta-staging
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-staging/counta
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
