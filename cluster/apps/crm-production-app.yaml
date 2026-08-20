@@ -1,0 +1,33 @@
+---
+# crm (github.com/abradner/crm) — shared contact-form submission inbox for
+# the marketing properties, served at inbox.simplytics.ai. First deployment
+# of this app anywhere; it closes out its own AGENTS.md §7.1 onboarding list
+# (Temporal namespace, in-cluster worker, image build, Telegram token via
+# ESO). Production only for now — no staging tree until there is a reason
+# for one.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crm-production
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-production/crm
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
