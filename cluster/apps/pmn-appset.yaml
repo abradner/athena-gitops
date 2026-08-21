@@ -26,9 +26,24 @@ spec:
     - matrix:
         generators:
           - list:
-              elements:
-                - env: dev4
-                - env: dev5
+              # ON ICE 2026-08-21. The pmn dev suite was crashlooping long
+              # before the July outage and is pure noise in Argo and in
+              # `kubectl get pods -A`, so it is parked rather than debugged.
+              #
+              # Emptying this list deletes the generated Applications, but
+              # `preserveResourcesOnDeletion: true` above (and the absent
+              # resources-finalizer) means the workloads are ORPHANED, not
+              # deleted — namespaces, Deployments and their data all stay.
+              # The pods are then scaled to zero by hand; with no Application
+              # managing them, nothing syncs the replica count back up.
+              #
+              # To bring pmn back: restore the two elements below, let the
+              # ApplicationSet re-adopt the existing resources, and Argo
+              # restores the manifests' replica counts on its own.
+              elements: []
+              # elements:
+              #   - env: dev4
+              #   - env: dev5
           - list:
               elements:
                 - app: pmn-core
