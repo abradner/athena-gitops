@@ -19,6 +19,14 @@ spec:
       labels:
         app: temporal-ui
     spec:
+      # Kubernetes injects legacy service-discovery variables for every
+      # Service in the namespace: a Service named `temporal-ui` produces
+      # TEMPORAL_UI_PORT=tcp://10.96.x.x:8080. Temporal UI has its OWN
+      # config variable of that name and expects an integer, so the
+      # injected value makes it refuse to start:
+      #   config file corrupted: cannot unmarshal !!str `tcp://1...` into int
+      # Nothing here relies on those variables, so switch them off entirely.
+      enableServiceLinks: false
       containers:
         - name: ui
           image: temporalio/ui:2.52.0
