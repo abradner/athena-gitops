@@ -39,12 +39,22 @@ spec:
             httpGet:
               path: /up
               port: 3000
+              # Rails HostAuthorization rejects the kubelet's probe, which
+              # sends the pod IP as Host:
+              #   Blocked hosts: 10.244.x.y:3000
+              # The pod then never goes Ready despite the app being fine.
+              httpHeaders:
+                - name: Host
+                  value: counta.click
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /up
               port: 3000
+              httpHeaders:
+                - name: Host
+                  value: counta.click
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:
