@@ -8,7 +8,14 @@ spec:
   source:
     repoURL: https://kubernetes-sigs.github.io/headlamp/
     chart: headlamp
-    targetRevision: 0.24.1
+    # 0.24.1 was withdrawn upstream: the chart index now starts at 0.39.0,
+    # so Argo could not fetch it at all — the Application sat at sync status
+    # Unknown with a ComparisonError, deployed nothing, and its missing
+    # Service left the headlamp-ui HTTPRoute unattachable. That in turn kept
+    # cluster-root Degraded and retrying, which masks real sync failures.
+    # No custom values here, and 0.45.0 still renders Service/headlamp on
+    # port 80 (verified with `helm template`), so the HTTPRoute is unchanged.
+    targetRevision: 0.45.0
   destination:
     server: https://kubernetes.default.svc
     namespace: headlamp
