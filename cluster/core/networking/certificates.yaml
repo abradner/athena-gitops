@@ -129,3 +129,35 @@ spec:
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: counta-click-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: counta-click-tls
+  dnsNames:
+    - "counta.click"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: staging-counta-click-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: staging-counta-click-tls
+  dnsNames:
+    - "staging.counta.click"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod

@@ -1,0 +1,86 @@
+---
+# counta web (production). Single process — no background jobs in the request
+# path (the retention sweep runs out-of-band, see purge-cronjob.yaml). The
+# image entrypoint runs `rails db:prepare` before the server, so migrations
+# apply on rollout. PORT is set explicitly: config/puma.rb defaults to
+# 25425 (the pre-cutover dev host's HAProxy mapping); the image pins
+# ENV PORT=3000 and this matches it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: counta-web
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: counta-web
+  template:
+    metadata:
+      labels:
+        app: counta-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          # TODO: pin to a sha-<commit> tag once image publishing settles.
+          image: ghcr.io/abradner/counta:latest
+          imagePullPolicy: Always
+          env:
+            - name: PORT
+              value: "3000"
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: counta-app
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: counta-web
+  namespace: asn-production
+spec:
+  selector:
+    app: counta-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: counta
+  namespace: asn-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-counta-click
+  hostnames:
+    - "counta.click"
+  rules:
+    - backendRefs:
+        - name: counta-web
+          port: 80
