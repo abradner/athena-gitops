@@ -8,7 +8,20 @@ metadata:
   name: mcg-web
   namespace: asn-production
 spec:
-  replicas: 1
+  # DELIBERATELY 0 until the mcg cutover.
+  #
+  # This targets database `mcg_production` on postgres.infra.asn.casa — the
+  # SAME database the live VM (10.10.20.133:3000, still serving mcg.rest)
+  # uses. Every other app in this stack points at a freshly provisioned
+  # empty database; mcg is the one that shares.
+  #
+  # The image entrypoint runs `rails db:prepare` before the server, so a
+  # single pod starting here runs migrations against live production data,
+  # at a schema the running VM may not expect. That is not a dual-write
+  # nuisance, it is a schema change under a live app.
+  #
+  # Cutover = set this to 1 and move mcg.rest's backend at the same time.
+  replicas: 0
   selector:
     matchLabels:
       app: mcg-web
