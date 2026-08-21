@@ -44,8 +44,21 @@ spec:
               #   Blocked hosts: 10.244.x.y:3000
               # The pod then never goes Ready despite the app being fine.
               httpHeaders:
+                # counta.click, NOT staging.counta.click. counta hardcodes
+                # `config.hosts = [ "counta.click" ]` in production.rb, and
+                # this image runs RAILS_ENV=production in both cluster
+                # environments, so the staging hostname is rejected by
+                # HostAuthorization:
+                #   Blocked hosts: staging.counta.click
+                # Using the allowed host lets the probe verify the app is
+                # actually serving.
+                #
+                # KNOWN LIMITATION: real traffic to staging.counta.click is
+                # rejected for the same reason. Fixing that needs counta to
+                # make config.hosts configurable (env-driven) — an app-repo
+                # change. Do not cut staging.counta.click over until then.
                 - name: Host
-                  value: staging.counta.click
+                  value: counta.click
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
@@ -53,8 +66,21 @@ spec:
               path: /up
               port: 3000
               httpHeaders:
+                # counta.click, NOT staging.counta.click. counta hardcodes
+                # `config.hosts = [ "counta.click" ]` in production.rb, and
+                # this image runs RAILS_ENV=production in both cluster
+                # environments, so the staging hostname is rejected by
+                # HostAuthorization:
+                #   Blocked hosts: staging.counta.click
+                # Using the allowed host lets the probe verify the app is
+                # actually serving.
+                #
+                # KNOWN LIMITATION: real traffic to staging.counta.click is
+                # rejected for the same reason. Fixing that needs counta to
+                # make config.hosts configurable (env-driven) — an app-repo
+                # change. Do not cut staging.counta.click over until then.
                 - name: Host
-                  value: staging.counta.click
+                  value: counta.click
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:
