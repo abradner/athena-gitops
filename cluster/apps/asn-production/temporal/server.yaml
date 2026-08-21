@@ -66,6 +66,25 @@ spec:
             # config_template.yaml accepts only cassandra|mysql8|postgres12|
             # postgres12_pgx — "postgresql" silently renders no persistence
             # block at all.
+            # Connection pools, capped deliberately. postgres.infra.asn.casa
+            # runs with max_connections=100 and is shared by every app here.
+            # Temporal opens a pool PER internal service (frontend, history,
+            # matching, worker) and again for visibility, so the 20-connection
+            # default means ~40 per instance — four instances alone exhaust
+            # the server, and the symptom is opaque:
+            #   pq: remaining connection slots are reserved for roles with
+            #       the SUPERUSER attribute
+            # These caps keep all four instances inside ~24 connections total,
+            # leaving room for the Rails apps. Raise max_connections on the
+            # server before raising these.
+            - name: SQL_MAX_CONNS
+              value: "4"
+            - name: SQL_MAX_IDLE_CONNS
+              value: "2"
+            - name: SQL_VIS_MAX_CONNS
+              value: "2"
+            - name: SQL_VIS_MAX_IDLE_CONNS
+              value: "1"
             - name: DB
               value: postgres12
             - name: DB_PORT
