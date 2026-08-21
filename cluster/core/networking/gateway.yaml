@@ -9,6 +9,13 @@ kind: Gateway
 metadata:
   name: homelab-gateway
   namespace: default
+  annotations:
+    # Wave 4: LAST. The HTTPS listeners reference certificate Secrets, so
+    # this cannot go healthy until cert-manager has issued them. Applying it
+    # first (its old wave 0) deadlocked the whole sync: Argo waits for a
+    # wave to be healthy before starting the next, so the Gateway blocked
+    # forever on certs that a later wave was supposed to create.
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   gatewayClassName: cilium
   listeners:
