@@ -1,0 +1,50 @@
+---
+# Let's Encrypt via Cloudflare DNS-01 (both zones — asn.casa and
+# bradner.net — live in the same personal Cloudflare account; TLS is
+# terminated in-cluster at the Gateway, HAProxy passes :443 through).
+# The Cloudflare API token arrives via ESO (cloudflare-api-token secret in
+# the cert-manager namespace, where ClusterIssuers resolve solver secrets).
+#
+# If a future zone lives in a different Cloudflare account (e.g. the
+# simplytics-account domains), add a second solver with a dnsZones
+# selector and its own apiTokenSecretRef — cert-manager picks the solver
+# by most-specific zone match, so this doesn't need to change.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  acme:
+    email: alex+letsencrypt@asn.casa
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  acme:
+    email: alex+letsencrypt@asn.casa
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token

@@ -1,0 +1,7 @@
+# Argo CD Helm values used at bootstrap. Keep in sync with the valuesObject
+# in cluster/core/argocd/argocd-app.yaml — after bootstrap, the in-cluster
+# Application takes over managing the release and that copy wins.
+configs:
+  params:
+    # TLS terminates at the Gateway (cert-manager) / HAProxy, not in Argo.
+    server.insecure: true

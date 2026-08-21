@@ -17,6 +17,9 @@ Segmented into `talos/` and `kubernetes/`:
 
 See [`bootstrap/README.md`](bootstrap/README.md) for the full order of operations.
 
+### `cluster/` (top level)
+Synced non-recursively by the self-managing root app (`cluster/root.yaml`, prune off): the `core`/`pmn` AppProjects (`projects.yaml`) and the two child Applications `cluster-core.yaml` / `cluster-apps.yaml`, which recursively own `cluster/core` and `cluster/apps` with automated prune + self-heal. New Applications must set `project: core` (this repo / pinned chart repos) or `project: pmn` (`pmn-workloads` → `pmn-*` namespaces) — not `default`.
+
 ### `cluster/apps/`
 Overarching ArgoCD sync targets linking ArgoCD to upstream workload repositories (e.g., `pmn-workloads`). The `pmn` suite is defined by a single `ApplicationSet` (`pmn-appset.yaml`) whose matrix generator expands service × environment lists into per-app `Application` resources — add an environment or service by appending to the relevant list, not by adding per-env manifest files.
 

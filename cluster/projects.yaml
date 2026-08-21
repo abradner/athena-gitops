@@ -1,0 +1,62 @@
+---
+# AppProjects live at the top level (synced by cluster-root, which runs in
+# the built-in default project) so they exist before the child Applications
+# that reference them — putting them inside cluster/core would deadlock:
+# cluster-core couldn't sync into a project it hasn't created yet.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: core
+  namespace: argocd
+  annotations:
+    # Apply before the cluster-core / cluster-apps Applications (wave 0)
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: Foundational cluster services managed from athena-gitops
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+    - 'https://kubernetes-sigs.github.io/metrics-server/'
+    - 'https://kubernetes-sigs.github.io/headlamp/'
+    - 'https://charts.external-secrets.io'
+    - 'https://charts.jetstack.io'
+    - 'https://argoproj.github.io/argo-helm'
+    - 'https://postfinance.github.io/kubelet-csr-approver'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: argocd
+    - server: 'https://kubernetes.default.svc'
+      namespace: kube-system
+    - server: 'https://kubernetes.default.svc'
+      namespace: external-secrets
+    - server: 'https://kubernetes.default.svc'
+      namespace: headlamp
+    - server: 'https://kubernetes.default.svc'
+      namespace: cert-manager
+    - server: 'https://kubernetes.default.svc'
+      namespace: default
+  # Core installs CRDs, webhooks, RBAC, APIServices — cluster scope required.
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: pmn
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: pmn workload suite (pmn-workloads repo, pmn-* namespaces)
+  sourceRepos:
+    - 'https://github.com/abradner/pmn-workloads.git'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'pmn-*'
+  # TODO: tighten to [] once the pmn overlays are confirmed to contain only
+  # namespace-scoped resources — kept permissive for now so the project
+  # switch can't break syncs. The repo/namespace scoping above is the main
+  # containment win either way.
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

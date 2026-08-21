@@ -1,0 +1,35 @@
+---
+# Certificates live in the Gateway's namespace (default) so the listeners'
+# certificateRefs stay same-namespace. Switch issuerRef to letsencrypt-staging
+# when testing issuance changes — prod has strict rate limits.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: athena-wildcard-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: athena-wildcard-tls
+  dnsNames:
+    - "*.athena.asn.casa"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hello-bradner-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: hello-bradner-tls
+  dnsNames:
+    - "hello.bradner.net"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod

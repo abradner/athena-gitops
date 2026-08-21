@@ -1,0 +1,15 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended'],
+  // Bump Helm chart pins inside Argo CD Application/ApplicationSet manifests
+  // (metrics-server, headlamp, external-secrets, cert-manager, argo-cd, ...).
+  // Requires the Renovate GitHub App to be enabled for this repo.
+  // Glob rather than regex: unambiguous across Renovate versions
+  // (slash-delimited regex is the modern managerFilePatterns syntax, but a
+  // glob is accepted everywhere and reads better anyway).
+  argocd: {
+    managerFilePatterns: ['cluster/**/*.yaml'],
+  },
+  // One PR per chart, no rate-limit surprises on a homelab cadence.
+  prConcurrentLimit: 5,
+}

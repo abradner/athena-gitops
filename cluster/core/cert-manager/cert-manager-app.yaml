@@ -1,0 +1,30 @@
+---
+# cert-manager chart install. Issuance lives alongside it:
+# letsencrypt-issuers.yaml (ACME via Cloudflare DNS-01) and the Cloudflare
+# token ExternalSecret in this directory; the Certificates and the
+# Gateway's HTTPS listeners are in cluster/core/networking/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: core
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      parameters:
+        - name: crds.enabled
+          value: 'true'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,42 @@
+---
+# The cluster Gateway, GitOps-managed. bootstrap applies an HTTP-only
+# version during provisioning (bootstrap/kubernetes/argocd-gateway.yaml);
+# cluster-core adopts it and layers on the HTTPS listeners, which become
+# ready once cert-manager has issued the referenced certificates.
+# HAProxy should pass :443 through (TCP mode) — TLS terminates here.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-gateway
+  namespace: default
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https-athena
+    port: 443
+    protocol: HTTPS
+    hostname: "*.athena.asn.casa"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: athena-wildcard-tls
+  - name: https-bradner
+    port: 443
+    protocol: HTTPS
+    hostname: "hello.bradner.net"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: hello-bradner-tls

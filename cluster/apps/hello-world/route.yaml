@@ -8,6 +8,8 @@ spec:
   # This attaches to the gateway we deployed in the default namespace earlier
   - name: homelab-gateway
     namespace: default
+    # HTTPS only — plaintext hits the catch-all redirect route instead
+    sectionName: https-bradner
   hostnames:
   # Change this to whatever FQDN you are pointing at HAProxy!
   - "hello.bradner.net" 

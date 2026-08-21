@@ -1,0 +1,41 @@
+---
+# The app-of-apps root. Applied once by hand during bootstrap
+# (kubectl apply -f cluster/root.yaml); after that it manages itself —
+# this file lives inside its own sync path, so spec changes here are
+# picked up by Argo CD without another manual apply.
+#
+# It intentionally syncs ONLY the top level of cluster/ (recurse: false):
+# the AppProjects and the two child Applications, which in turn own
+# cluster/core and cluster/apps. prune is off at this level so a bad
+# rename/removal of a top-level file degrades to "orphaned, fix in git"
+# rather than cascading deletes through core infrastructure.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-root
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster
+    directory:
+      recurse: false
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

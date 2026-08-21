@@ -4,7 +4,7 @@ metadata:
   name: external-secrets-operator
   namespace: argocd
 spec:
-  project: default
+  project: core
   source:
     repoURL: https://charts.external-secrets.io
     chart: external-secrets

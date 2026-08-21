@@ -1,0 +1,25 @@
+---
+# Catch-all HTTP→HTTPS redirect on the Gateway's http listener. Service
+# routes pin themselves to an HTTPS listener via sectionName, so this is
+# the only route attached to :80 and every plaintext request gets a 301.
+#
+# DR note: until cert-manager has issued the Gateway certificates, the
+# HTTPS listeners aren't programmed and redirected requests will fail —
+# the Argo CD UI is briefly reachable only via the bootstrap-applied
+# HTTP-only gateway state. It self-heals once the first certs issue.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-redirect
+  namespace: default
+spec:
+  parentRefs:
+  - name: homelab-gateway
+    namespace: default
+    sectionName: http
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
