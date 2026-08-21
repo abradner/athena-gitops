@@ -8,7 +8,12 @@ metadata:
   name: spritz-web
   namespace: spritz-staging
 spec:
-  replicas: 1
+  # 0 until the env gap is closed. config/initializers/turnstile.rb raises
+  # at boot without TURNSTILE_SECRET_KEY (deliberately — a deploy without it
+  # would pass health checks and 500 on the first contact submission), and
+  # that key is not yet in the spritz-* 1Password items. Also needed for
+  # staging: WHATSAPP_ACCESS_TOKEN, unless WHATSAPP_ENABLED=false.
+  replicas: 0
   selector:
     matchLabels:
       app: spritz-web
@@ -62,7 +67,12 @@ metadata:
   name: spritz-temporal-worker
   namespace: spritz-staging
 spec:
-  replicas: 1
+  # 0 until the env gap is closed. config/initializers/turnstile.rb raises
+  # at boot without TURNSTILE_SECRET_KEY (deliberately — a deploy without it
+  # would pass health checks and 500 on the first contact submission), and
+  # that key is not yet in the spritz-* 1Password items. Also needed for
+  # staging: WHATSAPP_ACCESS_TOKEN, unless WHATSAPP_ENABLED=false.
+  replicas: 0
   selector:
     matchLabels:
       app: spritz-temporal-worker
