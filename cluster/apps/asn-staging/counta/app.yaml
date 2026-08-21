@@ -24,9 +24,8 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          # TODO: pin to a sha-<commit> tag once image publishing settles.
-          image: ghcr.io/abradner/counta:latest
-          imagePullPolicy: Always
+          image: ghcr.io/abradner/counta:sha-a213b36c0482b5b6d0e2d04554599ad6bdc5362f
+          imagePullPolicy: IfNotPresent
           env:
             - name: PORT
               value: "3000"
