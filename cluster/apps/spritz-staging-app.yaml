@@ -1,0 +1,28 @@
+---
+# spritz (staging) — staging.rabalex.wedding. Web + Temporal worker, garage S3 storage.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: spritz-staging
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-staging/spritz
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

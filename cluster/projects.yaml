@@ -60,3 +60,29 @@ spec:
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: workloads
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: First-party apps, grouped per environment (asn-*, spritz-*, simplytics-*), each group-env namespace with its own Temporal instance
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+  # pmn-style namespace globs: one namespace per group per environment
+  # (asn-production, asn-staging, spritz-production, ... simplytics reserved).
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'asn-*'
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'spritz-*'
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'simplytics-*'
+  # Workloads are namespace-scoped; namespaces come from CreateNamespace=true
+  # on each Application, whitelisted here for the dry-run's sake.
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace

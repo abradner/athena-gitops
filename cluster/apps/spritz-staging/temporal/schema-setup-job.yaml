@@ -1,0 +1,62 @@
+---
+# Sync hook (wave 1): create/upgrade the Temporal schemas on the managed
+# Postgres. Runs after wave 0 (ExternalSecret) is healthy, so on a fresh
+# install the temporal-db Secret exists before this Job is created — a
+# PreSync hook would deadlock there. The server Deployment sits at wave 2,
+# so schemas are current before it boots.
+# Idempotent — create-database and setup-schema tolerate already-existing
+# state (|| true), update-schema is a no-op when current.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: temporal-schema-setup
+  namespace: spritz-staging
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: schema-setup
+          image: temporalio/admin-tools:1.31
+          env:
+            - name: SQL_HOST
+              value: postgres.infra.asn.casa
+            - name: SQL_PORT
+              value: "5432"
+            - name: SQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-db
+                  key: username
+            - name: SQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-db
+                  key: password
+          command:
+            - sh
+            - -c
+            # No shell tracing here: set -x would echo --pw "$SQL_PASSWORD"
+            # expanded into the Job logs.
+            - |
+              set -e
+              # --plugin is load-bearing: the tool defaults to the MySQL driver
+              # (the old compose stack supplied it via SQL_PLUGIN env).
+              tool() { temporal-sql-tool --plugin postgres12 --ep "$SQL_HOST" -p "$SQL_PORT" -u "$SQL_USER" --pw "$SQL_PASSWORD" --db "$@"; }
+              tool temporal_spritz_staging create-database || true
+              tool temporal_spritz_staging setup-schema -v 0.0 || true
+              tool temporal_spritz_staging update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+              tool temporal_spritz_staging_visibility create-database || true
+              tool temporal_spritz_staging_visibility setup-schema -v 0.0 || true
+              tool temporal_spritz_staging_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

@@ -1,0 +1,29 @@
+---
+# Temporal instance for the spritz-staging namespace — one instance per
+# namespace, own database role/credentials each.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: temporal-spritz-staging
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-staging/temporal
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

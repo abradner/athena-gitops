@@ -11,7 +11,7 @@ via [External Secrets Operator](https://external-secrets.io/).
 | --- | --- |
 | `bootstrap/` | Day-0 provisioning and the [disaster-recovery playbook](bootstrap/README.md): Talos config templates, Cilium/Gateway API/Argo CD install scripts. |
 | `cluster/core/` | Foundational cluster services, synced by Argo CD: External Secrets Operator + 1Password `ClusterSecretStore`, metrics-server, Headlamp. |
-| `cluster/apps/` | Workload sync targets: the `pmn` ApplicationSet (per-service, per-environment apps from `pmn-workloads`), repo credentials, and the hello-world canary. |
+| `cluster/apps/` | Workload sync targets: the `pmn` ApplicationSet (per-service, per-environment apps from `pmn-workloads`), repo credentials, the hello-world canary, and the first-party apps grouped per environment (`asn-*`: kaff/mcg, `spritz-*`; `simplytics-*` reserved) — each app+env owned by its own Application in the `workloads` project, each group-env namespace running its own Temporal instance. |
 | `cluster/root.yaml` | The app-of-apps root. Applied once during bootstrap, self-managing afterwards; syncs only the top level of `cluster/` (AppProjects + the two child apps below). |
 | `cluster/cluster-core.yaml`, `cluster/cluster-apps.yaml` | The two child Applications that own `cluster/core` and `cluster/apps` respectively. |
 | `cluster/projects.yaml` | AppProjects: `core` (this repo + pinned chart repos, infra namespaces) and `pmn` (`pmn-workloads` → `pmn-*` namespaces only). |
