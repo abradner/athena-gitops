@@ -1,4 +1,28 @@
 ---
+# Minimal dynamic config for the Temporal server.
+#
+# temporalio/server's config_template.yaml points dynamicConfigClient at
+# /etc/temporal/config/dynamicconfig/docker.yaml unconditionally, and the
+# server refuses to start if that file is absent:
+#
+#   unable to create dynamic config client: ... docker.yaml: no such file
+#   or directory
+#
+# The docker-compose "auto-setup" image ships this file, which is why this
+# never surfaced before the move to the plain server image. An empty
+# mapping is valid and means "all defaults".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: temporal-dynamicconfig
+  namespace: asn-staging
+  annotations:
+    # Before the server (wave 2) — the mount must exist at boot.
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  docker.yaml: |
+    {}
+---
 # Temporal server, lightweight single-node deployment (all four services in
 # one process — the temporalio/server image's default). Persistence lives on
 # the managed Postgres; schemas are maintained by the Sync-hook Job
@@ -25,12 +49,19 @@ spec:
       labels:
         app: temporal-server
     spec:
+      volumes:
+        - name: dynamicconfig
+          configMap:
+            name: temporal-dynamicconfig
       containers:
         - name: server
           image: temporalio/server:1.31.2
           ports:
             - name: frontend
               containerPort: 7233
+          volumeMounts:
+            - name: dynamicconfig
+              mountPath: /etc/temporal/config/dynamicconfig
           env:
             # config_template.yaml accepts only cassandra|mysql8|postgres12|
             # postgres12_pgx — "postgresql" silently renders no persistence
