@@ -21,9 +21,8 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          # TODO: pin to a sha-<commit> tag once image publishing settles.
-          image: ghcr.io/abradner/spritz:latest
-          imagePullPolicy: Always
+          image: ghcr.io/abradner/spritz:sha-07af425c6ac4209b19e2ff0fcd5804861015dac8
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
@@ -76,8 +75,8 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/spritz:latest
-          imagePullPolicy: Always
+          image: ghcr.io/abradner/spritz:sha-07af425c6ac4209b19e2ff0fcd5804861015dac8
+          imagePullPolicy: IfNotPresent
           args: ["bundle", "exec", "rake", "temporal:run_worker"]
           envFrom:
             - configMapRef:
