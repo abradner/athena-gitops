@@ -1,0 +1,15 @@
+---
+# Declared explicitly for the same reason as the observability namespace:
+# cluster-core applies headlamp-gateway.yaml's HTTPRoute into this namespace,
+# but the namespace would only be created by the headlamp Application's
+# CreateNamespace=true — which cluster-core has not created yet at that point.
+#
+# This deadlocked every merge to main from reaching the cluster until the
+# namespace was created by hand. Declaring it here makes that impossible to
+# repeat, and makes the by-hand fix reproducible from git.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: headlamp
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"

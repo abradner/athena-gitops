@@ -1,0 +1,23 @@
+---
+# Declared explicitly, at the earliest wave, because cluster-core applies
+# resources INTO this namespace (the Grafana ExternalSecret, the HTTPRoutes)
+# while the namespace itself would otherwise only be created by the child
+# Applications' CreateNamespace=true — which cluster-core has not created yet
+# when it tries to apply them.
+#
+# The result is a deadlock that reads like a missing manifest:
+#   one or more synchronization tasks completed unsuccessfully,
+#   reason: namespaces "observability" not found
+# and it aborts the whole sync, so the Applications never get created either.
+# The same bug bit headlamp; see cluster/core/headlamp/namespace.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    # node-exporter needs host mounts and hostPID; Vector reads /var/log/pods.
+    # Talos enforces Pod Security Admission, which forbids both under
+    # baseline/restricted.
+    pod-security.kubernetes.io/enforce: privileged
