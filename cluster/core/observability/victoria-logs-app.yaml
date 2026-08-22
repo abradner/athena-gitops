@@ -1,0 +1,65 @@
+---
+# Log aggregation and search: VictoriaLogs, with Vector as the node collector.
+#
+# Chosen over Loki for the query experience. Loki indexes only labels, so
+# finding something means already knowing which labels narrow it — fine when
+# you know what you are looking for, poor at 2am when you do not. LogsQL is
+# much closer to "type the error string you saw".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: victoria-logs
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: core
+  source:
+    repoURL: 'https://victoriametrics.github.io/helm-charts/'
+    chart: victoria-logs-single
+    targetRevision: 0.13.9
+    helm:
+      values: |
+        server:
+          retentionPeriod: 30d
+          persistentVolume:
+            enabled: true
+            size: 20Gi
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              memory: 1Gi
+
+        # Vector runs as a DaemonSet, tails container logs on each node and
+        # ships them to VictoriaLogs. Shipped with this chart so collector and
+        # store stay version-matched.
+        vector:
+          enabled: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    managedNamespaceMetadata:
+      labels:
+        # Vector reads /var/log/pods on the host.
+        pod-security.kubernetes.io/enforce: privileged
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
