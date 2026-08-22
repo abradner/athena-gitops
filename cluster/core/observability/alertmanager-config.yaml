@@ -4,8 +4,26 @@
 # via `configSecret` in vm-stack-app.yaml; the key name alertmanager.yaml is
 # what the operator expects.
 #
-# Bot: @asn_web_bot (1P item "Telegram Bot", Tooling - Athena). chat-id is
-# the operator's private chat with it, discovered via getUpdates.
+# Bot: @asn_web_bot (1P item "Telegram Bot", Tooling - Athena).
+#
+# TWO CHANNELS, DELIBERATELY SEPARATE — the same bot serves both, but which
+# chat each posts to is configured in a different place, so they cannot
+# drift into one another:
+#
+#   ALERTS (this file)      -> the operator's DM with the bot.
+#                              chat id: the `chat-id` field on the 1P item.
+#                              Infrastructure. Things that should page.
+#
+#   NOTIFICATIONS (not here) -> the "AsN Web" group.
+#                              chat id: per-Property NotificationChannel rows
+#                              in crm's own database.
+#                              App events, e.g. contact-form submissions.
+#
+# The split exists so app notifications can be muted without also muting
+# "the cluster is down". Do not consolidate them without deciding that
+# trade-off deliberately. To move alerts to a dedicated group: create it, add
+# the bot, /start@asn_web_bot, then update ONLY the 1P chat-id field — no
+# manifest change is needed.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
