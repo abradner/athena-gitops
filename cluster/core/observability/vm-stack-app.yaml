@@ -126,6 +126,38 @@ spec:
           enabled: false
         kubeProxy:
           enabled: false
+
+        # --- rules that cannot be true here ----------------------------
+        #
+        # Disabling the scrape jobs above was only half the fix. The chart
+        # ships the *alerting rules* independently of the jobs, and those
+        # rules alert on the target being absent — so turning the job off is
+        # precisely what makes them fire. The result was two permanent
+        # CRITICALs claiming the scheduler and controller-manager were down
+        # while both were demonstrably running and holding their leases.
+        #
+        # Two false criticals are worse than no alerting at all: they are the
+        # loudest thing in the channel and they are always wrong, so the
+        # channel gets muted and a real critical goes unread.
+        defaultRules:
+          groups:
+            kubernetes-system-scheduler:
+              enabled: false
+            kubernetes-system-controller-manager:
+              enabled: false
+          rules:
+            # count:up0 counts targets that are DOWN. With everything healthy
+            # it returns no data — which is the desired state, and which this
+            # alert reports as a problem. Its canonical trigger is the cluster
+            # working correctly.
+            RecordingRulesNoData:
+              enabled: false
+            # Fires when vmagent emits a single log line above info level in
+            # five minutes. That is a log line, not an incident; the condition
+            # it is meant to hint at is already covered by TooManyScrapeErrors
+            # and TargetDown, which say what is actually wrong.
+            TooManyLogs:
+              enabled: false
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: observability

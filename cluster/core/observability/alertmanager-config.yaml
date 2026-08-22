@@ -57,6 +57,74 @@ spec:
               - receiver: blackhole
                 matchers:
                   - alertname = "Watchdog"
+
+              # InfoInhibitor exists to be matched by an inhibit_rule below,
+              # never to be read by a human. Its own description says it
+              # "should be routed to a null receiver" — it was not, so a
+              # paragraph of documentation about alert inhibition was arriving
+              # in Telegram as though it were an incident.
+              - receiver: blackhole
+                matchers:
+                  - alertname = "InfoInhibitor"
+
+              # Nothing at info severity is worth a phone buzz. It is still
+              # collected, still visible in Alertmanager and Grafana, and
+              # still available to the inhibit rules — it just does not
+              # interrupt anyone.
+              - receiver: blackhole
+                matchers:
+                  - severity = "info"
+
+              # Criticals repeat sooner. Everything else keeps the 4h default
+              # inherited from the root route.
+              - receiver: telegram
+                matchers:
+                  - severity = "critical"
+                group_wait: 15s
+                repeat_interval: 1h
+
+          # --- inhibition ------------------------------------------------
+          #
+          # One underlying fault produces many alerts. A control-plane node
+          # running out of memory fires KubePodCrashLooping, KubePodNotReady,
+          # KubeDeploymentReplicasMismatch, KubeDeploymentRolloutStuck and
+          # TargetDown — five names for one problem, each with its own
+          # firing and resolved message, from each of three nodes.
+          #
+          # These rules keep the most specific, most actionable alert and
+          # suppress the ones that are merely consequences of it. Suppressed
+          # alerts are still recorded; they just do not each get their own
+          # notification.
+          inhibit_rules:
+            # Severity ladder: a critical about a thing suppresses the
+            # warning about the same thing, and a warning suppresses the info.
+            - source_matchers: [severity = "critical"]
+              target_matchers: [severity = "warning"]
+              equal: [alertname, namespace]
+            - source_matchers: [severity = "warning"]
+              target_matchers: [severity = "info"]
+              equal: [alertname, namespace]
+
+            # The standard kube-prometheus pattern, which only works if
+            # InfoInhibitor is actually wired up: any warning or critical in a
+            # namespace suppresses the info-level chatter from that namespace.
+            - source_matchers: [alertname = "InfoInhibitor"]
+              target_matchers: [severity = "info"]
+              equal: [namespace]
+
+            # A node that is gone explains every pod on it. Without this, one
+            # node going away pages once per workload it was hosting.
+            - source_matchers: [alertname = "KubeNodeNotReady"]
+              target_matchers: [alertname =~ "KubePod.*|KubeDeployment.*|KubeStatefulSet.*|TargetDown"]
+              equal: [node]
+
+            # A crash-looping pod is by definition also a not-ready pod, and
+            # its Deployment is by definition also short of replicas and
+            # stuck rolling out. Report the cause, not the three symptoms.
+            - source_matchers: [alertname = "KubePodCrashLooping"]
+              target_matchers: [alertname =~ "KubePodNotReady|KubeDeploymentReplicasMismatch|KubeDeploymentRolloutStuck|TargetDown"]
+              equal: [namespace]
+
           receivers:
             - name: telegram
               telegram_configs:
@@ -64,10 +132,21 @@ spec:
                   chat_id: {{ .chatid }}
                   api_url: https://api.telegram.org
                   parse_mode: HTML
+                  # summary is one line; description is often several
+                  # paragraphs of upstream prose. Previously both were
+                  # concatenated with no separator, which is why alerts
+                  # arrived as walls of text. Lead with what and where, then
+                  # a clipped description for context.
+                  #
+                  # reReplaceAll, not truncate: Alertmanager's template engine
+                  # exposes only its own small function set, and truncate is
+                  # a sprig function that is not in it. (?s) is required or
+                  # the match stops at the first newline.
                   message: |
                     {{ "{{" }} range .Alerts {{ "}}" }}<b>{{ "{{" }} .Status | toUpper {{ "}}" }}</b> {{ "{{" }} .Labels.alertname {{ "}}" }}
-                    {{ "{{" }} if .Labels.namespace {{ "}}" }}ns: <code>{{ "{{" }} .Labels.namespace {{ "}}" }}</code>{{ "{{" }} end {{ "}}" }}
-                    {{ "{{" }} .Annotations.summary {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}
+                    {{ "{{" }} if .Labels.namespace {{ "}}" }}<code>{{ "{{" }} .Labels.namespace {{ "}}" }}{{ "{{" }} if .Labels.pod {{ "}}" }}/{{ "{{" }} .Labels.pod {{ "}}" }}{{ "{{" }} else if .Labels.node {{ "}}" }} on {{ "{{" }} .Labels.node {{ "}}" }}{{ "{{" }} end {{ "}}" }}</code>
+                    {{ "{{" }} end {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }}
+                    {{ "{{" }} if .Annotations.description {{ "}}" }}<i>{{ "{{" }} .Annotations.description | reReplaceAll "(?s)^(.{0,280}).*$" "$1" {{ "}}" }}</i>{{ "{{" }} end {{ "}}" }}
                     {{ "{{" }} end {{ "}}" }}
             - name: blackhole
   data:
