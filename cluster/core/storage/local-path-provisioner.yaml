@@ -5,6 +5,13 @@
 # Vendored rather than pulled as a chart so the exact bytes are reviewable
 # here and no new sourceRepo is needed in the `core` AppProject.
 #
+# Applied directly by the cluster-core Application, which syncs cluster/core
+# recursively — matching how headlamp's gateway and the networking manifests
+# are handled. There is deliberately no Application of its own: one pointing
+# at this same directory would make cluster-core and it co-own every
+# resource here, which Argo reports as a SharedResourceWarning and which
+# makes prune behaviour ambiguous.
+#
 # The cluster had NO storage provisioner at all before this — no
 # StorageClass, no CSI driver, no PVC anywhere — so nothing could keep state.
 #
