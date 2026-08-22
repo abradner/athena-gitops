@@ -11,7 +11,17 @@ metadata:
   name: counta-web
   namespace: asn-staging
 spec:
-  replicas: 1
+  # ON ICE. counta hardcodes config.hosts = [ "counta.click" ] in
+  # production.rb, and this image runs RAILS_ENV=production in both cluster
+  # environments, so staging rejects its own hostname outright:
+  #   Blocked hosts: staging.counta.click
+  # It can pass a health probe (which now sends an allowed Host) but cannot
+  # serve a single real request, so running it proves nothing and just burns
+  # a Postgres connection on a server at its 100-connection ceiling.
+  #
+  # Unpark when counta makes config.hosts configurable — an app-repo change.
+  # Until then staging.counta.click stays out of HAProxy's cutover list.
+  replicas: 0
   selector:
     matchLabels:
       app: counta-web
