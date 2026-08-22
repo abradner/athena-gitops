@@ -27,3 +27,13 @@ data:
   SOLID_QUEUE_IN_PUMA: "true"
   TEMPORAL_HOST_PORT: temporal-frontend.spritz-production.svc.cluster.local:7233
   TEMPORAL_NAMESPACE: spritz
+  MAILER_HOST: rabalex.wedding
+  SPRITZ_EXTENSION_ORIGIN: "chrome-extension://blfnegpghkfldopcpnjngjfjnaflobhe"
+  # WhatsApp is OFF in the cluster for now. config/initializers/whatsapp.rb
+  # fail-fasts on WHATSAPP_ACCESS_TOKEN unless this is false, and those
+  # tokens are not in the spritz-* 1Password items yet. Production already
+  # ran with it false on the VM; STAGING DID NOT — staging genuinely uses
+  # WhatsApp, so this is a temporary reduction there, not parity. Restore by
+  # adding the tokens to 1Password and the ExternalSecret, then flipping to
+  # true.
+  WHATSAPP_ENABLED: "false"
