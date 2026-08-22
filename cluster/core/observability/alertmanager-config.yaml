@@ -1,0 +1,61 @@
+---
+# Alertmanager's whole config, rendered by ESO so the Telegram bot token
+# never appears in git. The VM operator points VMAlertmanager at this Secret
+# via `configSecret` in vm-stack-app.yaml; the key name alertmanager.yaml is
+# what the operator expects.
+#
+# Bot: @asn_web_bot (1P item "Telegram Bot", Tooling - Athena). chat-id is
+# the operator's private chat with it, discovered via getUpdates.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: vmalertmanager-athena-config
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: vmalertmanager-athena-config
+    template:
+      data:
+        alertmanager.yaml: |
+          route:
+            receiver: telegram
+            group_by: [alertname, namespace]
+            group_wait: 30s
+            group_interval: 5m
+            # Re-notify on still-firing alerts every 4h — enough to not be
+            # forgotten, not enough to train muting the chat.
+            repeat_interval: 4h
+            routes:
+              # Watchdog fires ALWAYS, by design — it proves the pipeline is
+              # alive. It must never reach Telegram (permanent noise) but must
+              # not be dropped at the source either: the external dead-man's
+              # switch on pi400 is what notices when it STOPS firing.
+              - receiver: blackhole
+                matchers:
+                  - alertname = "Watchdog"
+          receivers:
+            - name: telegram
+              telegram_configs:
+                - bot_token: "{{ .token }}"
+                  chat_id: {{ .chatid }}
+                  api_url: https://api.telegram.org
+                  parse_mode: HTML
+                  message: |
+                    {{ "{{" }} range .Alerts {{ "}}" }}<b>{{ "{{" }} .Status | toUpper {{ "}}" }}</b> {{ "{{" }} .Labels.alertname {{ "}}" }}
+                    {{ "{{" }} if .Labels.namespace {{ "}}" }}ns: <code>{{ "{{" }} .Labels.namespace {{ "}}" }}</code>{{ "{{" }} end {{ "}}" }}
+                    {{ "{{" }} .Annotations.summary {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}
+                    {{ "{{" }} end {{ "}}" }}
+            - name: blackhole
+  data:
+    - secretKey: token
+      remoteRef:
+        key: "Telegram Bot/credential"
+    - secretKey: chatid
+      remoteRef:
+        key: "Telegram Bot/chat-id"

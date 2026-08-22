@@ -63,6 +63,10 @@ spec:
 
         alertmanager:
           spec:
+            # Full config comes from the ESO-rendered Secret
+            # (alertmanager-config.yaml) so the Telegram token stays out of
+            # git. The operator expects the key alertmanager.yaml inside it.
+            configSecret: vmalertmanager-athena-config
             resources:
               requests:
                 cpu: 25m
