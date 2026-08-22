@@ -1,0 +1,40 @@
+---
+# Grafana — the single pane. Reachable only from the LAN: the
+# *.athena.asn.casa listener is src-gated at HAProxy, which is the only thing
+# in front of these UIs (none of them authenticate to the outside world, and
+# Grafana's own login is the last line rather than the first).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana-ui
+  namespace: observability
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-athena
+  hostnames:
+    - "grafana.athena.asn.casa"
+  rules:
+    - backendRefs:
+        - name: victoria-metrics-stack-grafana
+          port: 80
+---
+# VictoriaLogs' own UI. Grafana can query it as a datasource, but vlogs'
+# native UI is faster for open-ended searching, which is what it is for.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: victoria-logs-ui
+  namespace: observability
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-athena
+  hostnames:
+    - "logs.athena.asn.casa"
+  rules:
+    - backendRefs:
+        - name: victoria-logs-single-server
+          port: 9428

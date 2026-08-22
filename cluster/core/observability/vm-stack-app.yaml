@@ -1,0 +1,138 @@
+---
+# Metrics, dashboards and alert rules: victoria-metrics-k8s-stack.
+#
+# This is the VictoriaMetrics equivalent of kube-prometheus-stack — vmsingle
+# (storage), vmagent (scraping), vmalert (rules), Alertmanager, Grafana and a
+# set of Kubernetes dashboards, from one chart.
+#
+# Chosen over Prometheus for the hardware: roughly a third of the RAM and
+# disk for the same data on Pi 5 workers. It costs nothing in ecosystem —
+# VictoriaMetrics speaks PromQL (MetricsQL is a superset) and scrapes
+# Prometheus-format targets, so existing exporters and Grafana dashboards
+# work unchanged.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: victoria-metrics-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: core
+  source:
+    repoURL: 'https://victoriametrics.github.io/helm-charts/'
+    chart: victoria-metrics-k8s-stack
+    targetRevision: 0.91.1
+    helm:
+      values: |
+        # --- storage ---------------------------------------------------
+        vmsingle:
+          spec:
+            # 30 days is a deliberate ceiling, not a default: this writes to
+            # a node-local volume, and the node has finite disk.
+            retentionPeriod: "30d"
+            storage:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 20Gi
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                memory: 2Gi
+
+        # --- scraping --------------------------------------------------
+        vmagent:
+          spec:
+            resources:
+              requests:
+                cpu: 50m
+                memory: 192Mi
+              limits:
+                memory: 512Mi
+
+        # --- rules + alerting ------------------------------------------
+        vmalert:
+          spec:
+            resources:
+              requests:
+                cpu: 25m
+                memory: 128Mi
+              limits:
+                memory: 384Mi
+
+        alertmanager:
+          spec:
+            resources:
+              requests:
+                cpu: 25m
+                memory: 96Mi
+              limits:
+                memory: 256Mi
+
+        # --- Grafana ---------------------------------------------------
+        grafana:
+          enabled: true
+          # Credentials come from 1Password via ESO. The chart's default is a
+          # well-known password; leaving that on an admin UI reachable from
+          # the LAN would be the weakest link in the whole cluster.
+          admin:
+            existingSecret: grafana-admin
+            userKey: admin-user
+            passwordKey: admin-password
+          persistence:
+            enabled: true
+            size: 2Gi
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 512Mi
+          # VictoriaLogs is deployed separately (victoria-logs-app.yaml); wire
+          # it in here so one Grafana covers both metrics and logs.
+          plugins:
+            - victoriametrics-logs-datasource
+          additionalDataSources:
+            - name: VictoriaLogs
+              type: victoriametrics-logs-datasource
+              url: http://victoria-logs-single-server.observability.svc.cluster.local:9428
+              access: proxy
+
+        # --- Talos: these control-plane components are not scrapable -----
+        # Talos does not expose kube-controller-manager, kube-scheduler or
+        # etcd metrics on the addresses these jobs assume, and it runs no
+        # kube-proxy at all (Cilium replaces it). Left enabled they produce
+        # permanently-firing "target down" alerts, which trains you to ignore
+        # alerts — the opposite of the point.
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    managedNamespaceMetadata:
+      labels:
+        # node-exporter needs host mounts and hostPID, which Talos' Pod
+        # Security Admission forbids under baseline/restricted.
+        pod-security.kubernetes.io/enforce: privileged
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
