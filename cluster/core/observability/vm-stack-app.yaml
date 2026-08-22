@@ -23,6 +23,15 @@ spec:
     targetRevision: 0.91.1
     helm:
       values: |
+        # Short name, and load-bearing: the operator generates resources named
+        # vmalertmanager-<release>-<chart>, and with the default
+        # victoria-metrics-stack release that is 65 characters — over the
+        # Kubernetes 63-char name limit. Alertmanager silently failed to
+        # deploy at all (Service rejected, operator retrying forever).
+        # Applies only to the VM operator's own resources; the Grafana
+        # subchart keeps its victoria-metrics-stack-grafana name, so the
+        # grafana-ui route is unaffected.
+        fullnameOverride: vmk8s
         # --- storage ---------------------------------------------------
         vmsingle:
           spec:
