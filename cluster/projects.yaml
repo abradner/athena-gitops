@@ -34,6 +34,15 @@ spec:
       namespace: cert-manager
     - server: 'https://kubernetes.default.svc'
       namespace: default
+    # Storage provisioner. Without this entry Argo rejects every resource
+    # bound for the namespace as invalid — the sync reports "one or more
+    # synchronization tasks are not valid", which reads like a manifest
+    # problem rather than a project-scope one.
+    - server: 'https://kubernetes.default.svc'
+      namespace: local-path-storage
+    # Observability stack (VictoriaMetrics, VictoriaLogs, Grafana).
+    - server: 'https://kubernetes.default.svc'
+      namespace: observability
   # Core installs CRDs, webhooks, RBAC, APIServices — cluster scope required.
   clusterResourceWhitelist:
     - group: '*'
