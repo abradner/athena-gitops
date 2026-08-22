@@ -158,6 +158,23 @@ spec:
             # and TargetDown, which say what is actually wrong.
             TooManyLogs:
               enabled: false
+            # Kept, but slowed down. The rule reads a histogram
+            # (apiserver_client_certificate_expiration_seconds_bucket) that
+            # RESETS when kube-apiserver restarts. For the first few minutes
+            # afterwards the quantile lands in the lowest bucket, so the rule
+            # reports every client certificate as expiring within 24 hours.
+            #
+            # Observed 2026-08-22: rolling all three apiservers produced an
+            # immediate CRITICAL while the actual certificates — kubelet
+            # client, apiserver serving, front-proxy and the admin kubeconfig
+            # — all expire in mid-2027. It cleared by itself in about twelve
+            # minutes.
+            #
+            # 30m outlasts the histogram refilling while still leaving most of
+            # a day to act on a certificate that really is about to expire.
+            KubeClientCertificateExpiration:
+              spec:
+                for: 30m
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: observability
