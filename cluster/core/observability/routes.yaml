@@ -8,6 +8,14 @@ kind: HTTPRoute
 metadata:
   name: grafana-ui
   namespace: observability
+  annotations:
+    # Wave 3, AFTER the victoria Applications (wave 0): a route is only
+    # healthy once its backend Service exists, and Argo will not advance
+    # past an unhealthy wave. With routes ahead of the Applications the sync
+    # deadlocks — routes wait for Services, Services wait for Applications,
+    # Applications wait for the routes' wave. Same class of bug as the
+    # Gateway/certificates ordering fixed in #11.
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   parentRefs:
     - name: homelab-gateway
@@ -27,6 +35,8 @@ kind: HTTPRoute
 metadata:
   name: victoria-logs-ui
   namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   parentRefs:
     - name: homelab-gateway

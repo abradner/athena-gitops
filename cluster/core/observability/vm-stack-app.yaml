@@ -15,8 +15,6 @@ kind: Application
 metadata:
   name: victoria-metrics-stack
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: core
   source:
