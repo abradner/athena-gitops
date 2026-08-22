@@ -46,5 +46,9 @@ spec:
     - "logs.athena.asn.casa"
   rules:
     - backendRefs:
-        - name: victoria-logs-single-server
+        # Release name + chart name: the chart prefixes its resources, so the
+        # Service is victoria-logs-victoria-logs-single-server, not the bare
+        # chart name. The wrong name here surfaces as HTTP 500 from the
+        # Gateway with the app itself perfectly healthy.
+        - name: victoria-logs-victoria-logs-single-server
           port: 9428
