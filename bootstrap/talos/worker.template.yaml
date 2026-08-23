@@ -193,7 +193,12 @@ machine:
 
     # Used to provide instructions for installations.
     install:
-        disk: /dev/sda # The disk used for installations.
+        # /dev/mmcblk0, not /dev/sda. The workers are Pi 5s and have no sda at all —
+        # only the 31 GB SD card (mmcblk0) and an unused 14 GB Optane (nvme0n1).
+        # The control-plane template keeps /dev/sda because those nodes are VMs
+        # and it is correct for them. Verified against the live config on
+        # 10.10.80.114 (mmcblk0) and 10.10.80.150 (sda), 2026-08-23.
+        disk: /dev/mmcblk0 # The disk used for installations.
         image: ghcr.io/siderolabs/installer:v1.13.4 # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
         grubUseUKICmdline: true # Indicates if legacy GRUB bootloader should use kernel cmdline from the UKI instead of building it on the host.
