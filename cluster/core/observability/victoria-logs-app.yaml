@@ -35,6 +35,36 @@ spec:
         # store stay version-matched.
         vector:
           enabled: true
+          # DUAL-SHIP for the observability move: alongside the chart's own
+          # in-cluster sink, add a second sink pointing at the out-of-cluster
+          # store on pve. Same parser input, same field mapping. Once
+          # obs-logs has run clean for a few days the in-cluster store is
+          # disabled and this becomes the only sink.
+          customConfig:
+            sinks:
+              vlogs-external:
+                type: elasticsearch
+                api_version: v8
+                compression: gzip
+                endpoints:
+                  - http://obs-logs.infra.asn.casa:9428/insert/elasticsearch
+                healthcheck:
+                  enabled: false
+                inputs:
+                  - parser
+                mode: bulk
+                # Buffer to disk while the CT is briefly away.
+                buffer:
+                  type: disk
+                  max_size: 268435488
+                  when_full: block
+                request:
+                  headers:
+                    AccountID: "0"
+                    ProjectID: "0"
+                    VL-Msg-Field: message,msg,_msg,log.msg,log.message,log
+                    VL-Stream-Fields: stream,kubernetes.pod_name,kubernetes.container_name,kubernetes.pod_namespace
+                    VL-Time-Field: timestamp
           # Vector must run on the control-plane nodes too: without this
           # toleration the DaemonSet covers only the 4 workers, so apiserver,
           # scheduler and controller-manager logs were never collected — the
