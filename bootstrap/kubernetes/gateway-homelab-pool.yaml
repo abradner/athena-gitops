@@ -12,6 +12,16 @@ metadata:
   name: default-l2-policy
 spec:
   interfaces:
-  - enp0s11 # Ensure this matches the primary interface name on your Talos nodes
+  # BOTH are required. The control-plane VMs are Proxmox guests and name their
+  # NIC enp0s11; the four Pi 5 workers name theirs end0. Listing only enp0s11
+  # meant announcement silently stopped whenever the L2 lease moved to a worker:
+  # the lease is still held and renewed, cilium reports healthy, and nothing
+  # answers ARP for the LB IP.
+  #
+  # It hid for a long time because ARP caches. Hosts that had already resolved
+  # 10.10.80.240 kept working until their entry aged out, so the cluster looked
+  # reachable for hours after it had stopped announcing.
+  - enp0s11
+  - end0
   externalIPs: true
   loadBalancerIPs: true
