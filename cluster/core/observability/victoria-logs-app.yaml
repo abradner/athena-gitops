@@ -47,7 +47,7 @@ spec:
                 api_version: v8
                 compression: gzip
                 endpoints:
-                  - http://obs-logs.asn.casa:9428/insert/elasticsearch
+                  - http://obs-logs.infra.asn.casa:9428/insert/elasticsearch
                 healthcheck:
                   enabled: false
                 inputs:

@@ -60,7 +60,7 @@ spec:
             # disabled and the first URL is removed.
             remoteWrite:
               - url: http://vmsingle-vmk8s.observability.svc.cluster.local.:8428/api/v1/write
-              - url: http://obs-metrics.asn.casa:8428/api/v1/write
+              - url: http://obs-metrics.infra.asn.casa:8428/api/v1/write
             # Survive the remote target being briefly away (CT reboot):
             # buffer to disk instead of dropping samples.
             statefulMode: true
