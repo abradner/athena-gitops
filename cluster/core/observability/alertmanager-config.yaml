@@ -46,9 +46,18 @@ spec:
             group_by: [alertname, namespace]
             group_wait: 30s
             group_interval: 5m
-            # Re-notify on still-firing alerts every 4h — enough to not be
-            # forgotten, not enough to train muting the chat.
-            repeat_interval: 4h
+            # Re-notify on still-firing alerts every 12h.
+            #
+            # Was 4h. Overnight on 2026-08-22 that turned a single unresolved
+            # problem — metrics-server's second ReplicaSet — into six messages
+            # between 01:34 and 10:29, because it produces two alerts and each
+            # was repeated three times. Nothing new was learned after the first
+            # pair, and that is exactly how a chat gets muted.
+            #
+            # Critical keeps its own 1h below: for those, being pestered IS the
+            # point. This is the interval for warnings, where the first message
+            # has already told you everything.
+            repeat_interval: 12h
             routes:
               # Watchdog fires ALWAYS, by design — it proves the pipeline is
               # alive. It must never reach Telegram (permanent noise) but must
@@ -132,6 +141,15 @@ spec:
                   chat_id: {{ .chatid }}
                   api_url: https://api.telegram.org
                   parse_mode: HTML
+                  # Subject line prefers deployment/statefulset/daemonset
+                  # over pod. Workload alerts carry BOTH: `deployment` is what
+                  # the alert is about, while `pod` is whichever kube-state-
+                  # metrics pod exported the series. Leading with `pod` sent
+                  # KubeDeploymentRolloutStuck out titled
+                  # "kube-system/victoria-metrics-stack-kube-state-metrics-..."
+                  # for a problem in metrics-server — the wrong place to start
+                  # looking at 2am.
+                  #
                   # summary is one line; description is often several
                   # paragraphs of upstream prose. Previously both were
                   # concatenated with no separator, which is why alerts
@@ -144,7 +162,7 @@ spec:
                   # the match stops at the first newline.
                   message: |
                     {{ "{{" }} range .Alerts {{ "}}" }}<b>{{ "{{" }} .Status | toUpper {{ "}}" }}</b> {{ "{{" }} .Labels.alertname {{ "}}" }}
-                    {{ "{{" }} if .Labels.namespace {{ "}}" }}<code>{{ "{{" }} .Labels.namespace {{ "}}" }}{{ "{{" }} if .Labels.pod {{ "}}" }}/{{ "{{" }} .Labels.pod {{ "}}" }}{{ "{{" }} else if .Labels.node {{ "}}" }} on {{ "{{" }} .Labels.node {{ "}}" }}{{ "{{" }} end {{ "}}" }}</code>
+                    {{ "{{" }} if .Labels.namespace {{ "}}" }}<code>{{ "{{" }} .Labels.namespace {{ "}}" }}{{ "{{" }} if .Labels.deployment {{ "}}" }}/{{ "{{" }} .Labels.deployment {{ "}}" }}{{ "{{" }} else if .Labels.statefulset {{ "}}" }}/{{ "{{" }} .Labels.statefulset {{ "}}" }}{{ "{{" }} else if .Labels.daemonset {{ "}}" }}/{{ "{{" }} .Labels.daemonset {{ "}}" }}{{ "{{" }} else if .Labels.pod {{ "}}" }}/{{ "{{" }} .Labels.pod {{ "}}" }}{{ "{{" }} else if .Labels.node {{ "}}" }} on {{ "{{" }} .Labels.node {{ "}}" }}{{ "{{" }} end {{ "}}" }}</code>
                     {{ "{{" }} end {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }}
                     {{ "{{" }} if .Annotations.description {{ "}}" }}<i>{{ "{{" }} .Annotations.description | reReplaceAll "(?s)^(.{0,280}).*$" "$1" {{ "}}" }}</i>{{ "{{" }} end {{ "}}" }}
                     {{ "{{" }} end {{ "}}" }}
