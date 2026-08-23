@@ -35,6 +35,14 @@ spec:
         # store stay version-matched.
         vector:
           enabled: true
+          # Vector must run on the control-plane nodes too: without this
+          # toleration the DaemonSet covers only the 4 workers, so apiserver,
+          # scheduler and controller-manager logs were never collected — the
+          # exact logs you want when the control plane is misbehaving.
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
           resources:
             requests:
               cpu: 50m
