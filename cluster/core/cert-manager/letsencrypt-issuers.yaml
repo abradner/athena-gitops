@@ -13,10 +13,14 @@
 # the same selector; a zone from a third account needs a third solver and
 # token.
 #
-# The token behind cloudflare-api-token-simplytics must therefore carry
-# Zone:Zone:Read + Zone:DNS:Edit on BOTH zones. A token scoped to
-# simplytics.ai alone will leave every spritz.events order stuck in
-# propagation-check with no error naming the token as the cause.
+# The token behind cloudflare-api-token-simplytics is account-wide DNS Write
+# on that account, so it already covers both zones; adding a zone here needs
+# no token change. A token scoped to one zone would instead fail as
+# "Found no Zones for domain _acme-challenge.<host>" — which names Zone.read
+# rights, not the selector, and sends you looking in the wrong place.
+#
+# Certificates issued by this solver must sit in a sync wave AFTER this file
+# (see the note on inbox-simplytics-ai-tls in ../networking/certificates.yaml).
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
