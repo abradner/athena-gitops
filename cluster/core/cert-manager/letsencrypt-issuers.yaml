@@ -6,11 +6,17 @@
 # The Cloudflare API token arrives via ESO (cloudflare-api-token secret in
 # the cert-manager namespace, where ClusterIssuers resolve solver secrets).
 #
-# simplytics.ai (inbox.simplytics.ai, crm) is in a *different* Cloudflare
-# account, so it gets its own solver, selected by dnsZones, with its own
-# token — cert-manager picks the solver by most-specific zone match. Add
-# further zones from that account to the same selector; a zone from a third
-# account needs a third solver and token.
+# simplytics.ai (inbox.simplytics.ai, crm) and spritz.events (the marketing
+# site) are in a *different* Cloudflare account, so they share a second
+# solver, selected by dnsZones, with its own token — cert-manager picks the
+# solver by most-specific zone match. Add further zones from that account to
+# the same selector; a zone from a third account needs a third solver and
+# token.
+#
+# The token behind cloudflare-api-token-simplytics must therefore carry
+# Zone:Zone:Read + Zone:DNS:Edit on BOTH zones. A token scoped to
+# simplytics.ai alone will leave every spritz.events order stuck in
+# propagation-check with no error naming the token as the cause.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -30,13 +36,16 @@ spec:
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token
-      # simplytics.ai is in a different Cloudflare account, so it needs its
-      # own token. cert-manager picks the most specific matching solver:
-      # this one claims simplytics.ai, the unselected solver above stays the
-      # catch-all for the personal-account zones.
+      # simplytics.ai and spritz.events are in a different Cloudflare account,
+      # so they need their own token. cert-manager picks the most specific
+      # matching solver: this one claims those two zones (and their
+      # subdomains — staging.spritz.events matches the spritz.events entry),
+      # the unselected solver above stays the catch-all for the
+      # personal-account zones.
       - selector:
           dnsZones:
             - "simplytics.ai"
+            - "spritz.events"
         dns01:
           cloudflare:
             apiTokenSecretRef:
@@ -62,13 +71,16 @@ spec:
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token
-      # simplytics.ai is in a different Cloudflare account, so it needs its
-      # own token. cert-manager picks the most specific matching solver:
-      # this one claims simplytics.ai, the unselected solver above stays the
-      # catch-all for the personal-account zones.
+      # simplytics.ai and spritz.events are in a different Cloudflare account,
+      # so they need their own token. cert-manager picks the most specific
+      # matching solver: this one claims those two zones (and their
+      # subdomains — staging.spritz.events matches the spritz.events entry),
+      # the unselected solver above stays the catch-all for the
+      # personal-account zones.
       - selector:
           dnsZones:
             - "simplytics.ai"
+            - "spritz.events"
         dns01:
           cloudflare:
             apiTokenSecretRef:

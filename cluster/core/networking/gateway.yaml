@@ -149,3 +149,29 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: inbox-simplytics-ai-tls
+  # spritz.events — the marketing site, plus /api/* which routes back to the
+  # Rails app in spritz-production (see the HTTPRoute in
+  # cluster/apps/spritz-production/marketing). Same-account caveat as
+  # inbox.simplytics.ai above: matters to cert-manager, not to the Gateway.
+  - name: https-spritz-events
+    port: 443
+    protocol: HTTPS
+    hostname: "spritz.events"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: spritz-events-tls
+  - name: https-spritz-events-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.spritz.events"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-spritz-events-tls

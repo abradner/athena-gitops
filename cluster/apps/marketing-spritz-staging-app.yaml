@@ -1,0 +1,31 @@
+---
+# spritz marketing site (staging) — staging.spritz.events. Static Astro/Caddy image, plus
+# the HTTPRoute that splits staging.spritz.events between it and the Rails app in
+# ../spritz-staging/spritz. Separate Application from spritz-staging so the
+# marketing site can be rolled without touching the app.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: marketing-spritz-staging
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-staging/marketing
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

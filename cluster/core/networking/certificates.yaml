@@ -177,3 +177,40 @@ spec:
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod
+---
+# spritz.events — the marketing site. Its zone lives in the simplytics
+# Cloudflare account, not the personal one, so issuance depends on the
+# second DNS-01 solver in letsencrypt-issuers.yaml. If this Certificate sits
+# in propagation-check forever, suspect the token's zone scope before the
+# manifest.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spritz-events-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: spritz-events-tls
+  dnsNames:
+    - "spritz.events"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: staging-spritz-events-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: staging-spritz-events-tls
+  dnsNames:
+    - "staging.spritz.events"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
