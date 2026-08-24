@@ -74,14 +74,39 @@ psql "$SOURCE_URL" -Atc "select client_addr, application_name from pg_stat_activ
   where datname = '<db>' and pid <> pg_backend_pid()"
 ```
 
-**Target (the cluster).** Scale both deployments to zero — see the precondition
-above for why a running Temporal worker is enough to corrupt the load:
+**Target (the cluster).** Scaling to zero is **not enough on its own.** Git
+declares `replicas: 1` and the Application has `selfHeal: true`, so Argo
+restores the pods within a reconcile cycle — during the dump or the load, which
+is the exact race this step exists to prevent.
+
+Suspend reconciliation first, and the **parent** Application too: the parent
+manages this Application's spec and also self-heals, so disabling automated sync
+on the child alone gets reverted.
 
 ```bash
+# 1. suspend the parent, then the app's own Application
+kubectl -n argocd patch application <parent-app> --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":null}}}'
+kubectl -n argocd patch application <app>-<env> --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":null}}}'
+
+# 2. now scale down
 kubectl -n <ns> scale deploy/<app>-web deploy/<app>-temporal-worker --replicas=0
 ```
 
-Step 8 brings them back.
+**Verify it stays down** rather than assuming — wait past one reconcile cycle,
+then confirm both the replica count and that no sessions remain:
+
+```bash
+sleep 90
+kubectl -n <ns> get deploy <app>-web <app>-temporal-worker \
+  -o jsonpath='{range .items[*]}{.metadata.name}={.status.replicas}{"\n"}{end}'   # both empty/0
+psql "$TARGET_URL" -Atc "select count(*) from pg_stat_activity
+  where datname = current_database() and pid <> pg_backend_pid()"                 # expect 0
+```
+
+If either check is non-zero, stop — something is still reconciling and the load
+would race it. Step 8 scales back up and restores both `syncPolicy` blocks.
 
 ## 1. Confirm what the source actually holds
 
@@ -184,8 +209,15 @@ Abort unless both match what you intend. Then take a rollback dump of the
 target as it stands — cheap, and the only way back:
 
 ```bash
-pg_dump "$TARGET_URL" -f db/dumps/rollback-<db>-$(date +%F-%H%M).sql
+ROLLBACK="db/dumps/rollback-<db>-$(date +%F-%H%M).sql"
+pg_dump "$TARGET_URL" -f "$ROLLBACK" || die "rollback dump failed — stop here"
+grep -q "PostgreSQL database dump complete" "$ROLLBACK" || die "rollback dump truncated"
+echo "rollback point: $ROLLBACK ($(du -h "$ROLLBACK" | cut -f1))"
 ```
+
+Validate it with the same rigour as the source dump. It is described as the only
+way back, so a partial file — a full disk, a dropped connection — must stop the
+run *before* step 6, not be discovered after.
 
 ## 6. Load
 
@@ -193,16 +225,37 @@ Drop **every** schema, not just `public`. The staging target carried a
 `public_legacy` schema the source did not have; left in place it would have
 lingered forever.
 
+**Build the load file first, then load it.** Do not stream a filter straight
+into `psql`:
+
 ```bash
 SCHEMAS=$(psql "$TARGET_URL" -Atc \
   "select nspname from pg_namespace where nspname not like 'pg\_%' and nspname <> 'information_schema'")
+
+LOAD=$(mktemp)
 {
-  while IFS= read -r s; do [ -n "$s" ] && echo "DROP SCHEMA IF EXISTS \"$s\" CASCADE;"; done <<< "$SCHEMAS"
+  while IFS= read -r sch; do [ -n "$sch" ] && echo "DROP SCHEMA IF EXISTS \"$sch\" CASCADE;"; done <<< "$SCHEMAS"
   echo "CREATE SCHEMA public AUTHORIZATION \"<role>\";"
-  "${strip_filter[@]}" "$DUMP"
-} | psql "$TARGET_URL" -v ON_ERROR_STOP=1 --single-transaction -q -o /dev/null
-echo "exit=$?"
+  "${strip_filter[@]}" "$DUMP" || exit 1
+} > "$LOAD" || die "could not build the load file"
+
+# the filtered result must still look like the dump it came from
+grep -q "PostgreSQL database dump complete" "$LOAD" || die "filtered dump is truncated"
+[ "$(grep -cE '^(INSERT INTO|COPY) ' "$LOAD")" -gt 0 ] || die "filtered dump carries no data"
+
+psql "$TARGET_URL" -v ON_ERROR_STOP=1 --single-transaction -q -o /dev/null -f "$LOAD" \
+  || die "load failed and was rolled back — target unchanged"
+rm -f "$LOAD"
 ```
+
+> **Why not a pipe.** If the filter cannot read the dump, or exits on an invalid
+> regex, the braces still emit the `DROP`/`CREATE` statements. `psql` reads them,
+> hits EOF, commits, and **returns 0** — the shell does not propagate a
+> producer's failure, and `--single-transaction` only reacts to *SQL* errors, not
+> to its input ending early. The result is a committed, empty database reported
+> as a successful load. Materialising the file makes the failure visible before
+> any transaction opens, and the two checks above catch a filter that silently
+> produced less than it should.
 
 where `strip_filter` is chosen explicitly, **never** left to an unset variable:
 
@@ -454,22 +507,46 @@ only then promoted.
 Before cutover: restore the step-5 rollback dump over the target using the
 same step-6 procedure.
 
-After cutover, **order matters**. The freeze in step 0a stopped the LXC's
-application services, so reverting HAProxy first would route live traffic at a
-stopped Puma and turn a rollback into an outage:
+After cutover, rolling back is **not** simply the cutover in reverse, and two
+things make it worse than it looks.
+
+**First, decide what happens to writes the cluster has already accepted.** They
+exist only in the target database; the frozen source has never seen them.
+Rolling back discards them unless they are migrated the other way. Count them
+before deciding — that number, not a preference, should drive the choice:
 
 ```bash
-# 1. bring the legacy app back up FIRST
+psql "$TARGET_URL" -Atc "select count(*) from <table_a> where created_at > '<cutover-time>'"
+```
+
+If it is zero, roll back freely. If it is not, either accept the loss
+explicitly, or dump the target and reconcile into the source first. There is no
+third option that keeps both.
+
+**Second, order the steps so the two applications are never live together.**
+Starting the legacy writers while the cluster still serves traffic gives two
+apps writing two databases behind one hostname:
+
+```bash
+# 1. freeze the TARGET first — otherwise both sides accept writes
+kubectl -n <ns> scale deploy/<app>-web deploy/<app>-temporal-worker --replicas=0
+# (suspend the Applications as in step 0a, or selfHeal restores them)
+
+# 2. bring the legacy app back up
 ssh root@<lxc-host> 'systemctl start <app> <app>-temporal-worker'
 ssh root@<lxc-host> 'systemctl is-active <app> <app>-temporal-worker'
 
-# 2. confirm it actually serves, before any traffic depends on it
+# 3. confirm it actually serves, before any traffic depends on it
 curl -sS -o /dev/null -w '%{http_code}\n' http://<lxc-ip>:3000/up
 
-# 3. only then put traffic back
+# 4. only then put traffic back
 ssh root@<edge-proxy-host> 'cp /etc/haproxy/haproxy.cfg.bak-<stamp> /etc/haproxy/haproxy.cfg \
   && haproxy -c -f /etc/haproxy/haproxy.cfg && systemctl reload haproxy'
 ```
+
+Steps 1–3 are a brief outage. That is the correct trade: a rollback that serves
+nothing for thirty seconds beats one that splits writes across two databases and
+has to be untangled afterwards.
 
 The source database on <legacy-db-host> is never modified by this runbook, so it
 still holds the frozen data — that is what makes rollback cheap. But it is only
