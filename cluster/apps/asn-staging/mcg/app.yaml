@@ -8,14 +8,12 @@ metadata:
   name: mcg-web
   namespace: asn-staging
 spec:
-  # 0 until the RAILS_MASTER_KEY question is settled. The pod fails at
-  # db:prepare with:
-  #   ActiveSupport::MessageEncryptor::InvalidMessage: AEAD authentication
-  #   tag verification failed
-  # i.e. the key in mcg-staging does not decrypt the credentials baked into
-  # the image. The key was taken from a local checkout that is behind the
-  # commit the image was built from, so they may simply have diverged.
-  replicas: 0
+  # Unparked 2026-08-25: the RAILS_MASTER_KEY question is settled. The key
+  # was right all along (staging and production secrets hold the identical
+  # key); the image's credentials.yml.enc was the stale half — fixed by
+  # mcg#8 and the sha-40c65c8 image bump. Production came Ready first try
+  # on the same image + key.
+  replicas: 1
   selector:
     matchLabels:
       app: mcg-web
