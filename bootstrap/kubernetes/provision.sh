@@ -7,7 +7,7 @@ GATEWAY_API_VERSION="v1.2.1" # later versions break cilium 1.19 due to naming ch
 CILIUM_VERSION="1.19.4"
 # Keep in sync with cluster/core/argocd/argocd-app.yaml — that Application
 # adopts this release once the root app syncs.
-ARGOCD_CHART_VERSION="7.6.12"
+ARGOCD_CHART_VERSION="9.5.21"
 
 # Install gateway-api
 
