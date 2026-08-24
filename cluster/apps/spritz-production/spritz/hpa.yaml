@@ -1,0 +1,56 @@
+---
+# Horizontal autoscaling for spritz web (production only — staging has no
+# traffic to justify it and is left at a fixed single replica).
+#
+# CPU, deliberately, not memory. Ruby does not return freed heap to the OS, so
+# a memory-target HPA on a Rails app ratchets upward and never scales back
+# down: the first traffic spike becomes the permanent replica count. CPU falls
+# when load falls, which is the behaviour an autoscaler needs.
+#
+# Note this does NOT address the OOMKills that prompted the limit increase.
+# Those are a single pod exceeding its own ceiling; adding pods does not lower
+# any one pod's memory. The limit change is what fixes that — this is for
+# traffic capacity and for surviving the loss of a node.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: spritz-web
+  namespace: spritz-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: spritz-web
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Against the 100m request. Steady state is ~22m total, so this sits
+          # at the floor of 2 and only moves under real load.
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # React quickly to load, but not to a single scrape.
+      stabilizationWindowSeconds: 60
+    scaleDown:
+      # Slow. Each new pod runs db:prepare on boot and warms a fresh Ruby
+      # heap, so churning replicas is expensive and user-visible.
+      stabilizationWindowSeconds: 600
+---
+# With minReplicas 2 the point is surviving a node going away. Without a PDB a
+# drain can evict both replicas at once and take the site down during routine
+# maintenance.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: spritz-web
+  namespace: spritz-production
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: spritz-web
