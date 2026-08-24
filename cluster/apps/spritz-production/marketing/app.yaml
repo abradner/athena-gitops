@@ -1,0 +1,112 @@
+---
+# spritz marketing site (production) — spritz.events. A static Astro build served by
+# Caddy on distroless (marketing/Dockerfile in abradner/spritz). No shell, no
+# package manager: nothing to exec into, and health is an HTTP probe rather
+# than a HEALTHCHECK.
+#
+# The site content is baked into the image at build time, including the
+# Turnstile *site* key, so there is no volume, no bucket and no Secret here —
+# the only pull-time credential is the namespace's existing ghcr-pull.
+#
+# Pinned to the same sha- tag as spritz-web in ../spritz, deliberately: the
+# app and marketing images are built and published in lockstep by one
+# workflow (.github/workflows/docker.yml), and the contact form posts to the
+# Rails app's /api/public/contact_submissions. Bump both together.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-marketing
+  namespace: spritz-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spritz-marketing
+  template:
+    metadata:
+      labels:
+        app: spritz-marketing
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          image: ghcr.io/abradner/spritz-marketing:sha-07af425c6ac4209b19e2ff0fcd5804861015dac8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Caddy binds :8080 (marketing/Caddyfile) — above 1024 so the
+          # nonroot user needs no capability, and TLS terminates at the
+          # Gateway, so this speaks plain HTTP.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spritz-marketing
+  namespace: spritz-production
+spec:
+  selector:
+    app: spritz-marketing
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+# Reproduces the HAProxy split for spritz.events: /api/* to the Rails app,
+# everything else to the static site. HAProxy needed the api ACL tested
+# first because its use_backend lines are evaluated in order; Gateway API
+# instead picks the most specific match, so the longer /api/ prefix wins
+# over / regardless of the order these rules appear in.
+#
+# spritz-web lives in this same namespace but belongs to a different Argo
+# Application (../spritz), which is why this route is safe to sync
+# independently — the Service it names already exists.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: spritz-marketing
+  namespace: spritz-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-spritz-events
+  hostnames:
+    - "spritz.events"
+  rules:
+    # The contact form posts to /api/public/contact_submissions, and the
+    # Turnstile secret half only exists in the Rails app — so this half of
+    # the split is what makes the form work at all.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+      backendRefs:
+        - name: spritz-web
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: spritz-marketing
+          port: 80

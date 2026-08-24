@@ -162,6 +162,12 @@ spec:
     kind: ClusterIssuer
     name: letsencrypt-prod
 ---
+# Wave 3, NOT 1. This certificate is issued by the second DNS-01 solver,
+# which the ClusterIssuers only gain in wave 2 — at wave 1 it can never go
+# healthy, and since Argo will not start a wave until the previous one is
+# healthy, the whole cluster-core sync deadlocks behind it and the solver it
+# is waiting for never applies. The wave-1 certificates below predate the
+# second solver and issue off the catch-all, which is why they are unaffected.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -169,11 +175,52 @@ metadata:
   namespace: default
   annotations:
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   secretName: inbox-simplytics-ai-tls
   dnsNames:
     - "inbox.simplytics.ai"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+# spritz.events — the marketing site. Its zone lives in the simplytics
+# Cloudflare account, not the personal one, so issuance depends on the
+# second DNS-01 solver in letsencrypt-issuers.yaml. If this Certificate sits
+# in propagation-check forever, suspect the token's zone scope before the
+# manifest.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spritz-events-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Wave 3: after the wave-2 ClusterIssuers, which is where the solver
+    # that can answer for this zone comes from. See inbox-simplytics-ai-tls.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: spritz-events-tls
+  dnsNames:
+    - "spritz.events"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: staging-spritz-events-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Wave 3: after the wave-2 ClusterIssuers, which is where the solver
+    # that can answer for this zone comes from. See inbox-simplytics-ai-tls.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: staging-spritz-events-tls
+  dnsNames:
+    - "staging.spritz.events"
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod

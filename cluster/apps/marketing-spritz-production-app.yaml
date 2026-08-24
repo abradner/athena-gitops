@@ -1,0 +1,31 @@
+---
+# spritz marketing site (production) — spritz.events. Static Astro/Caddy image, plus
+# the HTTPRoute that splits spritz.events between it and the Rails app in
+# ../spritz-production/spritz. Separate Application from spritz-production so the
+# marketing site can be rolled without touching the app.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: marketing-spritz-production
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-production/marketing
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
