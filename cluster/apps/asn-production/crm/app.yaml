@@ -1,0 +1,206 @@
+---
+# crm web (production) — the shared contact-form inbox at inbox.simplytics.ai.
+# Several marketing sites (chuvar.ai, spritz.events, later kaff/counta) POST
+# their contact form here; the admin panel at /admin is the only
+# authenticated surface. Lives in asn-production rather than a
+# simplytics-production group of its own because it is fleet-shared
+# infrastructure and reuses this namespace's Temporal instance — the
+# hostname's zone does not imply the namespace group (cf. counta.click).
+#
+# The image entrypoint runs `rails db:prepare` before `rails server`, so
+# migrations apply on rollout. crm's tables default their primary keys to
+# `uuidv7()`, a PostgreSQL 18 builtin — postgres.infra.asn.casa runs 18.4,
+# which is what makes that work. Do not point this at an older server.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crm-web
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crm-web
+  template:
+    metadata:
+      labels:
+        app: crm-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          # TODO: pin to a sha-<commit> tag once image publishing settles.
+          image: ghcr.io/abradner/crm:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Thruster defaults to :80, which a non-root container can't bind
+            # under Kubernetes (unprivileged port start is 1024).
+            - name: HTTP_PORT
+              value: "8080"
+            - name: TEMPORAL_ADDRESS
+              value: temporal-frontend.asn-production.svc.cluster.local:7233
+            # Registered by this namespace's temporal-register-namespaces
+            # PostSync hook. crm's own default would be "crm-production"
+            # (Rails.env-derived); the cluster namespace is per-app, not
+            # per-environment, so it is set explicitly.
+            - name: TEMPORAL_NAMESPACE
+              value: crm
+          envFrom:
+            - secretRef:
+                name: crm-app
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 384Mi
+            limits:
+              memory: 768Mi
+---
+# Temporal worker — same image, separate process (bin/temporal-worker).
+# Nothing is delivered without it: the web process only starts workflows, so
+# a slow or failing Telegram send never sits in the request path (crm
+# AGENTS.md §4.5). It is also why crm has to run *inside* the cluster — the
+# Temporal frontend is ClusterIP-only with no ingress on 7233.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crm-temporal-worker
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crm-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: crm-temporal-worker
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: worker
+          image: ghcr.io/abradner/crm:latest
+          imagePullPolicy: Always
+          args: ["./bin/temporal-worker"]
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: temporal-frontend.asn-production.svc.cluster.local:7233
+            - name: TEMPORAL_NAMESPACE
+              value: crm
+          envFrom:
+            - secretRef:
+                name: crm-app
+          resources:
+            requests:
+              cpu: 25m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+# Registers the retry sweeper's Temporal schedule. crm's sweeper is what
+# catches a submission whose notification workflow never started — the
+# durability half of "a stranger's message is never silently lost"
+# (AGENTS.md §2 principle 3), so the schedule existing is load-bearing, not
+# housekeeping. Idempotent: the rake task is safe to re-run.
+#
+# PostSync so it runs after the worker Deployment is up, and after the
+# namespace-registration hook in ../temporal (also PostSync, same wave).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: crm-temporal-schedules
+  namespace: asn-production
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: ensure-schedules
+          image: ghcr.io/abradner/crm:latest
+          imagePullPolicy: Always
+          # The namespace-registration hook lives in a *different* Argo
+          # Application (../temporal), so nothing orders it before this one —
+          # a first sync can reach here with the `crm` namespace not yet
+          # created, and the rake task would fail on a namespace-not-found
+          # that a retry fixes. Retry rather than lean on backoffLimit, which
+          # would burn all its attempts inside a few seconds.
+          # `command` deliberately bypasses the image entrypoint: this Job
+          # must not run db:prepare (the web Deployment owns migrations).
+          command:
+            - sh
+            - -c
+            - |
+              for attempt in $(seq 1 20); do
+                ./bin/rails temporal:ensure_schedules && exit 0
+                echo "ensure_schedules attempt $attempt failed; retrying in 10s"
+                sleep 10
+              done
+              echo "ensure_schedules never succeeded — the retry sweeper is NOT scheduled" >&2
+              exit 1
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: temporal-frontend.asn-production.svc.cluster.local:7233
+            - name: TEMPORAL_NAMESPACE
+              value: crm
+          envFrom:
+            - secretRef:
+                name: crm-app
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crm-web
+  namespace: asn-production
+spec:
+  selector:
+    app: crm-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: crm
+  namespace: asn-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-inbox-simplytics-ai
+  hostnames:
+    - "inbox.simplytics.ai"
+  rules:
+    - backendRefs:
+        - name: crm-web
+          port: 80

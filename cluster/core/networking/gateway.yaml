@@ -135,3 +135,17 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: staging-counta-click-tls
+  # inbox.simplytics.ai — crm, the shared contact-form inbox. Its zone lives
+  # in a different Cloudflare account from the others, which matters to
+  # cert-manager (see letsencrypt-issuers.yaml) but not to the Gateway.
+  - name: https-inbox-simplytics-ai
+    port: 443
+    protocol: HTTPS
+    hostname: "inbox.simplytics.ai"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: inbox-simplytics-ai-tls

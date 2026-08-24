@@ -27,6 +27,7 @@ spec:
             - |
               until temporal operator cluster health | grep -q 'SERVING'; do sleep 2; done
               temporal operator namespace create -n kaff || true
+              temporal operator namespace create -n crm || true
           resources:
             requests:
               cpu: 50m
