@@ -24,7 +24,12 @@ data:
   SMTP_ADDRESS: smtp.gmail.com
   SMTP_DOMAIN: rabalex.wedding
   # Solid Queue in Puma (single-server)
-  SOLID_QUEUE_IN_PUMA: "true"
+  # SOLID_QUEUE_IN_PUMA is deliberately ABSENT, not set to "false".
+  # config/puma.rb reads `plugin :solid_queue if ENV['SOLID_QUEUE_IN_PUMA']` —
+  # a presence check. In Ruby the string "false" is truthy, so setting it false
+  # would silently keep the supervisor inside Puma. Solid Queue now runs as its
+  # own Deployment (spritz-solid-queue) so job capacity is independent of web
+  # replica count.
   TEMPORAL_HOST_PORT: temporal-frontend.spritz-production.svc.cluster.local:7233
   TEMPORAL_NAMESPACE: spritz
   MAILER_HOST: rabalex.wedding
