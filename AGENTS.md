@@ -37,3 +37,42 @@ Foundational cluster integrations:
 1. **1Password API Rate Limiting**: High workload counts can cause ExternalSecret refresh cycles to exceed 1Password's rate limits. `refreshInterval` has been scaled to `24h` / `6h` cycles to reduce authentication pressure.
 2. **Application-Scoped Resources**: Centralising shared resources (e.g., `registry-pull-secret`) into a singular infra app disrupts ArgoCD sync dependencies. Resources are scoped per-application (e.g., `pmn-ext-gw-registry`) to maintain clean ownership topologies.
 3. **Cluster-Level Networking**: External hostnames for cluster-level services (such as ArgoCD and Hubble UI) use the `*.athena.asn.casa` domain. These hostnames are typically secured via local HAProxy configurations to remain visible only on the local LAN.
+
+## Argo Self-Management Traps (hard-won, 2026-08)
+
+Six distinct failure modes hit while operating this cluster. Each looks like a
+different bug; all are Argo behaving as designed in ways that mislead.
+
+1. **A pinned sync operation survives hard refresh.** Merges appear to do
+   nothing for 20+ minutes while Argo retries an old revision. Fix:
+   `kubectl patch application <app> -n argocd --type json -p '[{"op":"remove","path":"/operation"}]'`
+
+2. **The Application CRD schema silently prunes unknown fields.** Asserting a
+   field this Argo version's schema lacks (e.g. `spec.source.helm.kubeVersion`)
+   creates a permanent sync loop: git asserts it, the live object can never
+   hold it. Fix by removing the field from git, never by re-syncing harder.
+
+3. **Go zero-values are dropped on serialization.** Asserting
+   `directory.recurse: false` explicitly loops forever for the same reason —
+   `false` is Go's zero-value for bool and is never serialized back, so live
+   never matches git. `true` persists fine; the asymmetry is the tell. Omit
+   zero-value fields instead of asserting them.
+
+4. **A completed hook Job never re-runs, even when its manifest changes.**
+   `Synced` at the current revision does not mean a sync *operation* ran, and
+   hooks fire only on operations. A PostSync Job (e.g. Temporal namespace
+   registration) that Completed before a new consumer appeared will look green
+   and will not have run. Fix: delete the Job, then force a real operation —
+   `kubectl patch application <app> -n argocd --type merge -p '{"operation":{"sync":{"revision":"<rev>"},"initiatedBy":{"username":"manual"}}}'`
+   (a hard-refresh annotation alone does not trigger hooks). Expect this for
+   every new app added to the shared Temporal cluster.
+
+5. **"one or more synchronization tasks are not valid" ≠ "completed
+   unsuccessfully".** "Not valid" means the AppProject denied it (check the
+   project's permitted destination namespaces); "unsuccessfully" means the
+   apply itself failed. They need opposite responses.
+
+6. **A `Synced` CR can mean nothing was deployed.** Argo only knows the CR
+   applied cleanly, not that its operator could act on it. Read the CR's
+   `.status.reason` (e.g. a generated Service name over 63 characters kept a
+   `VMAlertmanager` "Synced" and dead for hours).
