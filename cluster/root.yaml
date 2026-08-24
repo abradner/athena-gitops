@@ -13,21 +13,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: cluster-root
-  annotations:
-    # Argo stamps this on every resource it manages. Normally that is invisible,
-    # because the manager and the managed are different objects. cluster-root is
-    # the exception: it manages ITSELF, so each sync applies this file over the
-    # live object, strips the annotation Argo just wrote, and Argo immediately
-    # re-adds it - producing a Synced -> OutOfSync flip roughly once a second,
-    # forever, with every sync reported as succeeding.
-    #
-    # Declaring it here makes the apply a no-op and breaks the cycle. The value
-    # is <app-name>:<group>/<kind>:<namespace>/<name> and must match exactly.
-    #
-    # cluster-apps and cluster-core carry the same annotation without it being
-    # in git and do NOT loop, because nothing ever applies their own definition
-    # back over them.
-    argocd.argoproj.io/tracking-id: "cluster-root:argoproj.io/Application:argocd/cluster-root"
   namespace: argocd
   finalizers:
   - resources-finalizer.argocd.argoproj.io
@@ -37,8 +22,18 @@ spec:
     repoURL: 'https://github.com/abradner/athena-gitops.git'
     targetRevision: main
     path: cluster
-    directory:
-      recurse: false
+    # NOTE: do not add `directory: {recurse: false}` here. false is Go's zero
+    # value for a bool, so it is dropped on serialization and the API literally
+    # cannot store it. Asserting it in git produced a permanent sync loop:
+    # every comparison saw git-has-it / live-lacks-it, synced, and saw the same
+    # difference again - flipping Synced <-> OutOfSync about once a second.
+    #
+    # false is already the default, so omitting it changes nothing. cluster-apps
+    # sets `recurse: true` and that persists fine, because true is not the zero
+    # value - which is what made the asymmetry visible.
+    #
+    # Same class of bug as helm.kubeVersion on external-secrets (#39): git
+    # asserting something the API cannot represent.
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: default
