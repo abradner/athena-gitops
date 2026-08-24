@@ -40,12 +40,28 @@ spec:
             httpGet:
               path: /up
               port: 8080
+              # Without an explicit Host the probe arrives as
+              # http://<podIP>:8080/up, Rails redirects to CANONICAL_HOST,
+              # and kubelet logs a ProbeWarning every cycle. The 3xx counts
+              # as success, so this is noise rather than a failure — but it
+              # buries real probe events.
+              httpHeaders:
+                - name: Host
+                  value: rabalex.wedding
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /up
               port: 8080
+              # Without an explicit Host the probe arrives as
+              # http://<podIP>:8080/up, Rails redirects to CANONICAL_HOST,
+              # and kubelet logs a ProbeWarning every cycle. The 3xx counts
+              # as success, so this is noise rather than a failure — but it
+              # buries real probe events.
+              httpHeaders:
+                - name: Host
+                  value: rabalex.wedding
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:
