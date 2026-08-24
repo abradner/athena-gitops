@@ -41,6 +41,65 @@ spec:
           # obs-logs has run clean for a few days the in-cluster store is
           # disabled and this becomes the only sink.
           customConfig:
+            transforms:
+              # Replaces the chart's default parser. Three jobs, in order:
+              #
+              # 1. Structure what we can. Apps here emit three shapes: JSON
+              #    (Rails, Argo's application controller), logfmt (Argo's other
+              #    pods), and plain text (nginx, Temporal). The chart default
+              #    only tried JSON, so logfmt lines arrived as one opaque blob
+              #    with no queryable level.
+              #
+              # 2. Drop Argo's per-resource sync chatter. At info level with 28
+              #    applications, "Adding resource result" alone was ~98% of ALL
+              #    log volume in the cluster - 355k lines/hour against ~8k for
+              #    everything else combined. It is emitted once per resource per
+              #    sync and says nothing anyone acts on; real sync outcomes and
+              #    every warning/error still come through. Argo is NOT at debug;
+              #    this is simply how loud it is, so turning the level down to
+              #    warn would have cost real signal instead.
+              #
+              # 3. Give HTTP request logs a readable message. The structured
+              #    fields are the valuable part and they stay - log.status and
+              #    log.dur are what make error-rate and latency queries possible
+              #    without the apps exposing /metrics at all. But _msg was
+              #    landing as the literal "Request", so every Rails line looked
+              #    identical in the UI.
+              parser:
+                type: remap
+                inputs: [k8s]
+                source: |
+                  parsed, jerr = parse_json(.message)
+                  if jerr == null && is_object(parsed) {
+                    .log = parsed
+                  } else {
+                    lf, lerr = parse_logfmt(.message)
+                    if lerr == null && is_object(lf) && exists(lf.level) {
+                      .log = lf
+                    } else {
+                      .log = .message
+                    }
+                  }
+                  del(.message)
+
+                  if is_object(.log) {
+                    m = to_string(.log.msg) ?? to_string(.log.message) ?? ""
+                    if starts_with(m, "Adding resource result") { abort }
+                    if starts_with(m, "Ignoring change of object because it would result in same spec") { abort }
+                  }
+
+                  if is_object(.log) && exists(.log.method) && exists(.log.status) {
+                    .log.message = join!(
+                      [
+                        to_string(.log.method) ?? "?",
+                        to_string(.log.path) ?? "?",
+                        "->",
+                        to_string(.log.status) ?? "?",
+                        (to_string(.log.dur) ?? "?") + "ms"
+                      ],
+                      " "
+                    )
+                  }
             sinks:
               vlogs-external:
                 type: elasticsearch
