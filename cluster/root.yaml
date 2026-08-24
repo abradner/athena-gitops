@@ -13,6 +13,21 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: cluster-root
+  annotations:
+    # Argo stamps this on every resource it manages. Normally that is invisible,
+    # because the manager and the managed are different objects. cluster-root is
+    # the exception: it manages ITSELF, so each sync applies this file over the
+    # live object, strips the annotation Argo just wrote, and Argo immediately
+    # re-adds it - producing a Synced -> OutOfSync flip roughly once a second,
+    # forever, with every sync reported as succeeding.
+    #
+    # Declaring it here makes the apply a no-op and breaks the cycle. The value
+    # is <app-name>:<group>/<kind>:<namespace>/<name> and must match exactly.
+    #
+    # cluster-apps and cluster-core carry the same annotation without it being
+    # in git and do NOT loop, because nothing ever applies their own definition
+    # back over them.
+    argocd.argoproj.io/tracking-id: "cluster-root:argoproj.io/Application:argocd/cluster-root"
   namespace: argocd
   finalizers:
   - resources-finalizer.argocd.argoproj.io
