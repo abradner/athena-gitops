@@ -67,15 +67,17 @@ spec:
           resources:
             requests:
               cpu: 100m
-              # Observed steady-state is ~875Mi with real data and traffic, so
-              # the old 512Mi request under-reserved by a wide margin and let
-              # the scheduler overcommit the node.
-              memory: 768Mi
+              # At or above observed steady state, so the scheduler reserves
+              # what the pod actually holds rather than letting a node accept
+              # neighbours it cannot honour.
+              memory: 1Gi
             limits:
-              # Was 1Gi, which OOMKilled the web container four times in nine
-              # hours once production data landed. ActiveStorage variant
-              # processing spikes well above steady state, so the limit needs
-              # headroom over it rather than sitting just above it.
+              # Active Storage variants are generated lazily in the request
+              # (Occasion declares them without preprocessed: true), so libvips
+              # runs in-process and spikes well above steady state. A limit set
+              # just above steady state gets OOMKilled by that spike, which is
+              # what 1Gi did under production load. The ceiling has to clear the
+              # peak, not the average.
               memory: 2Gi
 ---
 # Temporal worker — same image, run via rake.
