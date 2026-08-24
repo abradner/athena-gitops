@@ -107,7 +107,13 @@ spec:
                   }
 
                   if is_object(.log) && exists(.log.method) && exists(.log.status) {
-                    .log.message = join!(
+                    # VictoriaLogs' VL-Msg-Field priority is: message, msg, _msg,
+                    # log.msg, log.message, log. This app's own JSON already sets
+                    # "msg":"Request" on every line, and log.msg ranks ahead of
+                    # log.message in that list - so synthesizing into
+                    # .log.message alone was silently outranked by the field
+                    # already there. Overwrite .log.msg directly instead.
+                    .log.msg = join!(
                       [
                         to_string(.log.method) ?? "?",
                         to_string(.log.path) ?? "?",
