@@ -67,9 +67,16 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 512Mi
+              # Observed steady-state is ~875Mi with real data and traffic, so
+              # the old 512Mi request under-reserved by a wide margin and let
+              # the scheduler overcommit the node.
+              memory: 768Mi
             limits:
-              memory: 1Gi
+              # Was 1Gi, which OOMKilled the web container four times in nine
+              # hours once production data landed. ActiveStorage variant
+              # processing spikes well above steady state, so the limit needs
+              # headroom over it rather than sitting just above it.
+              memory: 2Gi
 ---
 # Temporal worker — same image, run via rake.
 apiVersion: apps/v1
