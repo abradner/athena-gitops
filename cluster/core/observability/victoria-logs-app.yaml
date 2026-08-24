@@ -84,8 +84,26 @@ spec:
 
                   if is_object(.log) {
                     m = to_string(.log.msg) ?? to_string(.log.message) ?? ""
-                    if starts_with(m, "Adding resource result") { abort }
-                    if starts_with(m, "Ignoring change of object because it would result in same spec") { abort }
+                    ns = to_string(.kubernetes.pod_namespace) ?? ""
+                    # Argo's routine per-cycle chatter, from all three of its
+                    # noisy pods. Scoped to the argocd namespace so these very
+                    # generic strings cannot silently eat an application's logs.
+                    #
+                    # Measured before/after: the application controller alone
+                    # was 227k lines/hour and disappeared from the top talkers
+                    # once "Adding resource result" went. The notifications
+                    # controller and repo-server then dominated with their own
+                    # equivalents, which is why this list is not just one entry.
+                    if ns == "argocd" {
+                      if starts_with(m, "Adding resource result") { abort }
+                      if starts_with(m, "Ignoring change of object") { abort }
+                      if m == "Start processing" { abort }
+                      if m == "Processing completed" { abort }
+                      if starts_with(m, "Processing skipped") { abort }
+                      if m == "started call" { abort }
+                      if m == "finished call" { abort }
+                      if starts_with(m, "manifest cache hit") { abort }
+                    }
                   }
 
                   if is_object(.log) && exists(.log.method) && exists(.log.status) {
