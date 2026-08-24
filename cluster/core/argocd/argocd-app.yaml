@@ -7,6 +7,49 @@
 # Keep valuesObject in sync with bootstrap/kubernetes/argocd-values.yaml.
 # prune is deliberately off — Argo pruning parts of itself mid-upgrade is
 # the one place self-management can eat its own tail.
+#
+# RESOLVED 2026-08-25 — adopted selectors. The hand-installed Argo CD this
+# release adopted had `spec.selector.matchLabels` of just
+# `app.kubernetes.io/name`; the chart wants name AND instance, and selector
+# is immutable on both Deployment and StatefulSet. Every sync failed with
+# `field is immutable` and could never converge.
+#
+# Fixed by `kubectl delete <kind> <name> --cascade=orphan` (pods keep
+# serving) and letting Argo recreate with the chart's selector, for
+# dex-server, applicationset-controller, notifications-controller,
+# repo-server, server and application-controller. All seven workloads now
+# match the chart. argocd-redis is NOT an exception that was missed — the
+# chart genuinely renders a name-only selector for it.
+#
+# Two traps if this ever needs repeating:
+#
+#   * A recreated workload adopts the orphaned ReplicaSet, but rolls its
+#     pods anyway whenever the chart's pod template differs from the
+#     hand-installed one. Expect a restart, don't expect adoption in place.
+#   * A StatefulSet cannot adopt a pod whose labels don't match its new
+#     selector, and cannot create a replacement either — the orphaned pod
+#     already holds the ordinal name, so it wedges on AlreadyExists. Label
+#     the pod BEFORE the orphan-delete.
+#
+# If Argo doesn't recreate a resource within a minute or two, check for a
+# zombie operation: `.status.operationState` can sit at phase=Running with
+# a finishedAt already set, replaying a pre-fix error and blocking new
+# syncs. `kubectl patch application argocd -n argocd --type=merge
+# -p '{"operation":null}'` clears it. Rendering the resource with
+# `helm template` and applying it directly also works; Argo reclaims
+# ownership on the next sync.
+#
+# argocd-redis carried a `secret-init` initContainer left over from the
+# hand-installed v3 manifests. The chart puts no initContainer in the redis
+# Deployment at all — it runs argocd-redis-secret-init as a pre-install /
+# pre-upgrade Job hook and leaves redis on the `default` SA. Because
+# `initContainers` was owned by the `kubectl` field manager, Argo's
+# server-side apply set serviceAccountName back to `default` without
+# removing the initContainer, which crashlooped it on
+# `secrets is forbidden`. Someone then hand-patched the SA back, which
+# masked the real problem. The stale initContainer is now gone. Do not
+# reintroduce the SA patch, and note `redis.serviceAccount` in values does
+# not set the Deployment's SA — it is {create: false, name: ""}.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

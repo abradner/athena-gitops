@@ -7,3 +7,9 @@
 # ignored defensively — bootstrap/mise.toml historically pointed there.
 bootstrap/athena.zsh
 /athena.zsh
+
+# kubectl's local discovery/HTTP cache. It lands here whenever kubectl runs
+# with the repo as cwd, and `git add -A` will happily commit all of it. The
+# cache path embeds the API server hostname and port, and this repo is
+# public — internal topology stays out of it.
+.kube/

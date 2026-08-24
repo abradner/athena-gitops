@@ -10,19 +10,23 @@ spec:
     chart: external-secrets
     targetRevision: 2.2.0
     helm:
-      # NOTE: spec.source.helm.kubeVersion is deliberately absent. It is not in
-      # this Argo version's Application CRD schema (v2.x lists only
-      # fileParameters, ignoreMissingValueFiles, parameters, passCredentials,
-      # releaseName, skipCrds, valueFiles, values, valuesObject, version), so
-      # the API server silently PRUNES it on write.
+      # NOTE: spec.source.helm.kubeVersion is deliberately absent.
       #
-      # The result was a permanent sync loop: git carried the field, the live
-      # object never could, so every comparison found drift, synced, and found
-      # the same drift again. cluster-core sat OutOfSync indefinitely on this
-      # one resource while the child app itself reported Synced and Healthy.
+      # It once caused a permanent sync loop: the field was not in the v2.x
+      # Application CRD schema, so the API server silently PRUNED it on write.
+      # git carried the field, the live object never could, so every comparison
+      # found drift, synced, and found the same drift again. cluster-core sat
+      # OutOfSync indefinitely on this one resource while the child app itself
+      # reported Synced and Healthy.
       #
-      # If a chart here ever genuinely needs a kubeVersion override, it belongs
-      # in the chart values, not in the Application spec.
+      # The pruning half of that is no longer true. The CRDs were briefly
+      # rewritten with the v2.12 schema and restored to v3 on 2026-08-25 (see
+      # cluster/core/argocd/argocd-app.yaml), and v3 DOES accept kubeVersion —
+      # it would now persist rather than vanish.
+      #
+      # It stays absent anyway, on the original judgement: if a chart here ever
+      # genuinely needs a kubeVersion override, it belongs in the chart values,
+      # not in the Application spec.
       parameters:
         - name: installCRDs
           value: 'true'
