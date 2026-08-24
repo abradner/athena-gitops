@@ -17,7 +17,29 @@ spec:
   source:
     repoURL: https://argoproj.github.io/argo-helm
     chart: argo-cd
-    targetRevision: 7.6.12
+    # targetRevision tracks the chart, and the chart's appVersion IS the Argo CD
+    # version that gets deployed — 9.5.21 renders v3.4.3.
+    #
+    # This sat at 7.6.12 (appVersion v2.12.6) while the cluster actually ran
+    # v3.4.3, because the release adopted a pre-existing hand-installed v3.4.3
+    # (upstream install.yaml). Git described a control plane a full major
+    # version behind reality, so every sync tried to roll the cluster back from
+    # v3 to v2:
+    #
+    #   * applicationset-controller and notifications-controller were actually
+    #     downgraded to v2.12.6. They stayed 1/1 Running, so nothing looked wrong.
+    #   * the Application/ApplicationSet/AppProject CRDs were rewritten with the
+    #     v2.12 schema, dropping v3-only fields (spec.sourceHydrator). Nothing
+    #     here used them, so the schema regression was silent too.
+    #   * repo-server, server and application-controller escaped only because
+    #     their adopted spec.selector is immutable — the apply died on that
+    #     before the image downgrade could land. The bug that looked like the
+    #     problem was the thing preventing a worse one.
+    #
+    # Pinning the chart that matches the running binaries makes git describe
+    # reality, and makes recreating those three to fix their selectors a
+    # version-neutral operation. Renovate moves this forward from here.
+    targetRevision: 9.5.21
     helm:
       valuesObject:
         configs:
