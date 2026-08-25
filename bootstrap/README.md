@@ -113,7 +113,7 @@ cd bootstrap/talos
 
 Because the CNI is already active on the control plane, these nodes should successfully join and quickly transition to `Ready`.
 
-**Worker addresses are not free choice.** Observability lives outside the
+**Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node
 addresses — cluster egress masquerades, so a Vector pod arrives as its node
 address. Take the current range from the infrastructure repo before assigning

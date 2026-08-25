@@ -20,8 +20,9 @@ CONTROL_PLANE_IP=(
 )
 
 # Worker node IPs, applied in order by apply-worker.sh.
-# Not free choice — observability accepts telemetry only from a defined range
-# of node addresses; see the README before assigning one.
+# These are not a free choice — observability accepts telemetry only from a
+# defined range of node addresses. See "Worker Node Reprovisioning" in
+# bootstrap/README.md before assigning one.
 WORKER_IP=(
   "10.10.80.x"
   "10.10.80.x"
