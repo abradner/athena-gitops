@@ -130,6 +130,13 @@ spec:
                     )
                   }
             sinks:
+              # The chart's default values still define this sink even with
+              # server.enabled=false — it deep-merges under customConfig and
+              # renders with an empty endpoint once the in-cluster server is
+              # gone, which is fatal at boot ("Endpoints option must be
+              # specified"; took the whole DaemonSet down after #35). Helm
+              # null-deletion removes the inherited key entirely.
+              vlogs: null
               vlogs-external:
                 type: elasticsearch
                 api_version: v8
