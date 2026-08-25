@@ -1,0 +1,42 @@
+---
+# The public sites, probed end-to-end through Cloudflare — see
+# blackbox-exporter-app.yaml for why the probes take the outside path.
+#
+# vmagent picks this up via selectAllByDefault and scrapes the blackbox
+# exporter once a minute per target; results land on the out-of-cluster
+# store as probe_success / probe_http_status_code / probe_ssl_earliest_cert_expiry
+# with job="blackbox-public-sites" and instance="<url>". The alert rules that
+# page on these live out-of-cluster with the rest
+# (asn-infra/observability/rules/athena-public-probes.yaml).
+#
+# Every hostname listed here is a public site behind Cloudflare-proxied DNS —
+# nothing internal. When a new site goes live (the runbook's §5 cutover, or a
+# fresh deployment), adding it here is part of the launch, not an afterthought:
+# the incident isn't closed until the *next* failure would have paged.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: public-sites
+  namespace: observability
+spec:
+  jobName: blackbox-public-sites
+  interval: 60s
+  # Must exceed the blackbox module timeout (10s) or vmagent gives up before
+  # the exporter can report the failure it just spent 10s observing.
+  scrapeTimeout: 15s
+  module: http_2xx
+  vmProberSpec:
+    url: blackbox-exporter.observability.svc.cluster.local:9115
+    scheme: http
+    path: /probe
+  targets:
+    staticConfig:
+      targets:
+        - https://chuvar.ai/
+        - https://spritz.events/
+        - https://counta.click/
+        - https://mcg.rest/
+        - https://kaff.asn.casa/
+        - https://rabalex.wedding/
+        - https://inbox.simplytics.ai/
+        - https://hello.bradner.net/
