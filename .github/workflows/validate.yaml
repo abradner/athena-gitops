@@ -96,7 +96,11 @@ jobs:
           if diff -ru /tmp/base-render .render/head > /tmp/render.diff; then
             echo "No change to rendered output."
           else
-            echo "::group::Rendered output changed ($(grep -c '^[+-]' /tmp/render.diff) lines)"
+            # Count real content lines only: grep '^[+-]' also matches the
+            # +++/--- file headers, which inflates the number.
+            changed=$(grep -cE '^[+-]' /tmp/render.diff)
+            headers=$(grep -cE '^(\+\+\+|---)' /tmp/render.diff)
+            echo "::group::Rendered output changed ($((changed - headers)) lines)"
             cat /tmp/render.diff
             echo "::endgroup::"
             echo "::notice::Rendered Helm output changed — check the diff for anything you did not intend, especially REMOVED lines."

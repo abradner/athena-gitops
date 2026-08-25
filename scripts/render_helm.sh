@@ -23,6 +23,13 @@ mkdir -p "$OUTDIR"
 
 command -v helm >/dev/null || { echo "❌ helm is required"; exit 1; }
 command -v python3 >/dev/null || { echo "❌ python3 is required"; exit 1; }
+# Checked explicitly: without it the embedded python dies on `import yaml`
+# with a traceback, which reads like a broken script rather than a missing dep.
+python3 -c 'import yaml' 2>/dev/null || { echo "❌ PyYAML is required (pip install pyyaml)"; exit 1; }
+# sha256sum on Linux, shasum on macOS — neither is present on both.
+if command -v sha256sum >/dev/null; then HASH=sha256sum
+elif command -v shasum >/dev/null; then HASH=shasum
+else echo "❌ need sha256sum or shasum"; exit 1; fi
 
 echo "🔍 Rendering Helm-sourced Argo Applications..."
 
@@ -38,7 +45,7 @@ import os, sys, glob, yaml
 tmpvals, specs_out = sys.argv[1], sys.argv[2]
 rows = []
 
-def add(name, src, idx):
+def add(name, src, idx, namespace):
     chart = src.get("chart")
     if not chart:
         return
@@ -49,8 +56,20 @@ def add(name, src, idx):
     path = os.path.join(tmpvals, f"{name}-{idx}.yaml")
     with open(path, "w") as fh:
         fh.write(values or "")
+    # Argo applies spec.source.helm.parameters on top of values, and
+    # forceString means --set-string. Omitting them is not cosmetic: two apps
+    # here carry crds.enabled / installCRDs, so a render without them silently
+    # drops every CRD the chart would install.
+    sets = []
+    for p in helm.get("parameters") or []:
+        n, v = p.get("name"), p.get("value")
+        if n is None:
+            continue
+        flag = "--set-string" if p.get("forceString") else "--set"
+        sets.append(f"{flag}={n}={v}")
     rows.append("\t".join([name, chart, str(src.get("targetRevision", "")),
-                           str(src.get("repoURL", "")), path]))
+                           str(src.get("repoURL", "")), path,
+                           namespace or "default", " ".join(sets)]))
 
 for f in glob.glob("cluster/**/*.yaml", recursive=True):
     try:
@@ -62,10 +81,14 @@ for f in glob.glob("cluster/**/*.yaml", recursive=True):
             continue
         name = (d.get("metadata") or {}).get("name", "unnamed")
         spec = d.get("spec") or {}
+        # Argo renders into spec.destination.namespace, not "default" —
+        # every Application here targets a real one, and charts that template
+        # namespaces into their output render differently without it.
+        ns = (spec.get("destination") or {}).get("namespace")
         if spec.get("source"):
-            add(name, spec["source"], 0)
+            add(name, spec["source"], 0, ns)
         for i, s in enumerate(spec.get("sources") or []):
-            add(name, s, i)
+            add(name, s, i, ns)
 
 open(specs_out, "w").write("\n".join(rows) + ("\n" if rows else ""))
 PY
@@ -73,17 +96,18 @@ PY
 FAILED=0
 COUNT=0
 
-while IFS=$'\t' read -r name chart version repo valsfile; do
+while IFS=$'\t' read -r name chart version repo valsfile namespace sets; do
   [ -z "$name" ] && continue
   COUNT=$((COUNT + 1))
-  alias="repo-$(printf '%s' "$repo" | shasum | cut -c1-10)"
+  alias="repo-$(printf '%s' "$repo" | $HASH | cut -c1-10)"
   helm repo add "$alias" "$repo" >/dev/null 2>&1 || true
 
+  # shellcheck disable=SC2086 -- $sets is a pre-built list of --set flags
   if out=$(helm template "$name" "$alias/$chart" --version "$version" \
-             -f "$valsfile" --namespace default 2>&1); then
+             -f "$valsfile" --namespace "$namespace" $sets 2>&1); then
     printf '%s\n' "$out" > "$OUTDIR/$name.yaml"
     lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
-    echo "  ✅ $name ($chart $version) — $lines lines"
+    echo "  ✅ $name ($chart $version, ns=$namespace${sets:+, $sets}) — $lines lines"
   else
     echo "  ❌ $name ($chart $version) failed to render:"
     printf '%s\n' "$out" | sed 's/^/       /' | head -15
