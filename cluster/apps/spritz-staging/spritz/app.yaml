@@ -21,11 +21,15 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz:v202608231625
+          image: ghcr.io/abradner/spritz:v202608251024
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
+            # yabeda exporter — cluster-internal only, scraped by vmagent
+            # (see monitoring.yaml). Never routed by Thruster or the ingress.
+            - name: metrics
+              containerPort: 9394
           env:
             # Thruster defaults to :80, which a non-root container can't bind
             # under Kubernetes (unprivileged port start is 1024).
@@ -91,9 +95,16 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/spritz:v202608231625
+          image: ghcr.io/abradner/spritz:v202608251024
           imagePullPolicy: IfNotPresent
           args: ["bundle", "exec", "rake", "temporal:run_worker"]
+          ports:
+            # Temporal SDK core Prometheus endpoint (see monitoring.yaml).
+            - name: metrics
+              containerPort: 9464
+          env:
+            - name: TEMPORAL_METRICS_ADDR
+              value: 0.0.0.0:9464
           envFrom:
             - configMapRef:
                 name: spritz-config
@@ -111,6 +122,9 @@ kind: Service
 metadata:
   name: spritz-web
   namespace: spritz-staging
+  labels:
+    # VMServiceScrape (monitoring.yaml) selects the Service by this label.
+    app: spritz-web
 spec:
   selector:
     app: spritz-web
@@ -118,6 +132,9 @@ spec:
     - name: http
       port: 80
       targetPort: 8080
+    - name: metrics
+      port: 9394
+      targetPort: 9394
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

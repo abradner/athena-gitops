@@ -29,7 +29,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/counta:sha-a213b36c0482b5b6d0e2d04554599ad6bdc5362f
+          image: ghcr.io/abradner/counta:sha-037c9bd1de1ca98341700a746cadad0d96a0292e
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -41,6 +41,10 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+            # yabeda exporter — cluster-internal only, scraped by vmagent
+            # (see monitoring.yaml). Never routed by the ingress.
+            - name: metrics
+              containerPort: 9394
           envFrom:
             - secretRef:
                 name: counta-app
@@ -82,6 +86,9 @@ kind: Service
 metadata:
   name: counta-web
   namespace: asn-staging
+  labels:
+    # VMServiceScrape (monitoring.yaml) selects the Service by this label.
+    app: counta-web
 spec:
   selector:
     app: counta-web
@@ -89,6 +96,9 @@ spec:
     - name: http
       port: 80
       targetPort: 3000
+    - name: metrics
+      port: 9394
+      targetPort: 9394
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

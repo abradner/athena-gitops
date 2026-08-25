@@ -23,11 +23,15 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/kaff:sha-ae885aa74a56028f7e15f7c6acd06fbba4dc8cc8
+          image: ghcr.io/abradner/kaff:sha-779a65c852893a8b9d68aabfaec5d9e7d5ce8df8
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
+            # yabeda exporter — cluster-internal only, scraped by vmagent
+            # (see monitoring.yaml). Never routed by Thruster or the ingress.
+            - name: metrics
+              containerPort: 9394
           env:
             # Thruster defaults to :80, which a non-root container can't bind
             # under Kubernetes (unprivileged port start is 1024).
@@ -86,10 +90,16 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/kaff:sha-ae885aa74a56028f7e15f7c6acd06fbba4dc8cc8
+          image: ghcr.io/abradner/kaff:sha-779a65c852893a8b9d68aabfaec5d9e7d5ce8df8
           imagePullPolicy: IfNotPresent
           args: ["./bin/temporal-worker"]
+          ports:
+            # Temporal SDK core Prometheus endpoint (see monitoring.yaml).
+            - name: metrics
+              containerPort: 9464
           env:
+            - name: TEMPORAL_METRICS_ADDR
+              value: 0.0.0.0:9464
             - name: PGHOST
               value: postgres.infra.asn.casa
             - name: KAFF_DATABASE_NAME
@@ -113,6 +123,9 @@ kind: Service
 metadata:
   name: kaff-web
   namespace: asn-staging
+  labels:
+    # VMServiceScrape (monitoring.yaml) selects the Service by this label.
+    app: kaff-web
 spec:
   selector:
     app: kaff-web
@@ -120,6 +133,9 @@ spec:
     - name: http
       port: 80
       targetPort: 8080
+    - name: metrics
+      port: 9394
+      targetPort: 9394
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

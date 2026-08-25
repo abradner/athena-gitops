@@ -30,7 +30,7 @@ spec:
             - name: ghcr-pull
           containers:
             - name: purge
-              image: ghcr.io/abradner/counta:sha-a213b36c0482b5b6d0e2d04554599ad6bdc5362f
+              image: ghcr.io/abradner/counta:sha-037c9bd1de1ca98341700a746cadad0d96a0292e
               imagePullPolicy: IfNotPresent
               command: ["bin/rails", "pens:purge"]
               envFrom:
