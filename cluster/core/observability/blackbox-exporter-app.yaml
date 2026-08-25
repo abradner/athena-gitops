@@ -1,0 +1,70 @@
+---
+# End-to-end uptime probes: blackbox exporter, probing the public sites the
+# way a visitor reaches them — public URL, through Cloudflare, through the
+# edge proxy, to whatever origin currently serves them.
+#
+# Added after chuvar.ai sat on a 503 for an unknown period with zero alerts:
+# every layer was monitored except the composition of the layers. Probing the
+# pod (or the Service) would have shown green the whole time — the failure was
+# in front of the origin. So these probes deliberately take the long way
+# around; a passing probe means the site works for an actual user.
+#
+# The probe targets live in vmprobe-public-sites.yaml next to this file. The
+# alert rules do NOT live in this repo: probe results remote-write to the
+# out-of-cluster store with everything else vmagent scrapes, and the vmalert
+# there evaluates them (asn-infra/observability/rules/athena-public-probes.yaml).
+# That split also covers this exporter's own death: if the cluster (and with
+# it these probes) goes dark, the out-of-cluster absent() rules page anyway.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: blackbox-exporter
+  namespace: argocd
+spec:
+  project: core
+  source:
+    repoURL: 'https://prometheus-community.github.io/helm-charts'
+    chart: prometheus-blackbox-exporter
+    targetRevision: 11.17.2
+    helm:
+      values: |
+        # The default fullname is blackbox-exporter-prometheus-blackbox-exporter;
+        # the short name is what vmprobe-public-sites.yaml points at.
+        fullnameOverride: blackbox-exporter
+
+        config:
+          modules:
+            # Restated rather than inherited so the contract is visible here:
+            # anything other than a 2xx after redirects fails the probe.
+            http_2xx:
+              prober: http
+              # Cloudflare holds a dead origin open for ~30s before answering
+              # 52x. No need to wait for the labelled verdict — a probe that
+              # cannot get a byte of response in 10s is already a failure, and
+              # the timeout must stay under the VMProbe scrapeTimeout anyway.
+              timeout: 10s
+              http:
+                follow_redirects: true
+                preferred_ip_protocol: "ip4"
+
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 96Mi
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
