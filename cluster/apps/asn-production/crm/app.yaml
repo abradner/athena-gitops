@@ -30,9 +30,11 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          # TODO: pin to a sha-<commit> tag once image publishing settles.
-          image: ghcr.io/abradner/crm:latest
-          imagePullPolicy: Always
+          # Pinned sha-<commit> tag (crm AGENTS.md §7: never a branch tag).
+          # Deploying crm = bump this tag everywhere in this file to a sha
+          # published by crm's docker.yml and let Argo sync it.
+          image: ghcr.io/abradner/crm:sha-15dc9b9343525322659b690171bd5c40a6e1b63e
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
@@ -95,8 +97,8 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/crm:latest
-          imagePullPolicy: Always
+          image: ghcr.io/abradner/crm:sha-15dc9b9343525322659b690171bd5c40a6e1b63e
+          imagePullPolicy: IfNotPresent
           args: ["./bin/temporal-worker"]
           env:
             - name: TEMPORAL_ADDRESS
@@ -139,8 +141,8 @@ spec:
         - name: ghcr-pull
       containers:
         - name: ensure-schedules
-          image: ghcr.io/abradner/crm:latest
-          imagePullPolicy: Always
+          image: ghcr.io/abradner/crm:sha-15dc9b9343525322659b690171bd5c40a6e1b63e
+          imagePullPolicy: IfNotPresent
           # The namespace-registration hook lives in a *different* Argo
           # Application (../temporal), so nothing orders it before this one —
           # a first sync can reach here with the `crm` namespace not yet
