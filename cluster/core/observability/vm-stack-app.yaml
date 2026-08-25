@@ -20,7 +20,7 @@ spec:
   source:
     repoURL: 'https://victoriametrics.github.io/helm-charts/'
     chart: victoria-metrics-k8s-stack
-    targetRevision: 0.91.1
+    targetRevision: 0.91.2
     helm:
       values: |
         # Short name, and load-bearing: the operator generates resources named
