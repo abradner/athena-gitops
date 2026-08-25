@@ -1,0 +1,36 @@
+---
+# vmagent scrape wiring for spritz. The VMAgent CR (vm-stack-app.yaml) runs
+# with selectAllByDefault, so these CRs are picked up from this namespace
+# without any extra selector plumbing.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: spritz-web
+  namespace: spritz-production
+spec:
+  selector:
+    matchLabels:
+      app: spritz-web
+  endpoints:
+    - port: metrics
+      path: /metrics
+---
+# The Temporal worker has no Service — scrape the pod directly. The port
+# name refers to the containerPort named `metrics` (9464) on the worker.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: spritz-temporal-worker
+  namespace: spritz-production
+spec:
+  selector:
+    matchLabels:
+      app: spritz-temporal-worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+---
+# DELIBERATELY NOT SCRAPED: spritz-solid-queue. It runs bin/jobs (no Puma),
+# so yabeda-rails never installs and the exporter plugin never starts — there
+# is no :9394 to scrape. Queue-process metrics are a separately scoped piece
+# (see keel docs/rails-prometheus-metrics.md, coverage boundaries).
