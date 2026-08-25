@@ -82,7 +82,7 @@ spec:
     # Pinning the chart that matches the running binaries makes git describe
     # reality, and makes recreating those three to fix their selectors a
     # version-neutral operation. Renovate moves this forward from here.
-    targetRevision: 9.5.21
+    targetRevision: 9.7.1
     helm:
       valuesObject:
         configs:
