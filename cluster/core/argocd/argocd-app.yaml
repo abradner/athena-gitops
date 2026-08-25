@@ -61,7 +61,10 @@ spec:
     repoURL: https://argoproj.github.io/argo-helm
     chart: argo-cd
     # targetRevision tracks the chart, and the chart's appVersion IS the Argo CD
-    # version that gets deployed — 9.5.21 renders v3.4.3.
+    # version that gets deployed — chart 9.7.1 renders v3.4.4. Renovate bumps
+    # the pin but not this prose, so treat that pairing as illustrative and
+    # confirm with `helm search repo argo/argo-cd --versions` rather than
+    # trusting it.
     #
     # This sat at 7.6.12 (appVersion v2.12.6) while the cluster actually ran
     # v3.4.3, because the release adopted a pre-existing hand-installed v3.4.3

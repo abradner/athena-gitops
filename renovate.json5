@@ -10,6 +10,33 @@
   argocd: {
     managerFilePatterns: ['cluster/**/*.yaml'],
   },
+  // The argocd manager above only reads cluster/**/*.yaml, so it cannot see the
+  // bootstrap installer's copy of the same pin. Without this, merging a chart
+  // bump leaves provision.sh behind and a disaster-recovery rebuild installs a
+  // different Argo CD than the one the Application immediately upgrades it to —
+  // the exact "git does not describe reality" drift that #51 existed to remove,
+  // reappearing in a second file. Happened once already, on argo-cd 9.5.21.
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: ['bootstrap/kubernetes/provision.sh'],
+      matchStrings: ['ARGOCD_CHART_VERSION="(?<currentValue>[^"]+)"'],
+      depNameTemplate: 'argo-cd',
+      datasourceTemplate: 'helm',
+      registryUrlTemplate: 'https://argoproj.github.io/argo-helm',
+    },
+  ],
+
+  packageRules: [
+    // argo-cd is pinned in two files by two different managers. They must move
+    // together or the drift above returns, so group them into one PR rather
+    // than trusting whoever merges the first to remember the second.
+    {
+      groupName: 'argo-cd chart',
+      matchDepNames: ['argo-cd'],
+    },
+  ],
+
   // One PR per chart, no rate-limit surprises on a homelab cadence.
   prConcurrentLimit: 5,
 }
