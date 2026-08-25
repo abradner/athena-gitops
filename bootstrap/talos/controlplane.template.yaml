@@ -74,7 +74,17 @@ machine:
         #         - '!10.0.0.3/32'
         #         - fdc7::/16
     # Provides machine specific network configuration options.
-    network: {}
+    network:
+        # LOAD-BEARING. The CP VMs' DHCP supplies an FQDN under k8s.asn.casa,
+        # and without this flag Talos writes "search k8s.asn.casa" into
+        # resolv.conf, which kubelet passes to every pod on the node. With
+        # ndots:5 any *.asn.casa hostname then resolves via the search suffix
+        # FIRST, and the *.asn.casa Cloudflare wildcard answers with an edge
+        # IP — connections hang silently (took out control-plane log shipping
+        # on 2026-08-25). Workers' auto hostnames carry no domain, so only CP
+        # nodes had the trap. Applied live to all 3 CP nodes the same day;
+        # this records it for rebuilds.
+        disableSearchDomain: true
     # # `interfaces` is used to define the network interface configuration.
     # interfaces:
     #     - interface: enp0s1 # The interface name.
