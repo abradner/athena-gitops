@@ -23,6 +23,12 @@ data:
   # alias, and daily send caps are low (~500).
   SMTP_ADDRESS: smtp.gmail.com
   SMTP_DOMAIN: rabalex.wedding
+  # Cloudflare Turnstile *site* key for the guest portal's magic-link
+  # recovery form — same key as production (one shared "Turnstile:
+  # Spritz.events" widget; see the note in ../../spritz-production/spritz/
+  # config.yaml). staging.rabalex.wedding must be on the key's hostname
+  # allowlist in the Cloudflare dashboard.
+  TURNSTILE_SITE_KEY: "0x4AAAAAAD-Hh32Z1mJG3Jb2"
   # staging.rb uses in-process async adapters — no Solid Queue supervisor.
   TEMPORAL_HOST_PORT: temporal-frontend.spritz-staging.svc.cluster.local:7233
   TEMPORAL_NAMESPACE: spritz
