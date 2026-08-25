@@ -198,9 +198,21 @@ spec:
         - name: ghcr-pull
       containers:
         - name: jobs
-          image: ghcr.io/abradner/spritz:v202608251024@sha256:6328a42e7baba7f975bf21cf635df56c03903b36b8ff492d993e5c2377e4d424
+          # One commit ahead of web/worker (#413, the queue exporter) — the
+          # change is env-gated off in every other pod, so only this
+          # Deployment moves to it.
+          image: ghcr.io/abradner/spritz:sha-8e0d7649593ab139f33a4a8c716f3cea859a0831@sha256:1ab171349c9622419a023b610da63d1482b55299de61fa40df3971370d3ffbcd
           imagePullPolicy: IfNotPresent
           args: ["bin/jobs"]
+          ports:
+            # Supervisor-process exporter (config/initializers/
+            # solid_queue_metrics.rb in the app): supervisor GC stats,
+            # queue-state gauges, per-role RSS for the forked processes.
+            - name: metrics
+              containerPort: 9394
+          env:
+            - name: SOLID_QUEUE_METRICS_ADDR
+              value: 0.0.0.0:9394
           envFrom:
             - configMapRef:
                 name: spritz-config

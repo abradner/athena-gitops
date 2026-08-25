@@ -30,7 +30,20 @@ spec:
     - port: metrics
       path: /metrics
 ---
-# DELIBERATELY NOT SCRAPED: spritz-solid-queue. It runs bin/jobs (no Puma),
-# so yabeda-rails never installs and the exporter plugin never starts — there
-# is no :9394 to scrape. Queue-process metrics are a separately scoped piece
-# (see keel docs/rails-prometheus-metrics.md, coverage boundaries).
+# The solid-queue pod runs bin/jobs (no Puma), so the yabeda Puma plugins
+# never start there. Its exporter is the supervisor-process one in the app's
+# config/initializers/solid_queue_metrics.rb, gated on
+# SOLID_QUEUE_METRICS_ADDR in the Deployment — supervisor GC stats,
+# queue-state gauges, and per-role RSS for the forked dispatcher/workers.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: spritz-solid-queue
+  namespace: spritz-production
+spec:
+  selector:
+    matchLabels:
+      app: spritz-solid-queue
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
