@@ -145,7 +145,15 @@ spec:
               # inspecting the ConfigMap before merging.
               vlogs:
                 endpoints:
-                  - http://obs-logs.infra.asn.casa:9428/insert/elasticsearch
+                  # TRAILING DOT — load-bearing. Control-plane VMs put
+                  # k8s.asn.casa in the pod search path; with ndots:5 the
+                  # resolver tries obs-logs.infra.asn.casa.k8s.asn.casa FIRST,
+                  # the *.asn.casa Cloudflare wildcard answers with an edge IP,
+                  # and vector hangs on port 9428 forever ("Request timed out",
+                  # zero packets toward the CT). Workers lack that search
+                  # domain, which is why only control-plane log shipping died.
+                  # The absolute name bypasses the search list on every node.
+                  - http://obs-logs.infra.asn.casa.:9428/insert/elasticsearch
                 # Buffer to disk while the CT is briefly away.
                 buffer:
                   type: disk
