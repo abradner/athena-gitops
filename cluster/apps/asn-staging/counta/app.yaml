@@ -11,17 +11,12 @@ metadata:
   name: counta-web
   namespace: asn-staging
 spec:
-  # ON ICE. counta hardcodes config.hosts = [ "counta.click" ] in
-  # production.rb, and this image runs RAILS_ENV=production in both cluster
-  # environments, so staging rejects its own hostname outright:
-  #   Blocked hosts: staging.counta.click
-  # It can pass a health probe (which now sends an allowed Host) but cannot
-  # serve a single real request, so running it proves nothing and just burns
-  # a Postgres connection on a server at its 100-connection ceiling.
-  #
-  # Unpark when counta makes config.hosts configurable — an app-repo change.
-  # Until then staging.counta.click stays out of HAProxy's cutover list.
-  replicas: 0
+  # Unparked 2026-08-25. counta#51 (already this pinned image, sha-a213b36)
+  # made hosts/WebAuthn env-driven via WebauthnEnvConfig: RAILS_HOSTS,
+  # WEBAUTHN_ORIGIN, WEBAUTHN_RP_ID (defaults to the origin's host). The
+  # earlier park reason — hardcoded config.hosts — was fixed by the very
+  # image this manifest already pinned.
+  replicas: 1
   selector:
     matchLabels:
       app: counta-web
@@ -39,6 +34,10 @@ spec:
           env:
             - name: PORT
               value: "3000"
+            - name: RAILS_HOSTS
+              value: staging.counta.click
+            - name: WEBAUTHN_ORIGIN
+              value: https://staging.counta.click
           ports:
             - name: http
               containerPort: 3000
@@ -54,21 +53,10 @@ spec:
               #   Blocked hosts: 10.244.x.y:3000
               # The pod then never goes Ready despite the app being fine.
               httpHeaders:
-                # counta.click, NOT staging.counta.click. counta hardcodes
-                # `config.hosts = [ "counta.click" ]` in production.rb, and
-                # this image runs RAILS_ENV=production in both cluster
-                # environments, so the staging hostname is rejected by
-                # HostAuthorization:
-                #   Blocked hosts: staging.counta.click
-                # Using the allowed host lets the probe verify the app is
-                # actually serving.
-                #
-                # KNOWN LIMITATION: real traffic to staging.counta.click is
-                # rejected for the same reason. Fixing that needs counta to
-                # make config.hosts configurable (env-driven) — an app-repo
-                # change. Do not cut staging.counta.click over until then.
+                # The real staging hostname — allowed via RAILS_HOSTS above —
+                # so the probe exercises the same Host path users hit.
                 - name: Host
-                  value: counta.click
+                  value: staging.counta.click
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
@@ -76,21 +64,10 @@ spec:
               path: /up
               port: 3000
               httpHeaders:
-                # counta.click, NOT staging.counta.click. counta hardcodes
-                # `config.hosts = [ "counta.click" ]` in production.rb, and
-                # this image runs RAILS_ENV=production in both cluster
-                # environments, so the staging hostname is rejected by
-                # HostAuthorization:
-                #   Blocked hosts: staging.counta.click
-                # Using the allowed host lets the probe verify the app is
-                # actually serving.
-                #
-                # KNOWN LIMITATION: real traffic to staging.counta.click is
-                # rejected for the same reason. Fixing that needs counta to
-                # make config.hosts configurable (env-driven) — an app-repo
-                # change. Do not cut staging.counta.click over until then.
+                # The real staging hostname — allowed via RAILS_HOSTS above —
+                # so the probe exercises the same Host path users hit.
                 - name: Host
-                  value: counta.click
+                  value: staging.counta.click
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:
