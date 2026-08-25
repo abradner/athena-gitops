@@ -36,7 +36,10 @@ spec:
         - https://spritz.events/
         - https://counta.click/
         - https://mcg.rest/
-        - https://kaff.asn.casa/
+        # kaff.asn.casa is deliberately absent: it is gated to internal
+        # clients at the edge for now, so the public URL failing is the
+        # intended state, not an incident. Re-add it when kaff goes public
+        # (same edge change that moves it to the proxy's public list).
         - https://rabalex.wedding/
         - https://inbox.simplytics.ai/
         - https://hello.bradner.net/
