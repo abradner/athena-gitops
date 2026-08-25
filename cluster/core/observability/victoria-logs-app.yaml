@@ -151,6 +151,22 @@ spec:
                   type: disk
                   max_size: 268435488
                   when_full: block
+          # Vector must run on the control-plane nodes too: without this
+          # toleration the DaemonSet covers only the 4 workers, so apiserver,
+          # scheduler and controller-manager logs were never collected — the
+          # exact logs you want when the control plane is misbehaving.
+          # (Dropped by accident in #65's sink rewrite; restored with the
+          # resources block that went with it.)
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: observability
