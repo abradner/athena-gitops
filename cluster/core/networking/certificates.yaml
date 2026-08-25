@@ -207,6 +207,25 @@ spec:
     kind: ClusterIssuer
     name: letsencrypt-prod
 ---
+# chuvar.ai — the public site. Zone lives in the simplytics Cloudflare
+# account, so issuance depends on the second DNS-01 solver — same wave-3
+# reasoning as inbox-simplytics-ai-tls above.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: chuvar-ai-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: chuvar-ai-tls
+  dnsNames:
+    - "chuvar.ai"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
