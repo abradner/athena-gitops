@@ -6,16 +6,16 @@
 # The Cloudflare API token arrives via ESO (cloudflare-api-token secret in
 # the cert-manager namespace, where ClusterIssuers resolve solver secrets).
 #
-# simplytics.ai (inbox.simplytics.ai, crm) and spritz.events (the marketing
-# site) are in a *different* Cloudflare account, so they share a second
-# solver, selected by dnsZones, with its own token — cert-manager picks the
-# solver by most-specific zone match. Add further zones from that account to
-# the same selector; a zone from a third account needs a third solver and
-# token.
+# simplytics.ai (inbox.simplytics.ai, crm), spritz.events (the marketing
+# site) and chuvar.ai are in a *different* Cloudflare account, so they share
+# a second solver, selected by dnsZones, with its own token — cert-manager
+# picks the solver by most-specific zone match. Add further zones from that
+# account to the same selector; a zone from a third account needs a third
+# solver and token.
 #
 # The token behind cloudflare-api-token-simplytics is account-wide DNS Write
-# on that account, so it already covers both zones; adding a zone here needs
-# no token change. A token scoped to one zone would instead fail as
+# on that account, so it already covers all its zones; adding a zone here
+# needs no token change. A token scoped to one zone would instead fail as
 # "Found no Zones for domain _acme-challenge.<host>" — which names Zone.read
 # rights, not the selector, and sends you looking in the wrong place.
 #
@@ -50,6 +50,7 @@ spec:
           dnsZones:
             - "simplytics.ai"
             - "spritz.events"
+            - "chuvar.ai"
         dns01:
           cloudflare:
             apiTokenSecretRef:
@@ -85,6 +86,7 @@ spec:
           dnsZones:
             - "simplytics.ai"
             - "spritz.events"
+            - "chuvar.ai"
         dns01:
           cloudflare:
             apiTokenSecretRef:

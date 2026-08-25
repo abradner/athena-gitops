@@ -175,3 +175,16 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: staging-spritz-events-tls
+  # chuvar.ai — the public site. Simplytics-account zone, same cert-manager
+  # caveat as inbox.simplytics.ai above; irrelevant to the Gateway itself.
+  - name: https-chuvar-ai
+    port: 443
+    protocol: HTTPS
+    hostname: "chuvar.ai"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: chuvar-ai-tls

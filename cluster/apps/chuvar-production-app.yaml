@@ -1,0 +1,29 @@
+# chuvar.ai public site (production). A real cutover: the previous origin
+# (a dev host behind the edge proxy) is dead — this deployment is what brings
+# the site back. See docs/runbook-public-site-503.md for how that was found.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chuvar-production
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-production/chuvar
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,85 @@
+---
+# chuvar.ai public site (github.com/abradner/chuvar-web) — static Astro build
+# served by Caddy on distroless, same shape as spritz-marketing. No shell, no
+# package manager: nothing to exec into, health is an HTTP probe.
+#
+# The site content is baked into the image at build time. The contact form's
+# CRM wiring (endpoint, property key, Turnstile site key — all public-by-
+# construction values) is also build-time: until the repo's workflow gets
+# those repo variables, the form renders in confirm-without-sending mode.
+# No Secret here beyond the namespace's existing ghcr-pull.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chuvar-web
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chuvar-web
+  template:
+    metadata:
+      labels:
+        app: chuvar-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          image: ghcr.io/abradner/chuvar-web:sha-PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Caddy binds :8080 (Caddyfile) — above 1024 so the nonroot user
+          # needs no capability, and TLS terminates at the Gateway, so this
+          # speaks plain HTTP.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chuvar-web
+  namespace: asn-production
+spec:
+  selector:
+    app: chuvar-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: chuvar
+  namespace: asn-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-chuvar-ai
+  hostnames:
+    - "chuvar.ai"
+  rules:
+    - backendRefs:
+        - name: chuvar-web
+          port: 80
