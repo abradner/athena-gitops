@@ -8,7 +8,10 @@ on:
 jobs:
   yaml-syntax:
     name: YAML syntax (yq)
-    runs-on: ubuntu-latest
+    # arm64 runners fleet-wide: matches the cluster's architecture and the
+    # binaries below are downloaded for arm64 — keep runner arch and asset
+    # names in step if either ever changes.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       # Pin yq rather than relying on the runner's preinstalled copy —
@@ -17,20 +20,20 @@ jobs:
         env:
           YQ_VERSION: v4.44.3
         run: |
-          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_arm64"
           sudo chmod +x /usr/local/bin/yq
       - run: ./scripts/validate_yaml.sh
 
   k8s-schema:
     name: Kubernetes schema (kubeconform)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Install kubeconform
         env:
           KUBECONFORM_VERSION: v0.6.7
         run: |
-          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz kubeconform
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-arm64.tar.gz" | tar xz kubeconform
           sudo mv kubeconform /usr/local/bin/
       # bootstrap/ is excluded: talos templates use {{ }} placeholders and
       # aren't valid k8s manifests until hydrated.
