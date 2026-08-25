@@ -1,0 +1,31 @@
+---
+# vmagent scrape wiring for kaff. The VMAgent CR (vm-stack-app.yaml) runs
+# with selectAllByDefault, so these CRs are picked up from this namespace
+# without any extra selector plumbing.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: kaff-web
+  namespace: asn-production
+spec:
+  selector:
+    matchLabels:
+      app: kaff-web
+  endpoints:
+    - port: metrics
+      path: /metrics
+---
+# The Temporal worker has no Service — scrape the pod directly. The port
+# name refers to the containerPort named `metrics` (9464) on the worker.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: kaff-temporal-worker
+  namespace: asn-production
+spec:
+  selector:
+    matchLabels:
+      app: kaff-temporal-worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

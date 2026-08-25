@@ -1,0 +1,16 @@
+---
+# vmagent scrape wiring for counta. The VMAgent CR (vm-stack-app.yaml) runs
+# with selectAllByDefault, so these CRs are picked up from this namespace
+# without any extra selector plumbing.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: counta-web
+  namespace: asn-production
+spec:
+  selector:
+    matchLabels:
+      app: counta-web
+  endpoints:
+    - port: metrics
+      path: /metrics
