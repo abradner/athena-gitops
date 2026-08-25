@@ -43,3 +43,72 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             cluster/
+
+  helm-render:
+    name: Helm render (what Argo will apply)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      # Full history: the render diff below needs the PR's base commit, and
+      # actions/checkout defaults to a shallow clone that does not have it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.6.7
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-arm64.tar.gz" | tar xz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      # An Application is a few valid lines that expand into hundreds of
+      # manifests. yq and kubeconform above both check the repo's own YAML and
+      # neither renders a chart, so everything in that expansion was unchecked.
+      - name: Render charts
+        run: ./scripts/render_helm.sh .render/head
+
+      # kubeconform against the RENDERED output, not the repo. The job above
+      # validates what we wrote; this validates what the cluster receives.
+      - name: Validate rendered manifests
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            .render/head
+
+      # The diff is the part that earns this job. Rendering successfully proves
+      # very little: on 2026-08-25 a one-line change rendered cleanly into a
+      # Vector sink with a null body and took log collection down cluster-wide,
+      # and its replacement rendered cleanly while silently dropping a
+      # toleration and a resources block. Both were valid YAML, valid
+      # Kubernetes, and wrong. What would have shown either at review time is
+      # seeing what the rendered output does that it did not do before.
+      - name: Diff rendered output against base
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add /tmp/base "${{ github.event.pull_request.base.sha }}" >/dev/null
+          ( cd /tmp/base && ./scripts/render_helm.sh /tmp/base-render >/dev/null 2>&1 ) || {
+            echo "::notice::Base commit failed to render — showing head only."; exit 0; }
+          if diff -ru /tmp/base-render .render/head > /tmp/render.diff; then
+            echo "No change to rendered output."
+          else
+            # Count real content lines only: grep '^[+-]' also matches the
+            # +++/--- file headers, which inflates the number.
+            changed=$(grep -cE '^[+-]' /tmp/render.diff)
+            headers=$(grep -cE '^(\+\+\+|---)' /tmp/render.diff)
+            echo "::group::Rendered output changed ($((changed - headers)) lines)"
+            cat /tmp/render.diff
+            echo "::endgroup::"
+            echo "::notice::Rendered Helm output changed — check the diff for anything you did not intend, especially REMOVED lines."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-manifests
+          path: .render/head
+          retention-days: 7
