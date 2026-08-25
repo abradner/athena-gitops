@@ -19,6 +19,9 @@ spec:
     helm:
       values: |
         server:
+          # The log store is obs-logs (CT 141) now. Vector below stays — it is
+          # the collector, and it has to run where the logs are.
+          enabled: false
           retentionPeriod: 30d
           persistentVolume:
             enabled: true
@@ -40,6 +43,8 @@ spec:
           # store on pve. Same parser input, same field mapping. Once
           # obs-logs has run clean for a few days the in-cluster store is
           # disabled and this becomes the only sink.
+          # With server.enabled=false the chart emits no in-cluster sink, so
+          # this is now Vector's only destination.
           customConfig:
             transforms:
               # Replaces the chart's default parser. Three jobs, in order:

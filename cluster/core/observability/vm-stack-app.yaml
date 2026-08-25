@@ -29,11 +29,21 @@ spec:
         # Kubernetes 63-char name limit. Alertmanager silently failed to
         # deploy at all (Service rejected, operator retrying forever).
         # Applies only to the VM operator's own resources; the Grafana
-        # subchart keeps its victoria-metrics-stack-grafana name, so the
-        # grafana-ui route is unaffected.
+        # subchart kept its victoria-metrics-stack-grafana name (its
+        # HTTPRoute is gone now — Grafana runs on obs-grafana, CT 142).
         fullnameOverride: vmk8s
         # --- storage ---------------------------------------------------
+        #
+        # vmsingle, vmalert, alertmanager and grafana now run OUTSIDE the
+        # cluster, on CTs 140-143 on pve0/1/2. They are disabled here rather
+        # than deleted so the sizing and reasoning stay readable, and so
+        # re-enabling is a one-line change if the CTs ever have to be rebuilt.
+        #
+        # What stays in-cluster is only what must be: vmagent (scrapes and
+        # remote-writes out), the exporters it scrapes, and the operator that
+        # reconciles the VMAgent CR.
         vmsingle:
+          enabled: false
           spec:
             # 30 days is a deliberate ceiling, not a default: this writes to
             # a node-local volume, and the node has finite disk.
@@ -53,13 +63,11 @@ spec:
         # --- scraping --------------------------------------------------
         vmagent:
           spec:
-            # Ship everything to the out-of-cluster store on pve as well as
-            # the in-cluster vmsingle. DUAL-WRITE is the parallel-run phase of
-            # the observability move: once obs-metrics has run clean for a few
-            # days, the in-cluster vmsingle/vmalert/alertmanager/grafana get
-            # disabled and the first URL is removed.
+            # Single write target: the out-of-cluster store on pve
+            # (obs-metrics, CT 140). The dual-write parallel-run phase is
+            # over; the in-cluster vmsingle target was removed with the
+            # rest of the in-cluster stateful stack below.
             remoteWrite:
-              - url: http://vmsingle-vmk8s.observability.svc.cluster.local.:8428/api/v1/write
               - url: http://obs-metrics.infra.asn.casa:8428/api/v1/write
             # Survive the remote target being briefly away (CT reboot):
             # buffer to disk instead of dropping samples.
@@ -79,6 +87,10 @@ spec:
 
         # --- rules + alerting ------------------------------------------
         vmalert:
+          # rules are evaluated by the vmalert on obs-metrics, from files
+          # in asn-infra/observability/rules. Outside the cluster it can still
+          # evaluate absent() rules when the cluster is gone — the whole point.
+          enabled: false
           spec:
             resources:
               requests:
@@ -88,6 +100,10 @@ spec:
                 memory: 384Mi
 
         alertmanager:
+          # obs-alerts (CT 143) delivers alerts now. It sits on a different pve
+          # node from obs-metrics so one node loss cannot take both the
+          # detector and the notifier.
+          enabled: false
           spec:
             # Full config comes from the ESO-rendered Secret
             # (alertmanager-config.yaml) so the Telegram token stays out of
@@ -102,7 +118,9 @@ spec:
 
         # --- Grafana ---------------------------------------------------
         grafana:
-          enabled: true
+          # obs-grafana (CT 142) serves the UI now, with the same 41 dashboards
+          # provisioned from files and the same 1Password admin credential.
+          enabled: false
           # Credentials come from 1Password via ESO. The chart's default is a
           # well-known password; leaving that on an admin UI reachable from
           # the LAN would be the weakest link in the whole cluster.
