@@ -31,8 +31,12 @@ the buffered window, never history.
 - Runbook and as-built inventory: `asn-infra/observability/PROVISION.md`
 - Alertmanager config: `asn-infra/observability/configs/alertmanager.yaml.tpl` (rendered with
   `op inject`, so no token is ever written to disk)
-- UIs: `obs-grafana.infra.asn.casa:3000`, `obs-logs.infra.asn.casa:9428`,
-  `obs-alerts.infra.asn.casa:9093`
+- UIs: behind the HAProxy front door on `*.infra.asn.casa`, over TLS. Names are
+  in `asn-infra/observability/firewall/README.md`. The store ports listed here
+  previously answered any LAN client with no credentials — a regression from
+  moving observability out of the cluster, where HAProxy had gated the
+  equivalent UIs. They are no longer reachable directly; use the front door,
+  or Grafana Explore, which proxies both stores.
 
 The `grafana.athena.asn.casa` / `logs.athena.asn.casa` HTTPRoutes were removed with this change —
 those Services no longer exist. Neither hostname ever had a UniFi DNS record, so nothing that
