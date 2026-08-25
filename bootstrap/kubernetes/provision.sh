@@ -6,8 +6,10 @@ set -euo pipefail
 GATEWAY_API_VERSION="v1.2.1" # later versions break cilium 1.19 due to naming changes
 CILIUM_VERSION="1.19.4"
 # Keep in sync with cluster/core/argocd/argocd-app.yaml — that Application
-# adopts this release once the root app syncs.
-ARGOCD_CHART_VERSION="9.5.21"
+# adopts this release once the root app syncs. Renovate now keeps the two in
+# step via a customManager (see renovate.json5); they are grouped into one PR
+# so this line cannot be left behind again.
+ARGOCD_CHART_VERSION="9.7.1"
 
 # Install gateway-api
 
