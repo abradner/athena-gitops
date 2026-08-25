@@ -29,8 +29,8 @@ spec:
         # Kubernetes 63-char name limit. Alertmanager silently failed to
         # deploy at all (Service rejected, operator retrying forever).
         # Applies only to the VM operator's own resources; the Grafana
-        # subchart keeps its victoria-metrics-stack-grafana name, so the
-        # grafana-ui route is unaffected.
+        # subchart kept its victoria-metrics-stack-grafana name (its
+        # HTTPRoute is gone now — Grafana runs on obs-grafana, CT 142).
         fullnameOverride: vmk8s
         # --- storage ---------------------------------------------------
         #
@@ -63,11 +63,10 @@ spec:
         # --- scraping --------------------------------------------------
         vmagent:
           spec:
-            # Ship everything to the out-of-cluster store on pve as well as
-            # the in-cluster vmsingle. DUAL-WRITE is the parallel-run phase of
-            # the observability move: once obs-metrics has run clean for a few
-            # days, the in-cluster vmsingle/vmalert/alertmanager/grafana get
-            # disabled and the first URL is removed.
+            # Single write target: the out-of-cluster store on pve
+            # (obs-metrics, CT 140). The dual-write parallel-run phase is
+            # over; the in-cluster vmsingle target was removed with the
+            # rest of the in-cluster stateful stack below.
             remoteWrite:
               - url: http://obs-metrics.infra.asn.casa:8428/api/v1/write
             # Survive the remote target being briefly away (CT reboot):

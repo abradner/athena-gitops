@@ -20,7 +20,10 @@ Alertmanager, running inside the thing it monitored, would have gone silent with
 `vmalert` went out with them specifically so `absent()` rules can fire when athena stops
 reporting; a rule that only evaluates while the cluster is healthy cannot tell you it is not.
 
-It also makes every worker genuinely stateless again: these were the only PVCs in the cluster.
+The stores' PVCs left the cluster with them. One deliberate exception remains: vmagent
+runs `statefulMode` with a small PVC purely as a remote-write buffer, so a temporary
+obs-metrics outage loses nothing. That buffer is disposable — losing it costs at most
+the buffered window, never history.
 
 ## Where things are now
 
