@@ -13,7 +13,7 @@ spec:
   source:
     repoURL: https://postfinance.github.io/kubelet-csr-approver
     chart: kubelet-csr-approver
-    targetRevision: 1.2.2
+    targetRevision: 1.2.14
     helm:
       valuesObject:
         # Homelab: approve serving CSRs from any node name. Tighten to a
