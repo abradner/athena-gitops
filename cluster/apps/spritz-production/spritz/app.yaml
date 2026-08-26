@@ -23,7 +23,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz:v202608251024@sha256:6328a42e7baba7f975bf21cf635df56c03903b36b8ff492d993e5c2377e4d424
+          image: ghcr.io/abradner/spritz:v202608260013@sha256:bc0d1fc2f1cbce328da0f6daeca91e7907d0c61daff22ae80d7121b8bdfed82f
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -106,7 +106,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/spritz:v202608251024@sha256:6328a42e7baba7f975bf21cf635df56c03903b36b8ff492d993e5c2377e4d424
+          image: ghcr.io/abradner/spritz:v202608260013@sha256:bc0d1fc2f1cbce328da0f6daeca91e7907d0c61daff22ae80d7121b8bdfed82f
           imagePullPolicy: IfNotPresent
           args: ["bundle", "exec", "rake", "temporal:run_worker"]
           ports:
@@ -198,10 +198,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: jobs
-          # One commit ahead of web/worker (#413, the queue exporter) — the
-          # change is env-gated off in every other pod, so only this
-          # Deployment moves to it.
-          image: ghcr.io/abradner/spritz:sha-8e0d7649593ab139f33a4a8c716f3cea859a0831@sha256:1ab171349c9622419a023b610da63d1482b55299de61fa40df3971370d3ffbcd
+          image: ghcr.io/abradner/spritz:v202608260013@sha256:bc0d1fc2f1cbce328da0f6daeca91e7907d0c61daff22ae80d7121b8bdfed82f
           imagePullPolicy: IfNotPresent
           args: ["bin/jobs"]
           ports:
