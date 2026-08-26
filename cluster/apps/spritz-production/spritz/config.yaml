@@ -30,6 +30,15 @@ data:
   # would silently keep the supervisor inside Puma. Solid Queue now runs as its
   # own Deployment (spritz-solid-queue) so job capacity is independent of web
   # replica count.
+  # Cloudflare Turnstile *site* key for the guest portal's magic-link
+  # recovery form (abradner/spritz — layout meta tag, read at request time).
+  # Public by design: the same key is already baked into the marketing
+  # site's HTML, so plain config here, not the spritz-app Secret (which
+  # holds the paired TURNSTILE_SECRET_KEY). NOTE: the widget only renders
+  # on hostnames allowed for this key in the Cloudflare dashboard — the
+  # guest portal host (rabalex.wedding) must be on that list, not just
+  # spritz.events.
+  TURNSTILE_SITE_KEY: "0x4AAAAAAD-Hh32Z1mJG3Jb2"
   TEMPORAL_HOST_PORT: temporal-frontend.spritz-production.svc.cluster.local:7233
   TEMPORAL_NAMESPACE: spritz
   MAILER_HOST: rabalex.wedding
