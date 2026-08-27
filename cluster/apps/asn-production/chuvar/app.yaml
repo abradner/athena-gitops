@@ -27,7 +27,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/chuvar-web:sha-616d151cae27f1812f45aa820ebd64a6754b661b
+          image: ghcr.io/abradner/chuvar-web:sha-04823c99417f14edb565029e3ea13234b5bae742
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
