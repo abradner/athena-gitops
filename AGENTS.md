@@ -1,4 +1,4 @@
-# Antigravity & Gemini Agent Onboarding: Athena GitOps
+# Agent Onboarding: Athena GitOps
 
 ## Repository Overview
 `athena-gitops` is the foundational cluster management repository for the Athena homelab. It maintains raw Kubernetes bootstrap assets, ArgoCD Application manifests, and core cluster infrastructure configuration. A related, separate repository — `tools-workflow` — provides the automation pipeline that drives several operational workflows against this repo.
@@ -6,6 +6,54 @@
 ## Domain Nomenclature
 - **Application**: An individual microservice (e.g., `pmn-ext-gw`), mapping directly to the ArgoCD Application schema.
 - **Project**: The overall deployment suite scope (e.g., `pmn`). `Config#project_name` is the canonical identifier, sourced from the `PROJECT_NAME` env var and used for namespace interpolation (`#{project_name}-#{env}`).
+
+## Placement Doctrine — what runs where, and why
+
+The single most load-bearing set of decisions in this estate. Stated as principles; the
+concrete inventory (which guest runs on which host, addresses, ids) lives in the **private**
+`asn-infra` repo, deliberately not here — see "The public/private split" below.
+
+**1. Prod-facing applications run in-cluster; their state does not.** Every app here is
+stateless against an external PostgreSQL and an external S3-compatible object store. This is
+not incidental: during a month-long cluster outage in 2026, data loss was zero *because* of
+this split, and the refresh/restore tooling stays simple because the database is a plain host
+rather than a cluster-managed service.
+
+**2. State lives on the hypervisor tier, never on the storage box, never on the Pi
+hypervisors.** The hypervisor cluster has the RAM, NVMe mirrors and its own backup server, and
+is a separate failure domain from the cluster. The NAS is the *backup destination* — putting a
+source there defeats the purpose. The Pi hypervisors that host the control-plane VMs would
+contend for memory with those VMs and couple two failure domains.
+
+**3. Nothing that watches the cluster may depend on the cluster.** Monitoring, alerting and
+backups run outside it. A detector living inside its subject fails by going silent, which is
+indistinguishable from "everything is fine" — this is exactly how the month-long outage stayed
+invisible. Only stateless collectors (metric scraper, log shipper, exporters) remain in-cluster;
+they buffer to disk and forward outward.
+
+**4. A cache is a third case, not "state".** Durability, survivability and latency are separate
+axes and a cache scores differently on each: rebuildable (no durability need), useless while the
+cluster is down (no survivability need), hit on every request (latency matters). All three point
+**in-cluster**. The exception that flips it: a Redis used as a *job queue* is not
+reconstructible and is a database in disguise.
+
+### Rejected alternatives, with the reasons
+
+Recorded so they are not re-proposed as if new.
+
+- **NFS-backed PersistentVolumes from the NAS.** Requested with the condition "as long as it
+  won't take down the cluster if the NAS is away for a few hours". That condition is not
+  satisfiable: hard mounts wedge kubelet's volume manager, and soft mounts corrupt a
+  time-series database mid-write. Inverted to node-local volumes plus scheduled snapshots
+  outward, keeping the NAS out of the runtime path entirely.
+- **Longhorn and Ceph.** Declined — both add a distributed-storage control plane (and its
+  failure modes, and its own backup obligation) to solve a problem the stateless-app split
+  already removes.
+- **A tainted in-cluster worker for observability.** Solves capacity but not survivability:
+  control-plane death still blinds you. Survivability was the whole point.
+- **Moving metrics/logs into PostgreSQL** to reduce the number of things to back up. Argues the
+  other way: observability data is derived and deliberately disposable, and putting it in the
+  database makes it look like something that must be protected.
 
 ## File Layout & Separation of Concerns
 
@@ -76,3 +124,50 @@ different bug; all are Argo behaving as designed in ways that mislead.
    applied cleanly, not that its operator could act on it. Read the CR's
    `.status.reason` (e.g. a generated Service name over 63 characters kept a
    `VMAlertmanager` "Synced" and dead for hours).
+
+## Gotchas & Lessons Learned
+
+Numbered and accreting — add entries rather than rewriting, so they can be cited from code
+comments and PR descriptions. Entry shape: **what happened → the actual root cause → the
+general rule.** Argo-specific traps have their own section above.
+
+1. **A Helm `null` override did not delete an inherited key; it shipped the word `null`.**
+   Pruning the in-cluster observability stack left the log shipper's chart-default sink behind
+   with an empty endpoint, which is fatal at boot — log collection was down cluster-wide. The
+   fix attempt asserted `<sink>: null` to remove it. Root cause: **Helm's deep merge can add
+   keys but never remove them**, and this chart passes its `customConfig` through to the
+   rendered output, so the null serialized literally and stayed a sink. General rule: to
+   neutralize an inherited chart value, *complete* it into something valid rather than trying
+   to delete it — and never assume a value's absence from your own values file means absence
+   from the rendered output.
+
+2. **`render before merge`, not `merge and watch`.** The above cost two merges, two Argo syncs,
+   a DaemonSet roll and roughly ten extra minutes of outage to discover something a local
+   `helm template` would have shown in one minute. A later commit in the same incident also
+   silently deleted a control-plane toleration and a resources block, because the edit replaced
+   a text span that reached past its intended end. General rule: for any chart-value change,
+   render the chart locally and inspect the *rendered* object — and diff the whole change, not
+   just the part you were thinking about. Verifying the previous failure mode is not the same
+   as reviewing the diff.
+
+3. **A DHCP-supplied domain became a pod DNS search domain and silently blackholed traffic.**
+   Control-plane pods could not reach an out-of-cluster service; the client reported request
+   timeouts, no packets ever reached the destination host, and the CNI logged no drops. Root
+   cause: the control-plane VMs receive an FQDN by DHCP, from which Talos derives a node search
+   domain that kubelet passes to every pod on that node. With the default `ndots:5`, a service
+   hostname was tried **with the search suffix first**, that suffixed name matched a public
+   wildcard DNS record, and the connection went to a CDN edge that accepts and drops the port.
+   Worker nodes had no such domain, so only control-plane pods were affected. General rule: two
+   defences, both applied — set `machine.network.disableSearchDomain: true` on nodes whose DHCP
+   supplies a domain (see `bootstrap/talos/controlplane.template.yaml`), and write in-cluster
+   references to names under a wildcarded zone as absolute FQDNs with a trailing dot. Corollary
+   for diagnosis: connectivity probes by IP, and name lookups issued as absolute queries, both
+   pass while the real path fails — reproduce the resolver's actual search behaviour from inside
+   an affected pod.
+
+## The public/private split
+
+**This repository is public.** Internal addresses, guest inventories, host-to-service mappings
+and anything else that describes the shape of the private network belong in the private
+`asn-infra` repository, not here. When documenting a lesson whose specifics are topological,
+write the transferable rule here and keep the inventory there.
