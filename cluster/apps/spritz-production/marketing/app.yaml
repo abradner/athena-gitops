@@ -4,14 +4,29 @@
 # package manager: nothing to exec into, and health is an HTTP probe rather
 # than a HEALTHCHECK.
 #
-# The site content is baked into the image at build time, including the
-# Turnstile *site* key, so there is no volume, no bucket and no Secret here —
-# the only pull-time credential is the namespace's existing ghcr-pull.
+# The site content is baked into the image at build time — the Turnstile
+# *site* key, and now also the crm contact endpoint and the spritz property
+# key — so there is no volume, no bucket and no Secret here; the only
+# pull-time credential is the namespace's existing ghcr-pull. A rotation of
+# any of those three needs a rebuild, not just a restart.
 #
-# Pinned to the same sha- tag as spritz-web in ../spritz, deliberately: the
-# app and marketing images are built and published in lockstep by one
-# workflow (.github/workflows/docker.yml), and the contact form posts to the
-# Rails app's /api/public/contact_submissions. Bump both together.
+# This pin no longer has to match spritz-web in ../spritz, and this stanza
+# previously said it did. The stated reason was that "the contact form posts
+# to the Rails app's /api/public/contact_submissions" — which stopped being
+# true when the form was cut over to crm (inbox.simplytics.ai) in
+# abradner/spritz#437. The contact form now posts cross-origin to a different
+# app entirely, gated by that app's per-property CORS allowlist, so nothing
+# in this Deployment depends on the Rails app's version.
+#
+# The two images are still BUILT and published in lockstep by one workflow
+# (.github/workflows/docker.yml), which is a fact about the build, not a
+# deployment constraint. What remains coupled to spritz-web is the EOI form,
+# which still posts to /api/public/eoi_submissions through the Gateway — but
+# that path has not changed and is not version-sensitive.
+#
+# Consequence worth knowing: spritz.events must be in the spritz-events-inbound
+# Property's allowed_origins in crm, or the contact form fails CORS — which a
+# visitor experiences as a lost message, not an error.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,7 +46,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz-marketing:sha-86c0ec550079ba1d0783d2567b7bdb0e59551263
+          image: ghcr.io/abradner/spritz-marketing:sha-094676fa99aaea4b8283d3b403e7c610f94e1756
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
