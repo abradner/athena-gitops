@@ -19,7 +19,7 @@ spec:
     helm:
       values: |
         server:
-          # The log store is obs-logs (CT 141) now. Vector below stays — it is
+          # The log store is obs-logs, out of cluster, now. Vector below stays — it is
           # the collector, and it has to run where the logs are.
           enabled: false
           retentionPeriod: 30d
@@ -130,7 +130,7 @@ spec:
                     )
                   }
             sinks:
-              # Ship to the out-of-cluster VictoriaLogs (obs-logs, CT 141) by
+              # Ship to the out-of-cluster VictoriaLogs (obs-logs) by
               # completing the CHART'S OWN vlogs sink rather than adding a
               # parallel one. The chart's default values define vlogs as a
               # correct elasticsearch sink (right VL-* headers included) but

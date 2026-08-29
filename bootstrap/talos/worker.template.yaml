@@ -197,7 +197,8 @@ machine:
         # only the 31 GB SD card (mmcblk0) and an unused 14 GB Optane (nvme0n1).
         # The control-plane template keeps /dev/sda because those nodes are VMs
         # and it is correct for them. Verified against the live config on
-        # 10.10.80.114 (mmcblk0) and 10.10.80.150 (sda), 2026-08-23.
+        # a live worker (mmcblk0) and a live control-plane node (sda),
+        # 2026-08-23.
         disk: /dev/mmcblk0 # The disk used for installations.
         image: ghcr.io/siderolabs/installer:v1.13.4 # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
@@ -345,11 +346,12 @@ machine:
     #         - endpoint: tcp://1.2.3.4:12345 # Where to send logs. Supported protocols are "tcp" and "udp".
     #           format: json_lines # Logs format.
 
-    # # Configures the kernel.
-    # kernel:
-    #     # Kernel modules to load.
-    #     modules:
-    #         - name: brtfs # Module name.
+    # Configures the kernel.
+    kernel:
+        # Kernel modules to load.
+        modules:
+            - name: btrfs # Module name.
+            - name: vc4
 
     # # Configures the seccomp profiles for the machine.
     # seccompProfiles:
