@@ -433,19 +433,19 @@ kubectl -n <ns> logs deploy/<app>-web --tail=60 | grep -iE 'error|fatal|exceptio
 
 ## Production-specific differences
 
-1. **Production is atomic.** CT 132 runs *one* Rails app serving both
+1. **Production is atomic.** the source guest runs *one* Rails app serving both
    `<canonical-host>` and `<app>.events` against one database. HAProxy splits
    them at the edge, but they write the same tables. Moving half sends RSVPs
    and EOI submissions to a different database from the one still being read —
    and the writes *succeed*, returning 422/302 with normal log lines. There is
    no error anywhere to notice.
-2. **A write freeze is required.** Stop CT 132 before dumping. Any submission
+2. **A write freeze is required.** Stop the source guest before dumping. Any submission
    between dump and cutover is lost.
 3. **`<admin-role>` and `<reporting-role>` must be stripped** (step 4), or the load rolls
    back after completing.
 4. **Both `public` and `public_legacy` come across** — the production source
    has both.
-5. Solid Queue counts as a writer. CT 132 ran a dispatcher on a 1-second
+5. Solid Queue counts as a writer. the source guest ran a dispatcher on a 1-second
    loop plus a scheduler and worker inside `<app>.service`, and a separate
    `<app>-temporal-worker.service`. Stopping the **services** rather than the
    container freezes writes while keeping the rollback hot. `systemctl stop`

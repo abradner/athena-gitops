@@ -25,11 +25,11 @@
 #
 # WHY NODE-LOCAL AND NOT NFS: volumes here live on whichever node the pod
 # lands on, so losing that node loses the data. That is accepted
-# deliberately. An NFS-backed class would put tn0 in the runtime path, and a
-# hard NFS mount that stops answering blocks I/O indefinitely and can wedge
-# kubelet's volume manager — a storage outage would become a cluster
-# problem. Durability is handled by snapshotting to tn0 on a schedule
-# instead, which keeps tn0 out of the hot path entirely.
+# deliberately. An NFS-backed class would put the NAS in the runtime path,
+# and a hard NFS mount that stops answering blocks I/O indefinitely and can
+# wedge kubelet's volume manager — a storage outage would become a cluster
+# problem. Durability is handled by snapshotting to the NAS on a schedule
+# instead, which keeps it out of the hot path entirely.
 apiVersion: v1
 kind: Namespace
 metadata:

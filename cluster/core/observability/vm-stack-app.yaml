@@ -30,14 +30,15 @@ spec:
         # deploy at all (Service rejected, operator retrying forever).
         # Applies only to the VM operator's own resources; the Grafana
         # subchart kept its victoria-metrics-stack-grafana name (its
-        # HTTPRoute is gone now — Grafana runs on obs-grafana, CT 142).
+        # HTTPRoute is gone now — Grafana runs out of cluster).
         fullnameOverride: vmk8s
         # --- storage ---------------------------------------------------
         #
         # vmsingle, vmalert, alertmanager and grafana now run OUTSIDE the
-        # cluster, on CTs 140-143 on pve0/1/2. They are disabled here rather
-        # than deleted so the sizing and reasoning stay readable, and so
-        # re-enabling is a one-line change if the CTs ever have to be rebuilt.
+        # cluster, as LXC containers on the hypervisor tier. They are disabled
+        # here rather than deleted so the sizing and reasoning stay readable,
+        # and so re-enabling is a one-line change if those hosts ever have to
+        # be rebuilt.
         #
         # What stays in-cluster is only what must be: vmagent (scrapes and
         # remote-writes out), the exporters it scrapes, and the operator that
@@ -64,7 +65,7 @@ spec:
         vmagent:
           spec:
             # Single write target: the out-of-cluster store on pve
-            # (obs-metrics, CT 140). The dual-write parallel-run phase is
+            # (obs-metrics). The dual-write parallel-run phase is
             # over; the in-cluster vmsingle target was removed with the
             # rest of the in-cluster stateful stack below.
             remoteWrite:
@@ -100,9 +101,9 @@ spec:
                 memory: 384Mi
 
         alertmanager:
-          # obs-alerts (CT 143) delivers alerts now. It sits on a different pve
-          # node from obs-metrics so one node loss cannot take both the
-          # detector and the notifier.
+          # obs-alerts delivers alerts now. It is deliberately placed on a
+          # different hypervisor node from obs-metrics, so losing one node
+          # cannot take both the detector and the notifier.
           enabled: false
           spec:
             # Full config comes from the ESO-rendered Secret
@@ -118,7 +119,7 @@ spec:
 
         # --- Grafana ---------------------------------------------------
         grafana:
-          # obs-grafana (CT 142) serves the UI now, with the same 41 dashboards
+          # obs-grafana serves the UI now, with the same 41 dashboards
           # provisioned from files and the same 1Password admin credential.
           enabled: false
           # Credentials come from 1Password via ESO. The chart's default is a
