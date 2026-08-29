@@ -26,7 +26,7 @@ The cluster's external dependencies, not the cluster itself:
 
 | Dependency | Why it matters | Where it's configured |
 | --- | --- | --- |
-| **DHCP reservations** | Node network config is `network: {}` — all IPs come from DHCP. etcd peers and the kubeconfig reference the `10.10.80.x` addresses, so every node must come back with the *same* IP. | Router/DHCP server; addresses listed in `bootstrap/athena.zsh` |
+| **DHCP reservations** | Node network config is `network: {}` — all IPs come from DHCP. etcd peers and the kubeconfig reference the node addresses directly, so every node must come back with the *same* IP. | Router/DHCP server; addresses listed in `bootstrap/athena.zsh` |
 | **DNS** | The kube API endpoint is `https://in.k8s.asn.casa:6443`. Nodes and `kubectl` need it to resolve at boot. | Wherever `asn.casa` is served |
 | **NTP** | Raspberry Pi workers have no RTC; Talos gates the boot sequence on time sync. If NTP is unreachable, workers stall at boot. | Talos default (pool.ntp.org) → needs WAN |
 | **Boot order** | Control plane must be up (and Cilium running) before workers try to join. | This runbook |

@@ -13,3 +13,17 @@ bootstrap/athena.zsh
 # cache path embeds the API server hostname and port, and this repo is
 # public — internal topology stays out of it.
 .kube/
+
+# Agent session scratch: worktrees and handoff notes. Nothing here is tracked
+# today, but handoffs record internal addresses and host inventories by design
+# and this repo is public — so a stray `git add -A` must not be able to publish
+# them. Same defensive spirit as the kubectl-cache entry above.
+.claude/
+
+# Rendered Talos machine configs. These contain the FULL CLUSTER PKI —
+# machine join token, root CA private key, etcd CA, service-account key.
+# They are render artifacts of bootstrap/talos/*.template.yaml and must
+# never be committed. AGENTS.md describes them as gitignored; this is the
+# rule that makes that true.
+bootstrap/talos/*-generated-*.yaml
+bootstrap/talos/*-generated.yaml

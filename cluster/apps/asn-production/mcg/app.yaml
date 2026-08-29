@@ -8,7 +8,7 @@ metadata:
   name: mcg-web
   namespace: asn-production
 spec:
-  # Cutover 2026-08-25: the old VM (10.10.20.133:3000) is dead — port closed,
+  # Cutover 2026-08-25: the old VM that served this app is dead — port closed,
   # mcg.rest was serving 503. This targets the same `mcg_production` database
   # on postgres.infra.asn.casa the VM used, so data carries over; db:prepare
   # in the entrypoint applies any pending migrations with no live app to race.

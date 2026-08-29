@@ -1,7 +1,7 @@
 # observability (in-cluster remnant)
 
 Only the **collectors** live here. The stores, the rule evaluator, the alert router and the UI
-all run outside the cluster, on CTs `140-143` on `pve0/1/2`.
+all run outside the cluster, on dedicated LXC containers on the hypervisor tier.
 
 | in-cluster | where it sends |
 |---|---|
