@@ -21,7 +21,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz:v202608260013
+          image: ghcr.io/abradner/spritz:v202609010812@sha256:b42e29be503e1fbb2e2a2082f81d0e2198e6656b379a8205d63fcd1709ab94a1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
