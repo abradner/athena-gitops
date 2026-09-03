@@ -142,6 +142,26 @@ Cut staging hostnames first, force a WAN flap, then cut the rest. Internal-only
 hostnames stay on the edge proxy and never enter a tunnel. Rollback is a DNS
 record.
 
+### Pre-flight findings (2026-09-03)
+
+Measured before committing to the phase order; both change the effort estimate.
+
+**PostgreSQL is already configured for replication.** `wal_level` is `replica`
+and `max_wal_senders` is 10, so standing up a standby needs no restart of the
+primary and no downtime — only a replication slot, a role, and a host-based
+auth line. There are no replication slots yet. The whole instance, every
+application's databases together, is about 300 MB, so a base backup runs in
+seconds and can be retaken freely rather than treated as a careful operation.
+
+**Garage needs two changes that both require a restart.** It runs a single node
+with `replication_factor = 1`, and its RPC public address is loopback — as it
+stands no second node could connect at all. About 134 MB across two buckets, so
+the rebalance after the layout change is trivial. Only one application uses
+object storage today, which narrows what Phase 2 has to prove.
+
+Neither restart is disruptive on its own, but they land on the data tier, so
+they belong in a quiet window and not on the same day as anything else.
+
 **Phase 1 — DR site preparation.** Host-level work at `<dr-site>`: resolve a
 degraded storage pool before anything is placed on it, bound the filesystem
 cache so the VMs fit, reserve addresses, publish service names under
