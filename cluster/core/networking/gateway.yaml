@@ -188,3 +188,27 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: chuvar-ai-tls
+  # The tunnel entrance. cloudflared hands every hostname it receives to this
+  # one listener, which is why it sets no hostname of its own: a listener
+  # without a hostname matches all of them, so every HTTPRoute already attached
+  # to this Gateway attaches here too and dispatches on the Host header. That
+  # keeps the tunnel's ingress config to a single rule with no hostname list to
+  # drift out of step with the listeners above.
+  #
+  # It has to live on its own port. Two listeners on 443 where one has no
+  # hostname would collide on SNI with every named listener there.
+  #
+  # The certificate is the athena wildcard because cloudflared connects with
+  # SNI tunnel.athena.asn.casa (see cluster/core/cloudflared/config.yaml) and
+  # verifies what it gets back — the alternative was disabling verification.
+  # Nothing outside the cluster is expected to reach 8443; HAProxy forwards 443.
+  - name: https-tunnel
+    port: 8443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: athena-wildcard-tls

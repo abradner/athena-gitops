@@ -1,0 +1,222 @@
+---
+# The connectors. Two Deployments because a tunnel belongs to one Cloudflare
+# account and the served zones span two; they are otherwise identical and share
+# one ConfigMap.
+#
+# Why this exists at all: every public hostname is a proxied Cloudflare record
+# pointing at the static ISP address, so when the home link faults and the
+# router moves to its backup WAN, the origin address changes and the sites stay
+# dark until DNS is edited by hand. A connector dials out instead, so a WAN
+# failover costs one reconnect and no DNS change.
+#
+# Two replicas each: a rolling update or a node reboot must not empty the
+# tunnel. Cloudflare load-balances across whatever connectors are registered,
+# and drops a dead one within seconds.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-personal
+  namespace: cloudflared
+  annotations:
+    # Wave 5: after the Gateway (wave 4). A connector that starts before the
+    # Gateway has its listeners just fails its origin health check and retries,
+    # but there is no reason to advertise a tunnel to an origin that is not up.
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: personal
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        tunnel: personal
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: cloudflared
+              tunnel: personal
+      containers:
+        - name: cloudflared
+          image: docker.io/cloudflare/cloudflared:2026.8.3
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config.yaml
+            - --credentials-file
+            - /etc/cloudflared/creds/credentials.json
+            - run
+            # Kubernetes expands $(VAR) in args from the container env, which
+            # keeps the tunnel UUID in the Secret and out of this repo.
+            - $(TUNNEL_ID)
+          env:
+            - name: TUNNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-personal
+                  key: tunnel-id
+          ports:
+            - name: metrics
+              containerPort: 2000
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared
+              readOnly: true
+            - name: creds
+              mountPath: /etc/cloudflared/creds
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: cloudflared-personal
+            items:
+              - key: credentials.json
+                path: credentials.json
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-simplytics
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: simplytics
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        tunnel: simplytics
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: cloudflared
+              tunnel: simplytics
+      containers:
+        - name: cloudflared
+          image: docker.io/cloudflare/cloudflared:2026.8.3
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config.yaml
+            - --credentials-file
+            - /etc/cloudflared/creds/credentials.json
+            - run
+            - $(TUNNEL_ID)
+          env:
+            - name: TUNNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-simplytics
+                  key: tunnel-id
+          ports:
+            - name: metrics
+              containerPort: 2000
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared
+              readOnly: true
+            - name: creds
+              mountPath: /etc/cloudflared/creds
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: cloudflared-simplytics
+            items:
+              - key: credentials.json
+                path: credentials.json
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloudflared-personal
+  namespace: cloudflared
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: personal
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloudflared-simplytics
+  namespace: cloudflared
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: simplytics

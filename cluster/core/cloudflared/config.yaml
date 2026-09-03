@@ -1,0 +1,47 @@
+---
+# Tunnel ingress rules. One rule, deliberately.
+#
+# Every public hostname already has an HTTPRoute attached to homelab-gateway,
+# so the tunnel does not need to know the hostname list — it hands whatever
+# arrives to the Gateway and the Gateway dispatches on the Host header. Adding
+# a site later is one DNS record and no change here. A per-hostname rule list
+# would have to be kept in step with gateway.yaml by hand, and would fail
+# silently for anything missing from it.
+#
+# The catch is TLS. cloudflared presents SNI from originServerName, and the
+# Gateway selects a listener by SNI: a request for spritz.events arriving with
+# SNI "cilium-gateway-homelab-gateway.default.svc" matches no listener at all.
+# Hence the dedicated port-8443 listener on the Gateway, which sets no hostname
+# (so every HTTPRoute attaches to it) and serves the *.athena.asn.casa wildcard
+# certificate. cloudflared verifies that certificate properly — no noTLSVerify.
+#
+# 8443 is deliberately not the same port HAProxy forwards; nothing outside the
+# cluster is expected to reach it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: cloudflared
+data:
+  config.yaml: |
+    # The tunnel UUID is supplied on the command line from the Secret, so this
+    # one ConfigMap serves both tunnels.
+    no-autoupdate: true
+    metrics: 0.0.0.0:2000
+    # Cloudflare closes an idle connection at 90s; keep ours shorter so the
+    # connector, not the edge, decides when a connection ends.
+    originRequest:
+      connectTimeout: 10s
+      tlsTimeout: 10s
+      keepAliveTimeout: 60s
+      originServerName: tunnel.athena.asn.casa
+    ingress:
+      # Refuse the internal-only names outright. The 8443 listener sets no
+      # hostname, so it will serve anything the Host header asks for —
+      # including the admin surfaces that are internal today only because the
+      # edge proxy refuses them from outside. Reaching one still requires a DNS
+      # record pointing at this tunnel, but that is one mistaken record away.
+      # This rule makes the mistake harmless instead of load-bearing.
+      - hostname: "*.athena.asn.casa"
+        service: http_status:404
+      - service: https://cilium-gateway-homelab-gateway.default.svc.cluster.local:8443
