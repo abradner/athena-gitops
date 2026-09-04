@@ -14,11 +14,14 @@ bootstrap/athena.zsh
 # public — internal topology stays out of it.
 .kube/
 
-# Agent session scratch: worktrees and handoff notes. Nothing here is tracked
-# today, but handoffs record internal addresses and host inventories by design
-# and this repo is public — so a stray `git add -A` must not be able to publish
-# them. Same defensive spirit as the kubectl-cache entry above.
-.claude/
+# Agent session scratch: worktrees and handoff notes. Handoffs record internal
+# addresses and host inventories by design and this repo is public — so a
+# stray `git add -A` must not be able to publish them. Same defensive spirit
+# as the kubectl-cache entry above. Scoped to these two subdirectories, not
+# all of .claude/, since .claude/skills/ ships with the repo and must stay
+# tracked.
+.claude/worktrees/
+.claude/handoffs/
 
 # Rendered Talos machine configs. These contain the FULL CLUSTER PKI —
 # machine join token, root CA private key, etcd CA, service-account key.
