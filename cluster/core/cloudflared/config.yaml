@@ -16,8 +16,9 @@
 # that certificate properly — no noTLSVerify.
 #
 # The listener serves EVERY hostname this Gateway knows about, including the
-# internal ones — measured, not assumed; see gateway.yaml for the numbers. The
-# second parentRef on the public routes does not gate anything.
+# internal ones — measured 2026-09-04 on Cilium v1.19.4, not assumed; see
+# gateway.yaml for the numbers and the command to re-check after an upgrade.
+# The second parentRef on the public routes does not gate anything.
 #
 # That makes the deny rule below the ONLY thing keeping internal hostnames off
 # the tunnel. It is load-bearing and single. Treat any change to it as a

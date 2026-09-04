@@ -72,7 +72,9 @@ hostname list kept in step with `gateway.yaml` by hand.
 
 Every public route also names `https-tunnel` in a second parentRef. That is
 documentation and future-proofing, not a boundary: Cilium serves every route on
-the Gateway through that listener regardless, internal ones included.
+the Gateway through that listener regardless, internal ones included. Measured
+2026-09-04 on Cilium v1.19.4; `cluster/core/networking/gateway.yaml` has the
+command to re-check after an upgrade.
 
 **So the deny rule is the only thing standing between a mistaken DNS record and
 an exposed admin surface.** Treat it as load-bearing, and never assume the
