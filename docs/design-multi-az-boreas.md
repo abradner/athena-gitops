@@ -228,6 +228,59 @@ watchdog host. It probes athena's origin directly, reads the router's WAN
 state, and scales the boreas connectors. It is the only thing with authority to
 change which zone serves.
 
+## 4b. Open decision — how boreas gets its manifests
+
+Phase 4 originally said "Kustomize overlays". That was written before checking
+two things, and both undercut it.
+
+**Kustomize is used nowhere in this repo.** Every manifest is plain YAML
+recursed by Argo, with Helm only for upstream charts and one ApplicationSet for
+a suite that is currently on ice. Introducing an overlay tree would add a tool,
+and a second way of reading any given manifest, to a repo whose whole
+navigability rests on there being one.
+
+**Far less differs per cluster than the phase assumed.** Measured against the
+app config as it stands:
+
+| Value | Differs on boreas? |
+|---|---|
+| Database host | **No.** Boreas writes to the primary over the mesh, so the same name is correct. Only promotion changes it, and that is a proxy flip, not a manifest edit. |
+| Object storage endpoint | **Yes.** Each zone should read and write its local node. |
+| Workflow-engine host | **Yes.** Boreas' own server stays at zero replicas, so its workers point at the primary site's frontend. |
+| Canonical host, mailer host, bucket names | No. |
+| Autoscaler minimums, connector replicas, the observability cluster label | Yes, but these live in one file each, not per app. |
+
+So the per-application divergence is **two environment variables**, not a tree.
+
+### The options
+
+1. **Kustomize overlays.** Sound, and the obvious answer in the abstract. Costs
+   a new tool, and the bases were never written as bases — each overlay would
+   list files individually and patch by selector.
+2. **Per-cluster override ConfigMap.** Apps already load config via `envFrom`,
+   so appending a second `configMapRef` lets one small per-cluster ConfigMap
+   override individual keys. Verified on the live cluster rather than assumed:
+   with two ConfigMaps listed in that order, the later one's value won and keys
+   it did not mention passed through untouched. Costs one line per container,
+   once, and every value stays greppable in plain YAML.
+3. **Per-cluster DNS.** Let each cluster resolve the same names to different
+   places, leaving manifests byte-identical. Elegant, and the most invisible
+   when wrong — this repo already carries scars from a DNS resolution surprise.
+4. **A duplicated tree.** Honest and dumb. Drifts by the second week.
+
+### Recommendation
+
+**Option 2.** It reuses a mechanism the apps already have, keeps every value
+visible in plain YAML, adds no tool, and confines cluster divergence to one
+small file per cluster that can be read in full in ten seconds. Option 1
+becomes the better answer only if per-cluster divergence grows well beyond the
+two variables measured above, and that is worth revisiting after the wedding
+rather than assuming now.
+
+The remaining per-cluster differences that are not app config — connector
+replicas, the observability cluster label, workflow-engine replicas — are one
+file each and can simply be separate files under a boreas directory.
+
 ## 5. Verification
 
 | Phase | Test | Pass |
