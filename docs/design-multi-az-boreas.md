@@ -127,6 +127,12 @@ Recorded so they are not re-proposed as if new, per the doctrine convention:
   rejected on correctness for flapping links, not only on effort. It becomes
   reasonable only with an out-of-band third opinion, i.e. after the third zone
   exists.
+- **Moving the DR data tier to system containers.** The platform's container
+  support would give the standby the same packaging, the same paths and the
+  same promotion commands as the primary, which is worth real money at 2am. It
+  is deferred purely on sequencing: it is an unexercised subsystem on that host
+  and this is the site that has to work when everything else does not. Revisit
+  once the deadline is behind us.
 - **Per-hostname or weighted traffic steering.** Cloudflare load balancing is a
   paid feature, and the free path (connector present or absent) is all-or-
   nothing per tunnel. Acceptable: the zones are equivalent.
@@ -164,22 +170,45 @@ they belong in a quiet window and not on the same day as anything else.
 
 **Phase 1 — DR site preparation.** Host-level work at `<dr-site>`: resolve a
 degraded storage pool before anything is placed on it, bound the filesystem
-cache so the VMs fit, reserve addresses, publish service names under
+cache so the guests fit, reserve addresses, publish service names under
 `<dr-zone-domain>`, and join the mesh VPN with a route advertisement and an ACL
 narrow enough to permit only the replication ports. Documented in the private
 infrastructure repo.
 
-**Phase 2 — State replication.** A PostgreSQL hot standby and a second Garage
-node at the DR site, both on the hypervisor tier, both reached over the mesh
-VPN. The standby is fronted by a local proxy so that promotion is a
-configuration flip rather than an application change. Replication lag is a
-metric with an alert.
+The one genuinely risky step in the whole build lives here. The existing guest
+on that host is attached by **macvtap, which blocks guest-to-host traffic** —
+and the cluster's pods must reach the data tier on the host. So the host needs
+a real **bridge** on its single network interface. That change is applied
+remotely, to the only path in, at a site with no console access. The platform
+offers test-and-revert on network changes; use it, and have someone at the site
+before starting.
 
-**Phase 3 — The boreas Talos cluster.** Two virtual machines at the DR site: a
-schedulable control plane and one worker. This requires parameterising the
-Talos machine-config templates, which currently hardcode the cluster name,
-endpoint, install disk and network interface. Athena's rendered output must be
-byte-identical after the change — verify with a diff before merging.
+**Phase 2 — State replication.** A PostgreSQL hot standby and a second Garage
+node at the DR site, both on the host tier rather than inside Kubernetes, both
+reached over the mesh VPN. The standby is fronted by a local proxy so that
+promotion is a configuration flip rather than an application change.
+Replication lag is a metric with an alert.
+
+Both run as **containerised services on the host**, pinned to the exact
+upstream versions the primaries run. The platform now also offers system
+containers, which would match the primary site's packaging and give identical
+promotion commands — the better long-term answer, and deliberately not taken
+yet (see the deferred list). The DR site is the thing whose entire purpose is
+to work when the primary is broken; it should not be the first user of the
+newest subsystem on a pre-release build, five weeks from a fixed date. Exact
+version pinning is also strongest with images, and the standby must match the
+primary's minor version.
+
+**Phase 3 — The boreas Talos cluster.** **One** virtual machine at the DR site,
+a schedulable control plane. A second node on the same physical host would buy
+no availability — only memory and another thing to patch — so the cluster is
+deliberately single-node. In-place draining is given up at this site, which the
+primary covers.
+
+This requires parameterising the Talos machine-config templates, which
+currently hardcode the cluster name, endpoint, install disk and network
+interface. Athena's rendered output must be byte-identical after the change —
+verify with a diff before merging.
 
 **Phase 4 — GitOps for boreas.** A `cluster/boreas/` tree of Kustomize overlays
 that reference athena's existing manifests as bases and patch only what differs
