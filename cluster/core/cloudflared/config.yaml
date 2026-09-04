@@ -36,12 +36,30 @@ data:
       keepAliveTimeout: 60s
       originServerName: tunnel.athena.asn.casa
     ingress:
-      # Refuse the internal-only names outright. The 8443 listener sets no
-      # hostname, so it will serve anything the Host header asks for —
-      # including the admin surfaces that are internal today only because the
-      # edge proxy refuses them from outside. Reaching one still requires a DNS
-      # record pointing at this tunnel, but that is one mistaken record away.
-      # This rule makes the mistake harmless instead of load-bearing.
-      - hostname: "*.athena.asn.casa"
+      # Nothing under asn.casa is ever tunnelled.
+      #
+      # The 8443 listener sets no hostname, so it serves whatever the Host
+      # header asks for — including the admin surfaces that are internal today
+      # only because the edge proxy refuses them from outside. Reaching one
+      # would still take a DNS record pointing here, but that is one mistaken
+      # record away, and DNS cannot be used to tell the two apart: both
+      # argocd.athena.asn.casa and rabalex.wedding resolve to Cloudflare
+      # anycast, while kaff.asn.casa publishes a private address.
+      #
+      # So the rule is the whole zone rather than the admin subdomain. Internal
+      # services are named under asn.casa by convention, which means a new one
+      # is denied before anyone thinks about it — the narrower *.athena.asn.casa
+      # rule this replaces would have missed kaff.asn.casa, and would miss the
+      # next one too. Anything under asn.casa that needs an external presence
+      # moves to another domain first; staging.kaff.asn.casa is proxied today
+      # and therefore stays on the edge proxy until it is renamed.
+      #
+      # This does not affect originServerName above: that is the SNI the
+      # connector presents to the Gateway, never a Host header arriving from
+      # outside.
+      - hostname: "*.asn.casa"
+        service: http_status:404
+      # The wildcard needs a leading label, so the apex is denied separately.
+      - hostname: "asn.casa"
         service: http_status:404
       - service: https://cilium-gateway-homelab-gateway.default.svc.cluster.local:8443

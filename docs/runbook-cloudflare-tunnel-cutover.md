@@ -114,11 +114,21 @@ Repeat §3 per hostname, staging before production, one zone's tunnel per zone's
 account. There is no config change for any of them — the single ingress rule
 already covers whatever arrives.
 
-**Do not create a tunnel record for anything under `*.athena.asn.casa`.** Those
-are admin surfaces that are internal only because the edge proxy refuses them
-from outside; a tunnel record would publish them. The tunnel config denies that
-suffix with a 404 rule ahead of the catch-all, so a mistaken record fails
-closed rather than exposing a service — but the record still should not exist.
+**Nothing under `asn.casa` is ever tunnelled.** Not the admin surfaces, not
+anything else in that zone. They are internal only because the edge proxy
+refuses them from outside, and a tunnel record would go straight past that.
+
+Do not rely on DNS to tell you which is which — it cannot. Both
+`argocd.athena.asn.casa` and `rabalex.wedding` resolve to Cloudflare anycast,
+while `kaff.asn.casa` publishes a private address. The zone is the rule.
+
+The tunnel config denies the whole zone with a 404 rule ahead of the catch-all,
+so a mistaken record fails closed rather than exposing a service — but the
+record still should not exist.
+
+The one hostname this costs you is `staging.kaff.asn.casa`, which is proxied
+today and stays on the edge proxy, keeping the WAN-failover exposure until it
+is renamed onto another domain.
 
 ## Rollback
 
