@@ -67,4 +67,18 @@ data:
       # The wildcard needs a leading label, so the apex is denied separately.
       - hostname: "asn.casa"
         service: http_status:404
+      #
+      # A reviewer will eventually claim that "*.asn.casa" matches only one
+      # label and leaves argo.athena.asn.casa exposed. It does not — the
+      # wildcard crosses dots. Verified against the pinned connector version
+      # rather than argued about:
+      #
+      #   cloudflared tunnel --config <this ingress block> ingress rule \
+      #     https://argo.athena.asn.casa/
+      #   => Matched rule #0        (the *.asn.casa deny)
+      #
+      # Same result for hubble, headlamp and the temporal UIs; rabalex.wedding
+      # and spritz.events fall through to the catch-all as intended. Re-run
+      # that check if the connector image is ever bumped, since this is glob
+      # behaviour in a dependency rather than a guarantee anyone owes us.
       - service: https://cilium-gateway-homelab-gateway.default.svc.cluster.local:8443
