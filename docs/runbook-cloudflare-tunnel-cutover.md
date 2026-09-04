@@ -67,9 +67,15 @@ before going further — a bad credentials field fails here, which is the cheap
 place to find out.
 
 The connectors talk to the Gateway on **port 8443**, a listener that sets no
-hostname so that every existing HTTPRoute attaches to it. This is what lets the
-tunnel config be a single rule instead of a hostname list that has to be kept
-in step with `gateway.yaml`.
+hostname, which is what lets the tunnel config be a single rule instead of a
+hostname list kept in step with `gateway.yaml` by hand.
+
+Routes do not attach to it automatically. Every HTTPRoute pins itself to one
+listener with `parentRefs.sectionName`, so each public route names
+`https-tunnel` in a second parentRef. **A new public site needs that extra
+parentRef**, or it will 404 through the tunnel while still working through
+HAProxy. Internal routes deliberately do not have it, which is why a mistaken
+DNS record cannot expose one.
 
 ## 3. Cut one hostname over
 

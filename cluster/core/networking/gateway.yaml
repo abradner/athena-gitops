@@ -190,10 +190,17 @@ spec:
         - name: chuvar-ai-tls
   # The tunnel entrance. cloudflared hands every hostname it receives to this
   # one listener, which is why it sets no hostname of its own: a listener
-  # without a hostname matches all of them, so every HTTPRoute already attached
-  # to this Gateway attaches here too and dispatches on the Host header. That
-  # keeps the tunnel's ingress config to a single rule with no hostname list to
-  # drift out of step with the listeners above.
+  # without a hostname is compatible with any route hostname. That keeps the
+  # tunnel's ingress config to a single rule with no hostname list to drift out
+  # of step with the listeners above.
+  #
+  # Routes do NOT attach here automatically. Every HTTPRoute in this repo pins
+  # itself to one listener with parentRefs.sectionName, so a route reaches this
+  # listener only by naming it in a second parentRef. That is deliberate rather
+  # than an inconvenience: it means the eleven public routes opt in, and an
+  # internal route cannot be served over a tunnel even if a DNS record pointed
+  # at one. A new public site needs the extra parentRef or it will 404 through
+  # the tunnel while continuing to work through HAProxy.
   #
   # It has to live on its own port. Two listeners on 443 where one has no
   # hostname would collide on SNI with every named listener there.
