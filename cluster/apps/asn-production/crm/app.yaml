@@ -200,11 +200,12 @@ spec:
     - name: homelab-gateway
       namespace: default
       sectionName: https-inbox-simplytics-ai
-    # Public: also reachable through the Cloudflare Tunnel, which arrives on
-    # the hostname-less :8443 listener. Routes pin themselves with
-    # sectionName, so attaching there is opt-in — which is deliberate. It
-    # means an internal route cannot be served over a tunnel even if a DNS
-    # record pointed at one.
+    # Public: also attached to the tunnel listener (:8443). This records
+    # intent and keeps the route working if attachment ever becomes
+    # spec-strict. It is NOT a security control — Cilium serves every route
+    # on this Gateway through that hostname-less listener regardless of
+    # sectionName (measured, see cluster/core/networking/gateway.yaml). What
+    # keeps internal hostnames off the tunnel is the asn.casa deny rule.
     - name: homelab-gateway
       namespace: default
       sectionName: https-tunnel

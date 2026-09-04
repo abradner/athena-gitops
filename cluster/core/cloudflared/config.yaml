@@ -15,10 +15,13 @@
 # and serves the *.athena.asn.casa wildcard certificate. cloudflared verifies
 # that certificate properly — no noTLSVerify.
 #
-# Routes reach that listener by naming it in a second parentRef; they do not
-# attach automatically, because every route here pins itself with sectionName.
-# So the hostnames this tunnel can actually serve are the ones that opted in,
-# and the deny rule below is the second of two independent layers.
+# The listener serves EVERY hostname this Gateway knows about, including the
+# internal ones — measured, not assumed; see gateway.yaml for the numbers. The
+# second parentRef on the public routes does not gate anything.
+#
+# That makes the deny rule below the ONLY thing keeping internal hostnames off
+# the tunnel. It is load-bearing and single. Treat any change to it as a
+# change to a security boundary, and re-run the ingress-rule check below.
 #
 # 8443 is deliberately not the same port HAProxy forwards; nothing outside the
 # cluster is expected to reach it.

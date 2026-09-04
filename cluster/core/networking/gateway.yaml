@@ -194,13 +194,25 @@ spec:
   # tunnel's ingress config to a single rule with no hostname list to drift out
   # of step with the listeners above.
   #
-  # Routes do NOT attach here automatically. Every HTTPRoute in this repo pins
-  # itself to one listener with parentRefs.sectionName, so a route reaches this
-  # listener only by naming it in a second parentRef. That is deliberate rather
-  # than an inconvenience: it means the eleven public routes opt in, and an
-  # internal route cannot be served over a tunnel even if a DNS record pointed
-  # at one. A new public site needs the extra parentRef or it will 404 through
-  # the tunnel while continuing to work through HAProxy.
+  # MEASURED BEHAVIOUR, and not what the Gateway API spec would lead you to
+  # expect. Cilium serves EVERY HTTPRoute on this Gateway through this
+  # listener, whether or not the route names it in parentRefs.sectionName.
+  # Verified against the running cluster by sending Host headers to :8443:
+  #
+  #   rabalex.wedding            -> 200   (names https-tunnel)
+  #   argo.athena.asn.casa       -> 200   (does NOT name it — served anyway)
+  #   kaff.asn.casa              -> 200   (does NOT name it — served anyway)
+  #   nosuch.example             -> 404
+  #
+  # So the second parentRef on the eleven public routes is documentation and
+  # future-proofing, NOT a security control: it keeps those routes working if
+  # Cilium ever tightens to spec, and it makes route status read Accepted. Do
+  # not treat it as a boundary. The only thing keeping internal hostnames off
+  # the tunnel is the asn.casa deny rule in cluster/core/cloudflared/config.yaml,
+  # which is verified and single — so treat that rule as load-bearing.
+  #
+  # This port is not reachable from the internet (checked), only from the LAN
+  # and the mesh, where those hostnames are already reachable via HAProxy.
   #
   # It has to live on its own port. Two listeners on 443 where one has no
   # hostname would collide on SNI with every named listener there.
