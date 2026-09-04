@@ -70,12 +70,15 @@ The connectors talk to the Gateway on **port 8443**, a listener that sets no
 hostname, which is what lets the tunnel config be a single rule instead of a
 hostname list kept in step with `gateway.yaml` by hand.
 
-Routes do not attach to it automatically. Every HTTPRoute pins itself to one
-listener with `parentRefs.sectionName`, so each public route names
-`https-tunnel` in a second parentRef. **A new public site needs that extra
-parentRef**, or it will 404 through the tunnel while still working through
-HAProxy. Internal routes deliberately do not have it, which is why a mistaken
-DNS record cannot expose one.
+Every public route also names `https-tunnel` in a second parentRef. That is
+documentation and future-proofing, not a boundary: Cilium serves every route on
+the Gateway through that listener regardless, internal ones included. Measured
+2026-09-04 on Cilium v1.19.4; `cluster/core/networking/gateway.yaml` has the
+command to re-check after an upgrade.
+
+**So the deny rule is the only thing standing between a mistaken DNS record and
+an exposed admin surface.** Treat it as load-bearing, and never assume the
+routes are backing it up.
 
 ## 3. Cut one hostname over
 
