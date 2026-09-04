@@ -1,0 +1,21 @@
+---
+# Connector visibility. Without this, a tunnel can lose every connector while
+# the sites still answer through the edge proxy — the failover path would be
+# quietly gone and nothing would say so until it was needed.
+#
+# cloudflared's own gauge is cloudflared_tunnel_ha_connections (registered
+# connections per connector); summing it per tunnel gives the number the
+# alert cares about. The VMAgent runs with selectAllByDefault, so this CR is
+# picked up without extra selector plumbing.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+spec:
+  selector:
+    matchLabels:
+      app: cloudflared
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

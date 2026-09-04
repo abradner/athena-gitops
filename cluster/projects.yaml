@@ -45,6 +45,13 @@ spec:
     # Observability stack (VictoriaMetrics, VictoriaLogs, Grafana).
     - server: 'https://kubernetes.default.svc'
       namespace: observability
+    # Cloudflare Tunnel connectors. Same trap as local-path-storage above: the
+    # Namespace object itself is cluster-scoped and passes on the whitelist, so
+    # without this entry the namespace appears and everything meant to go in it
+    # is rejected — which looks like eight broken manifests rather than one
+    # missing line.
+    - server: 'https://kubernetes.default.svc'
+      namespace: cloudflared
   # Core installs CRDs, webhooks, RBAC, APIServices — cluster scope required.
   clusterResourceWhitelist:
     - group: '*'

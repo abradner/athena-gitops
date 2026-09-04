@@ -1,0 +1,84 @@
+---
+# Tunnel ingress rules. One rule, deliberately.
+#
+# Every public hostname already has an HTTPRoute attached to homelab-gateway,
+# so the tunnel does not need to know the hostname list — it hands whatever
+# arrives to the Gateway and the Gateway dispatches on the Host header. Adding
+# a site later is one DNS record and no change here. A per-hostname rule list
+# would have to be kept in step with gateway.yaml by hand, and would fail
+# silently for anything missing from it.
+#
+# The catch is TLS. cloudflared presents SNI from originServerName, and the
+# Gateway selects a listener by SNI: a request for spritz.events arriving with
+# SNI "cilium-gateway-homelab-gateway.default.svc" matches no listener at all.
+# Hence the dedicated port-8443 listener on the Gateway, which sets no hostname
+# and serves the *.athena.asn.casa wildcard certificate. cloudflared verifies
+# that certificate properly — no noTLSVerify.
+#
+# Routes reach that listener by naming it in a second parentRef; they do not
+# attach automatically, because every route here pins itself with sectionName.
+# So the hostnames this tunnel can actually serve are the ones that opted in,
+# and the deny rule below is the second of two independent layers.
+#
+# 8443 is deliberately not the same port HAProxy forwards; nothing outside the
+# cluster is expected to reach it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: cloudflared
+data:
+  config.yaml: |
+    # The tunnel UUID is supplied on the command line from the Secret, so this
+    # one ConfigMap serves both tunnels.
+    no-autoupdate: true
+    metrics: 0.0.0.0:2000
+    # Cloudflare closes an idle connection at 90s; keep ours shorter so the
+    # connector, not the edge, decides when a connection ends.
+    originRequest:
+      connectTimeout: 10s
+      tlsTimeout: 10s
+      keepAliveTimeout: 60s
+      originServerName: tunnel.athena.asn.casa
+    ingress:
+      # Nothing under asn.casa is ever tunnelled.
+      #
+      # The 8443 listener sets no hostname, so it serves whatever the Host
+      # header asks for — including the admin surfaces that are internal today
+      # only because the edge proxy refuses them from outside. Reaching one
+      # would still take a DNS record pointing here, but that is one mistaken
+      # record away, and DNS cannot be used to tell the two apart: both
+      # argocd.athena.asn.casa and rabalex.wedding resolve to Cloudflare
+      # anycast, while kaff.asn.casa publishes a private address.
+      #
+      # So the rule is the whole zone rather than the admin subdomain. Internal
+      # services are named under asn.casa by convention, which means a new one
+      # is denied before anyone thinks about it — the narrower *.athena.asn.casa
+      # rule this replaces would have missed kaff.asn.casa, and would miss the
+      # next one too. Anything under asn.casa that needs an external presence
+      # moves to another domain first; staging.kaff.asn.casa is proxied today
+      # and therefore stays on the edge proxy until it is renamed.
+      #
+      # This does not affect originServerName above: that is the SNI the
+      # connector presents to the Gateway, never a Host header arriving from
+      # outside.
+      - hostname: "*.asn.casa"
+        service: http_status:404
+      # The wildcard needs a leading label, so the apex is denied separately.
+      - hostname: "asn.casa"
+        service: http_status:404
+      #
+      # A reviewer will eventually claim that "*.asn.casa" matches only one
+      # label and leaves argo.athena.asn.casa exposed. It does not — the
+      # wildcard crosses dots. Verified against the pinned connector version
+      # rather than argued about:
+      #
+      #   cloudflared tunnel --config <this ingress block> ingress rule \
+      #     https://argo.athena.asn.casa/
+      #   => Matched rule #0        (the *.asn.casa deny)
+      #
+      # Same result for hubble, headlamp and the temporal UIs; rabalex.wedding
+      # and spritz.events fall through to the catch-all as intended. Re-run
+      # that check if the connector image is ever bumped, since this is glob
+      # behaviour in a dependency rather than a guarantee anyone owes us.
+      - service: https://cilium-gateway-homelab-gateway.default.svc.cluster.local:8443

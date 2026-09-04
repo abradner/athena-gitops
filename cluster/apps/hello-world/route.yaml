@@ -10,6 +10,14 @@ spec:
     namespace: default
     # HTTPS only — plaintext hits the catch-all redirect route instead
     sectionName: https-bradner
+  # Public: also reachable through the Cloudflare Tunnel, which arrives on
+  # the hostname-less :8443 listener. Routes pin themselves with
+  # sectionName, so attaching there is opt-in — which is deliberate. It
+  # means an internal route cannot be served over a tunnel even if a DNS
+  # record pointed at one.
+  - name: homelab-gateway
+    namespace: default
+    sectionName: https-tunnel
   hostnames:
   # Change this to whatever FQDN you are pointing at HAProxy!
   - "hello.bradner.net" 
