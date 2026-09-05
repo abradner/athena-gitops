@@ -16,6 +16,13 @@ spec:
   selector:
     matchLabels:
       app: cloudflared
+  # Copy the pod's `tunnel` label onto every sample. Without it the metrics
+  # distinguish pods but not tunnels, and the alert that matters is per tunnel:
+  # one tunnel losing all its connectors while the other stays healthy is
+  # exactly the failure this scrape exists to catch, and it is invisible in a
+  # cluster-wide total that still looks half full.
+  podTargetLabels:
+    - tunnel
   podMetricsEndpoints:
     - port: metrics
       path: /metrics
