@@ -228,7 +228,7 @@ watchdog host. It probes athena's origin directly, reads the router's WAN
 state, and scales the boreas connectors. It is the only thing with authority to
 change which zone serves.
 
-## 4c. Revision, 2026-09-05 — Carcinus becomes the second zone
+## 4c. Revision, 2026-09-05 — Deimos becomes the second zone
 
 The DR host lost a second drive from an already-degraded array, its pool
 suspended, and the box is unreachable until someone can be physically present
@@ -245,7 +245,24 @@ other site has just demonstrated it is the least reliable component in the
 design. Deferring it also means object storage can go to three replicas later
 without a redesign.
 
-Named **carcinus**, the crab.
+### Zone names
+
+Lettered in the order they were conceived, which is not the order they will be
+built:
+
+| | Zone | Where | State |
+|---|---|---|---|
+| A | `athena` | primary site | serving |
+| B | `boreas` | second house | blocked on hardware; becomes the third zone |
+| C | `carcinus` | first cloud provider | **reserved** — never built, onboarding stalled |
+| D | `deimos` | second cloud provider | the second AZ, being built now |
+
+`carcinus` stays reserved rather than recycled. The provider it was named for
+may still complete its onboarding, and two zones with a claim to one name is a
+problem best avoided while both exist only on paper.
+
+Deimos: dread, and a moon of Mars. Appropriate for the thing you only look at
+when something has gone wrong.
 
 ### What made this cheap
 
@@ -273,7 +290,7 @@ access to services ends when the credits are exhausted **or** when the
 promotional period ends. This zone is therefore a bridge with a known expiry,
 not a permanent home, and its replacement should be chosen before that date.
 
-So carcinus is **one instance, 2 vCPU and 8 GB**, single-node Talos, with the
+So deimos is **one instance, 2 vCPU and 8 GB**, single-node Talos, with the
 PostgreSQL standby and the object-storage node running as workloads inside the
 cluster on node-local volumes.
 

@@ -1,4 +1,4 @@
-# Runbook — provisioning the carcinus zone
+# Runbook — provisioning the deimos zone
 
 Standing up the cloud second zone (`docs/design-multi-az-boreas.md` §4c). Ends
 with a single-node Talos cluster on a cloud VM, on the mesh VPN, ready for the
@@ -91,11 +91,11 @@ waits for a configuration.
 
 ## 5. Apply the machine configuration
 
-Carcinus is a single schedulable control plane, so it needs its own rendered
+Deimos is a single schedulable control plane, so it needs its own rendered
 config — see `bootstrap/README.md` for how configs are rendered, and note that
 the cluster-identity fields differ from the primary's.
 
-    talosctl apply-config --insecure --nodes <public-ip> --file carcinus-controlplane.yaml
+    talosctl apply-config --insecure --nodes <public-ip> --file deimos-controlplane.yaml
     talosctl bootstrap --nodes <public-ip>
     talosctl kubeconfig --nodes <public-ip>
 
@@ -121,7 +121,7 @@ stream and the zone is decorative.
 
 From here it is ordinary cluster work: install the CNI and Argo CD as
 `bootstrap/kubernetes/provision.sh` does, inject the secrets-store token, and
-apply the carcinus root application.
+apply the deimos root application.
 
 ## Living within the credits
 
