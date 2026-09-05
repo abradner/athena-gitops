@@ -1,5 +1,6 @@
 ---
-# Tunnel ingress rules. One rule, deliberately.
+# Tunnel ingress rules. One catch-all forwarding rule, deliberately; the two
+# rules ahead of it deny the internal zone.
 #
 # Every public hostname already has an HTTPRoute attached to homelab-gateway,
 # so the tunnel does not need to know the hostname list — it hands whatever
