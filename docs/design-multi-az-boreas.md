@@ -253,20 +253,35 @@ Named **carcinus**, the crab.
 alike, so every application image already runs on Arm and the free Arm compute
 that makes this possible needs no rebuilds. This was checked, not assumed.
 
-Talos also ships a first-class `oracle` platform, and the image factory builds
-an `oracle-arm64` image with the mesh-VPN extension included.
+Talos also ships first-class platform support for every cloud considered here,
+and its image factory builds a matching Arm image with the mesh-VPN extension
+included — which is what keeps the choice of provider a commercial decision
+rather than an engineering one.
 
-### The constraint that shaped it
+### The constraint that shaped it, and the provider that lost
 
-The free tier is **2 OCPU and 12 GB in total** across all Arm instances, plus
-200 GB of block storage and a 47 GB minimum boot volume each. That is half what
-this plan first assumed, and it rules out running the data tier on its own
-instance: two nodes would put a Kubernetes control plane on a single core and
-spend 94 GB on boot volumes before storing anything.
+The first choice of provider offered the only genuinely large free allowance —
+12 GB of Arm — and then blocked on a sales-led onboarding queue with five weeks
+to the date. Waiting on someone else's queue for a deadline you cannot move is
+not a plan, so the zone moved to a provider whose signup completes immediately.
 
-So carcinus is **one instance**: 2 OCPU, 12 GB, single-node Talos, with the
+Every other free tier bottoms out at 1 GB instances, which would have reduced
+this zone to replication with nowhere to serve from. What makes the current
+provider workable is **promotional credits**, which buy a properly sized
+instance rather than a token one. The catch is in the wording on the console:
+access to services ends when the credits are exhausted **or** when the
+promotional period ends. This zone is therefore a bridge with a known expiry,
+not a permanent home, and its replacement should be chosen before that date.
+
+So carcinus is **one instance, 2 vCPU and 8 GB**, single-node Talos, with the
 PostgreSQL standby and the object-storage node running as workloads inside the
 cluster on node-local volumes.
+
+8 GB is the floor, not a preference. The primary cluster's `kube-apiserver`
+settles around 1.4 GB — the measurement that forced its control-plane nodes to
+4 GB — so a node carrying a control plane, the workloads, a database standby
+and object storage has about 1.5 GB left over at 4 GB total. That is not a
+margin.
 
 **This bends the placement doctrine, deliberately and narrowly.** The doctrine
 keeps state out of Kubernetes so that rebuilding a cluster cannot lose data.
@@ -276,35 +291,30 @@ Nothing here is a source of truth, so the property the doctrine protects does
 not apply. It still applies unchanged at the primary site, and at the third
 zone when it returns.
 
-### Open question this raised, for the third zone
+### Architecture: resolved, and not a constraint
 
-Every node in the primary cluster is arm64, so **nothing has ever forced an
-amd64 build of the application images**. If they are arm64-only, the original
-plan for the other house — an Intel machine — would have failed at first pod
-start, and the pivot has sidestepped a latent trap rather than merely deferring
-one.
+Every node in the primary cluster is arm64, so nothing there has ever forced an
+amd64 build. That raised a worry about the third zone, which runs on Intel.
 
-This must be answered before that site returns as the third zone, not during
-it. The images are private, so it takes a credential the cluster already has:
+**Answered: the images are multi-arch.** The publish workflow assembles
+per-architecture digests into a manifest list and explicitly guards against
+publishing a single-arch manifest under the full tag set. So the third zone can
+be Intel, and a cloud zone can be whichever architecture is cheaper or
+available — Arm, for now, on price.
 
-    crane manifest ghcr.io/<owner>/<image>:<tag> | jq -r '.manifests[].platform'
+### The expiry, which is the real risk
 
-A manifest list naming `arm64` and `amd64` means the third zone can be Intel.
-A single-platform manifest means it must either be Arm, or the build has to
-become multi-arch first.
+Nothing here gets reclaimed for being idle. The exposure is simpler and
+harder: the credits run down at a rate set by the instance size, and when they
+are gone — or when the promotional window closes — **access to services ends**.
+There is no invoice to ignore and no degraded mode; the zone stops.
 
-### Idle reclamation, and why it will not fire
+Two consequences worth building around. A cost budget with alerting goes in
+before the first instance, not after. And the instance is sized for the event
+and shrunk afterwards, which is a stop, a type change, and a start, with the
+volume and its data intact.
 
-Free-tier instances may be reclaimed if, across a 7-day window, **all** of
-95th-percentile CPU, network, and memory utilisation sit below 20%. It needs
-all three, and a standby holding a working set above 20% of 12 GB is never
-eligible — which is also simply what a warm standby should look like. An alert
-on utilisation drifting toward that line is cheaper than discovering the policy
-the hard way.
-
-The documentation says such instances "may be reclaimed" without saying what
-that does, and does not state whether the policy applies to paid accounts. The
-account stays on the free tier for now.
+The date this zone expires should be in the calendar the day it is created.
 
 ## 5. Verification
 
