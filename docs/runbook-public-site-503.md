@@ -1,18 +1,66 @@
-# Runbook — a public site is returning 503
+# Runbook — a public site is down
 
-Triage path for "one of our sites is down with a 503", written after chuvar.ai
-went dark with no alert. The whole point is to identify **which layer** is
-failing before touching anything: every hop in the chain can produce a 503,
-and they all look similar from a browser.
+Triage path for "one of our sites is down", written after chuvar.ai went dark
+with no alert and extended when a second serving path appeared. The whole point
+is to identify **which layer** is failing before touching anything: every hop
+in the chain can produce a failure, and from a browser they all look alike.
+
+If you are reading this at 2am and want the site back before you understand
+why, skip to **§7.3** — but check §0 first, because that lever only exists on
+one of the two paths.
 
 Placeholders throughout — `<edge-proxy-host>`, `<backend-ip>`, `<site>`.
 Concrete hosts live in the private infrastructure repo, not here.
 
-The serving chain for every public site:
+**There are now two serving chains, and a hostname uses one or the other.**
+Establishing which one you are debugging is the first move — most of the
+symptoms below mean different things on each path.
 
-    Cloudflare (proxied DNS) → edge proxy (HAProxy) → origin
-                                                       ├─ cluster Gateway → HTTPRoute → Service → pod
-                                                       └─ or a legacy host/port (pre-migration)
+    Cloudflare (proxied DNS)
+      ├─ A record → edge proxy (HAProxy) → origin
+      │                                     ├─ cluster Gateway :443 → HTTPRoute → Service → pod
+      │                                     └─ or a legacy host/port (pre-migration)
+      └─ CNAME to *.cfargotunnel.com → tunnel → connector pod (outbound only)
+                                                 └─ cluster Gateway :8443 → HTTPRoute → Service → pod
+
+The tunnel path exists because the A-record path points at a static ISP address
+that changes when the site fails over to its backup WAN — which takes every
+proxied hostname down until DNS is edited by hand. Connectors dial out, so
+there is no origin address to go stale.
+
+```mermaid
+flowchart TD
+    A[Site is down] --> B{"dig +short CNAME site"}
+    B -->|"...cfargotunnel.com"| T[Tunnel path — go to §7]
+    B -->|empty, so an A record| H[HAProxy path — go to §1]
+
+    T --> T1{Status code?}
+    T1 -->|"530 / 1033"| T2[No connectors, or hostname<br/>not routed to this tunnel]
+    T1 -->|404| T3[Gateway matched no route:<br/>missing https-tunnel parentRef,<br/>or denied by the asn.casa rule]
+    T1 -->|"502 / 504"| T4[Connector reached the Gateway,<br/>origin unhealthy — check pods]
+
+    H --> H1{Whose error page?}
+    H1 -->|Cloudflare 52x| H2[Cloudflare cannot reach HAProxy]
+    H1 -->|HAProxy 503| H3[No live backend — §2]
+    H1 -->|App-styled| H4[Reached an app — debug the app]
+
+    T2 --> X[Emergency lever: delete the CNAME.<br/>The wildcard resumes via HAProxy — §7.3]
+    T3 --> X
+```
+
+---
+
+## 0. Which path is this hostname on?
+
+    dig +short CNAME <site>
+
+A `*.cfargotunnel.com` answer means the tunnel. An empty answer means an A
+record — either the hostname's own, or a wildcard covering it — and therefore
+HAProxy.
+
+Do this before reading any status code. A 503 on the HAProxy path and a 530 on
+the tunnel path have nothing to do with each other, and the fix for one does
+nothing for the other.
 
 ---
 
@@ -114,6 +162,17 @@ The established pattern (spritz-marketing, counta — copy, don't reinvent):
 
 ## 6. Why was there no alert? (fix that too)
 
+Since the tunnel became a serving path, three more alerts matter, and they live
+with the rest of the rules in the private infrastructure repo:
+`TunnelConnectorsDegraded` (a tunnel below its expected connection count),
+`TunnelConnectorsCritical`, and per-tunnel `absent()` rules. The last are
+spelled out one per tunnel deliberately — a vanished series cannot be caught by
+a threshold, because the group simply stops being produced and reads as silence
+rather than as zero.
+
+The public-site probes still cover the outside path and need no change: they
+follow whatever DNS says, which is the point.
+
 A site can be 503 for days if nothing probes it end-to-end. Uptime checks
 belong at the outermost layer (probe the public URL, not the pod). If the
 site that paged you wasn't probed, add it to the external check list as part
@@ -129,3 +188,83 @@ migrated. Resolution was §5: chuvar-web got a Dockerfile + docker workflow,
 gitops grew the issuer zone, certificate, listener and app manifests, and the
 edge proxy was repointed. Zone confirmed simplytics-account by NS-pair
 comparison.
+
+---
+
+## 7. The tunnel path
+
+Reached here from §0 because the hostname is a CNAME to `*.cfargotunnel.com`.
+
+### 7.1 Fingerprint
+
+| Evidence | Meaning |
+|---|---|
+| Cloudflare **1033** / **530** | The tunnel has no healthy connectors, or this hostname is not routed to the tunnel at all. Go to §7.2 |
+| **404**, and the same hostname works through HAProxy | The Gateway matched no route. Either the HTTPRoute is missing its `https-tunnel` parentRef, or the hostname is under `asn.casa` and the deny rule refused it **by design** |
+| **502 / 504** | The connector reached the Gateway and the origin is unhealthy. This is an ordinary app problem — §3, §4 |
+| **200** | This hostname is fine; you are debugging the wrong one |
+
+The 404 case is the one that wastes time. A newly published site 404s through
+the tunnel while working perfectly through HAProxy, because routes here pin
+themselves to a listener and must name `https-tunnel` explicitly:
+
+```bash
+kubectl get httproute <route> -n <ns> \
+  -o jsonpath='{range .status.parents[*]}{.parentRef.sectionName}={.conditions[?(@.type=="Accepted")].status}{"\n"}{end}'
+```
+
+Two lines, both `True`, is healthy. One line means the route never opted in —
+see `AGENTS.md` on the tunnel listener.
+
+### 7.2 Are there connectors?
+
+```bash
+kubectl -n cloudflared get pods -L tunnel
+```
+
+Two per tunnel, and **there are two tunnels** because the zones span two
+Cloudflare accounts. One tunnel can be dead while the other is fine, which
+takes down half the public hostnames and leaves the rest untouched.
+
+Registered connections, not pod readiness, is the real signal — a connector can
+be `Running` while registered with nothing. A healthy tunnel sums to 8:
+
+```bash
+kubectl -n cloudflared port-forward <pod> 12000:2000 &
+curl -s localhost:12000/metrics | grep cloudflared_tunnel_ha_connections
+```
+
+If connectors are absent or unregistered, check their logs for the edge dial.
+Connectors need outbound **UDP 7844** for QUIC and fall back to TCP 443, so
+rule out egress before touching config.
+
+### 7.3 The 2am lever: put it back on HAProxy
+
+**This is the fastest way to stop the bleeding, and it is safe.** HAProxy has
+been serving the whole time; the cutover was adding a DNS record, so rollback
+is deleting it. The wildcard resumes immediately.
+
+Delete the hostname's CNAME in the Cloudflare dashboard — the record carries a
+comment saying exactly this — or:
+
+```bash
+curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" \
+  "https://api.cloudflare.com/client/v4/zones/<zone-id>/dns_records/<record-id>"
+```
+
+Then confirm it actually moved, rather than assuming:
+
+```bash
+dig +short CNAME <site>        # must now be empty
+curl -sI https://<site>/ | head -1
+```
+
+Do this first and diagnose afterwards. Nothing about the tunnel needs to be
+understood at 2am to get the site back.
+
+### 7.4 What this path cannot fix
+
+A bad release. Both availability zones sync the same manifests, so an image
+bump lands everywhere at once. The tunnel protects against the link and the
+site failing, never against the code. The remedy there is unchanged: staging
+first, and a revert is a one-line image change.
