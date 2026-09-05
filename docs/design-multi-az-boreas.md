@@ -280,6 +280,110 @@ rather than assuming now.
 The remaining per-cluster differences that are not app config — connector
 replicas, the observability cluster label, workflow-engine replicas — are one
 file each and can simply be separate files under a boreas directory.
+## 4c. Revision, 2026-09-05 — Deimos becomes the second zone
+
+The DR host lost a second drive from an already-degraded array, its pool
+suspended, and the box is unreachable until someone can be physically present
+about a week from now. Phase 1 said "resolve the degraded pool before anything
+is placed on it"; nothing had been placed on it, which is the only good news
+here. Treat the offsite copies that lived on that pool as unverified until
+someone has looked.
+
+**A cloud zone becomes the second AZ, and the house at the other site becomes
+the third, after the wedding.** This reverses the earlier ordering. The
+reasoning is not that cloud is better in the abstract — it is that the second
+zone is available now, has independent power, network and hardware, and the
+other site has just demonstrated it is the least reliable component in the
+design. Deferring it also means object storage can go to three replicas later
+without a redesign.
+
+### Zone names
+
+Lettered in the order they were conceived, which is not the order they will be
+built:
+
+| | Zone | Where | State |
+|---|---|---|---|
+| A | `athena` | primary site | serving |
+| B | `boreas` | second house | blocked on hardware; becomes the third zone |
+| C | `carcinus` | first cloud provider | **reserved** — never built, onboarding stalled |
+| D | `deimos` | second cloud provider | the second AZ, being built now |
+
+`carcinus` stays reserved rather than recycled. The provider it was named for
+may still complete its onboarding, and two zones with a claim to one name is a
+problem best avoided while both exist only on paper.
+
+Deimos: dread, and a moon of Mars. Appropriate for the thing you only look at
+when something has gone wrong.
+
+### What made this cheap
+
+**Every node in the primary cluster is arm64.** Control plane and workers
+alike, so every application image already runs on Arm and the free Arm compute
+that makes this possible needs no rebuilds. This was checked, not assumed.
+
+Talos also ships first-class platform support for every cloud considered here,
+and its image factory builds a matching Arm image with the mesh-VPN extension
+included — which is what keeps the choice of provider a commercial decision
+rather than an engineering one.
+
+### The constraint that shaped it, and the provider that lost
+
+The first choice of provider offered the only genuinely large free allowance —
+12 GB of Arm — and then blocked on a sales-led onboarding queue with five weeks
+to the date. Waiting on someone else's queue for a deadline you cannot move is
+not a plan, so the zone moved to a provider whose signup completes immediately.
+
+Every other free tier bottoms out at 1 GB instances, which would have reduced
+this zone to replication with nowhere to serve from. What makes the current
+provider workable is **promotional credits**, which buy a properly sized
+instance rather than a token one. The catch is in the wording on the console:
+access to services ends when the credits are exhausted **or** when the
+promotional period ends. This zone is therefore a bridge with a known expiry,
+not a permanent home, and its replacement should be chosen before that date.
+
+So deimos is **one instance, 2 vCPU and 8 GB**, single-node Talos, with the
+PostgreSQL standby and the object-storage node running as workloads inside the
+cluster on node-local volumes.
+
+8 GB is the floor, not a preference. The primary cluster's `kube-apiserver`
+settles around 1.4 GB — the measurement that forced its control-plane nodes to
+4 GB — so a node carrying a control plane, the workloads, a database standby
+and object storage has about 1.5 GB left over at 4 GB total. That is not a
+margin.
+
+**This bends the placement doctrine, deliberately and narrowly.** The doctrine
+keeps state out of Kubernetes so that rebuilding a cluster cannot lose data.
+At this site both are *replicas* — re-seedable from the primary in minutes,
+since the whole database is about 300 MB and the object data about 134 MB.
+Nothing here is a source of truth, so the property the doctrine protects does
+not apply. It still applies unchanged at the primary site, and at the third
+zone when it returns.
+
+### Architecture: resolved, and not a constraint
+
+Every node in the primary cluster is arm64, so nothing there has ever forced an
+amd64 build. That raised a worry about the third zone, which runs on Intel.
+
+**Answered: the images are multi-arch.** The publish workflow assembles
+per-architecture digests into a manifest list and explicitly guards against
+publishing a single-arch manifest under the full tag set. So the third zone can
+be Intel, and a cloud zone can be whichever architecture is cheaper or
+available — Arm, for now, on price.
+
+### The expiry, which is the real risk
+
+Nothing here gets reclaimed for being idle. The exposure is simpler and
+harder: the credits run down at a rate set by the instance size, and when they
+are gone — or when the promotional window closes — **access to services ends**.
+There is no invoice to ignore and no degraded mode; the zone stops.
+
+Two consequences worth building around. A cost budget with alerting goes in
+before the first instance, not after. And the instance is sized for the event
+and shrunk afterwards, which is a stop, a type change, and a start, with the
+volume and its data intact.
+
+The date this zone expires should be in the calendar the day it is created.
 
 ## 5. Verification
 
