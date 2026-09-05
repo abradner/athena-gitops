@@ -205,13 +205,17 @@ spec:
   #
   #   GW=$(kubectl get svc cilium-gateway-homelab-gateway -n default \
   #          -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-  #   curl -s -o /dev/null -w '%{http_code}\n' \
-  #     --resolve "tunnel.athena.asn.casa:8443:$GW" \
-  #     -H 'Host: argo.athena.asn.casa' https://tunnel.athena.asn.casa:8443/
+  #   for HOST in rabalex.wedding argo.athena.asn.casa; do
+  #     curl -s -o /dev/null -w "$HOST -> %{http_code}\n" \
+  #       --resolve "tunnel.athena.asn.casa:8443:$GW" \
+  #       -H "Host: $HOST" https://tunnel.athena.asn.casa:8443/
+  #   done
   #
-  # A 404 there means attachment has become spec-strict and the opt-in
-  # parentRefs are now load-bearing — which would be an improvement, but
-  # check the public hostnames still return 200 before relying on it.
+  # Read the pair, never either alone. Public 200 with internal 404 means
+  # attachment has become spec-strict and the opt-in parentRefs are now
+  # load-bearing — an improvement. Two 404s mean the probe itself is broken
+  # (wrong IP, listener gone, cert changed), which looks identical to a
+  # tightened boundary if you only ask about the internal hostname.
   #
   # What was seen on the date above:
   #
