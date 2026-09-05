@@ -276,6 +276,23 @@ Nothing here is a source of truth, so the property the doctrine protects does
 not apply. It still applies unchanged at the primary site, and at the third
 zone when it returns.
 
+### Open question this raised, for the third zone
+
+Every node in the primary cluster is arm64, so **nothing has ever forced an
+amd64 build of the application images**. If they are arm64-only, the original
+plan for the other house — an Intel machine — would have failed at first pod
+start, and the pivot has sidestepped a latent trap rather than merely deferring
+one.
+
+This must be answered before that site returns as the third zone, not during
+it. The images are private, so it takes a credential the cluster already has:
+
+    crane manifest ghcr.io/<owner>/<image>:<tag> | jq -r '.manifests[].platform'
+
+A manifest list naming `arm64` and `amd64` means the third zone can be Intel.
+A single-platform manifest means it must either be Arm, or the build has to
+become multi-arch first.
+
 ### Idle reclamation, and why it will not fire
 
 Free-tier instances may be reclaimed if, across a 7-day window, **all** of
