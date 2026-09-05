@@ -13,7 +13,7 @@ jobs:
     # names in step if either ever changes.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pin yq rather than relying on the runner's preinstalled copy —
       # validate_yaml.sh needs mikefarah yq 4 (same as mise.toml pins locally).
       - name: Install yq
@@ -28,7 +28,7 @@ jobs:
     name: Kubernetes schema (kubeconform)
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install kubeconform
         env:
           KUBECONFORM_VERSION: v0.6.7
@@ -50,7 +50,7 @@ jobs:
     steps:
       # Full history: the render diff below needs the PR's base commit, and
       # actions/checkout defaults to a shallow clone that does not have it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
