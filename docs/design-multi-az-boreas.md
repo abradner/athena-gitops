@@ -228,6 +228,67 @@ watchdog host. It probes athena's origin directly, reads the router's WAN
 state, and scales the boreas connectors. It is the only thing with authority to
 change which zone serves.
 
+## 4c. Revision, 2026-09-05 — Carcinus becomes the second zone
+
+The DR host lost a second drive from an already-degraded array, its pool
+suspended, and the box is unreachable until someone can be physically present
+about a week from now. Phase 1 said "resolve the degraded pool before anything
+is placed on it"; nothing had been placed on it, which is the only good news
+here. Treat the offsite copies that lived on that pool as unverified until
+someone has looked.
+
+**A cloud zone becomes the second AZ, and the house at the other site becomes
+the third, after the wedding.** This reverses the earlier ordering. The
+reasoning is not that cloud is better in the abstract — it is that the second
+zone is available now, has independent power, network and hardware, and the
+other site has just demonstrated it is the least reliable component in the
+design. Deferring it also means object storage can go to three replicas later
+without a redesign.
+
+Named **carcinus**, the crab.
+
+### What made this cheap
+
+**Every node in the primary cluster is arm64.** Control plane and workers
+alike, so every application image already runs on Arm and the free Arm compute
+that makes this possible needs no rebuilds. This was checked, not assumed.
+
+Talos also ships a first-class `oracle` platform, and the image factory builds
+an `oracle-arm64` image with the mesh-VPN extension included.
+
+### The constraint that shaped it
+
+The free tier is **2 OCPU and 12 GB in total** across all Arm instances, plus
+200 GB of block storage and a 47 GB minimum boot volume each. That is half what
+this plan first assumed, and it rules out running the data tier on its own
+instance: two nodes would put a Kubernetes control plane on a single core and
+spend 94 GB on boot volumes before storing anything.
+
+So carcinus is **one instance**: 2 OCPU, 12 GB, single-node Talos, with the
+PostgreSQL standby and the object-storage node running as workloads inside the
+cluster on node-local volumes.
+
+**This bends the placement doctrine, deliberately and narrowly.** The doctrine
+keeps state out of Kubernetes so that rebuilding a cluster cannot lose data.
+At this site both are *replicas* — re-seedable from the primary in minutes,
+since the whole database is about 300 MB and the object data about 134 MB.
+Nothing here is a source of truth, so the property the doctrine protects does
+not apply. It still applies unchanged at the primary site, and at the third
+zone when it returns.
+
+### Idle reclamation, and why it will not fire
+
+Free-tier instances may be reclaimed if, across a 7-day window, **all** of
+95th-percentile CPU, network, and memory utilisation sit below 20%. It needs
+all three, and a standby holding a working set above 20% of 12 GB is never
+eligible — which is also simply what a warm standby should look like. An alert
+on utilisation drifting toward that line is cheaper than discovering the policy
+the hard way.
+
+The documentation says such instances "may be reclaimed" without saying what
+that does, and does not state whether the policy applies to paid accounts. The
+account stays on the free tier for now.
+
 ## 5. Verification
 
 | Phase | Test | Pass |
