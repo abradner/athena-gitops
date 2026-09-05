@@ -64,13 +64,29 @@ spec:
           ports:
             - name: metrics
               containerPort: 2000
+          # Liveness asks whether the PROCESS is alive, so it probes /metrics,
+          # which answers 200 whenever cloudflared is running at all.
+          #
+          # It used to probe /ready, and that was wrong in a way that only
+          # showed up in production. /ready reports edge CONNECTIVITY —
+          # {"status":200,"readyConnections":4} — so it fails whenever the
+          # link to Cloudflare is down. Which is a WAN fault: the exact event
+          # this tunnel exists to survive. The probe was killing healthy
+          # connectors mid-reconnect, resetting their backoff and making
+          # recovery slower, and both pods of a tunnel see the same WAN fault
+          # at the same time, so a long enough flap takes a whole tunnel to
+          # zero connectors. Restarting cannot fix an unreachable edge; only
+          # waiting can, which is what cloudflared already does.
           livenessProbe:
             httpGet:
-              path: /ready
+              path: /metrics
               port: 2000
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
+          # Readiness is where connectivity belongs: a disconnected connector
+          # is genuinely not ready, and saying so gates rollouts and the PDB
+          # without killing anything.
           readinessProbe:
             httpGet:
               path: /ready
@@ -154,13 +170,29 @@ spec:
           ports:
             - name: metrics
               containerPort: 2000
+          # Liveness asks whether the PROCESS is alive, so it probes /metrics,
+          # which answers 200 whenever cloudflared is running at all.
+          #
+          # It used to probe /ready, and that was wrong in a way that only
+          # showed up in production. /ready reports edge CONNECTIVITY —
+          # {"status":200,"readyConnections":4} — so it fails whenever the
+          # link to Cloudflare is down. Which is a WAN fault: the exact event
+          # this tunnel exists to survive. The probe was killing healthy
+          # connectors mid-reconnect, resetting their backoff and making
+          # recovery slower, and both pods of a tunnel see the same WAN fault
+          # at the same time, so a long enough flap takes a whole tunnel to
+          # zero connectors. Restarting cannot fix an unreachable edge; only
+          # waiting can, which is what cloudflared already does.
           livenessProbe:
             httpGet:
-              path: /ready
+              path: /metrics
               port: 2000
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
+          # Readiness is where connectivity belongs: a disconnected connector
+          # is genuinely not ready, and saying so gates rollouts and the PDB
+          # without killing anything.
           readinessProbe:
             httpGet:
               path: /ready
