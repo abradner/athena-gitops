@@ -1,135 +1,202 @@
 # Runbook — provisioning the deimos zone
 
 Standing up the cloud second zone (`docs/design-multi-az-boreas.md` §4c). Ends
-with a single-node Talos cluster on a cloud VM, on the mesh VPN, ready for the
-GitOps root to be applied.
+with a single-node Talos cluster reaching the primary site's data tier over the
+mesh, with **no inbound rules from the internet at all**.
 
-Everything before §5 needs cloud console or CLI access and is done by the
-operator; everything from §5 is ordinary cluster work.
+Placeholders throughout — `<elastic-ip>` (the instance's public address),
+`<private-ip>`, `<tailnet-ip>`, `<primary-zone>`, `<internal-resolver>`,
+`<primary-db>`, `<node name>`, `<busybox>`. Concrete addresses, account
+identifiers and the exact command log live in the private infrastructure repo.
+
+Everything before §7 needs cloud credentials; everything after is ordinary
+cluster work.
 
 ---
 
-## 0. The shape, and why
+## 0. What decides the shape
 
-One instance, **2 vCPU / 8 GB, Arm (Graviton)**, in the Sydney region.
+**The account may only launch free-tier-eligible instance types**, credits or
+not — anything else is refused outright. Ask what is permitted rather than
+assuming credits buy any shape, because exactly one eligible type has 8 GB and
+it is x86_64. The Arm options stop at 2 GB.
 
-The size is not a guess. The primary cluster's `kube-apiserver` settles at
-about 1.4 GB, which is why its control-plane nodes were raised to 4 GB. This
-node carries a control plane *and* the workloads *and* the database standby and
-object-storage node, so 4 GB would leave roughly 1.5 GB for everything after
-Kubernetes. 8 GB is the smallest size that is not an act of optimism.
+That architecture switch costs nothing: the application images are multi-arch.
 
-Arm because the images are multi-arch — the publish workflow assembles
-per-architecture digests into a manifest list — and Arm instances are cheaper
-per GB. amd64 would work equally well if Arm capacity is unavailable.
+8 GB is a floor rather than a preference. The primary cluster's
+`kube-apiserver` settles near 1.4 GB, which is what forced its control-plane
+nodes to 4 GB, and this node additionally carries the workloads, a database
+standby and an object-storage node.
 
-Sydney because a failover serves the same visitors as the primary site, and the
-round trip is paid on every dynamic request. Static assets stay edge-cached
-regardless.
-
-## 1. Before anything else: a budget
+## 1. A budget, before any instance
 
 The account runs on promotional credits, and **access to services ends when
-they are exhausted or when the promotional period ends, whichever is first**.
-There is no bill to warn you; the account simply stops.
+they are exhausted or the promotional window closes** — no invoice, no degraded
+mode, the zone simply stops.
 
-So set a cost budget with alerting *before* launching anything. It is also
-worth credits as one of the onboarding activities, which makes it free to do
-the right thing. Set the alert well below the remaining balance — the goal is
-to learn about a runaway before it eats the zone, not after.
+A default budget is the wrong instrument: it tracks net cost *after* credits,
+which reads as roughly zero every month right up until access ends. Configure
+it to exclude credits so it measures gross spend, then assert that it did:
+if the credit setting reads true, the budget is measuring money owed and will
+warn about nothing.
 
-Sanity-check the burn rate against the balance before committing to an instance
-size, and remember storage and data transfer are charged separately from
-compute.
+## 2. The image — no import required
 
-## 2. Get the Talos image
+Talos publishes AMIs per region, so there is no object-storage upload, no
+import role, and no snapshot registration. Take the published image for the
+architecture chosen in §0.
 
-    SCHEMATIC=4a0d65c669d46663f377e7161e50cfd570c401f26fd9e7bda34a0216b6f1922b
-    VERSION=v1.13.4
+Published images carry **no system extensions**. The mesh client is added later
+by upgrading to a factory installer built from a schematic (§8), not by
+building a custom image.
 
-    curl -L -o talos-aws-arm64.raw.xz \
-      "https://factory.talos.dev/image/$SCHEMATIC/$VERSION/aws-arm64.raw.xz"
-    xz -d talos-aws-arm64.raw.xz
+## 3. A stable address
 
-That schematic is stock Talos plus the mesh-VPN system extension, which the
-node needs to reach the primary site's database. It is reproducible: posting
-the two-line customization (`systemExtensions.officialExtensions:
-[siderolabs/tailscale]`) to `https://factory.talos.dev/schematics` returns the
-same id.
+Allocate an Elastic IP **before generating the machine config**. The address is
+baked into the cluster's certificates, and an ordinary public IP changes on
+stop/start — which this instance will do when it is resized after the event.
 
-Substitute `aws-amd64` if you end up on an x86 instance type.
+## 4. Security group — inbound is temporary by design
 
-## 3. Turn the image into an AMI
+Open the Talos API and Kubernetes API ports **from the workstation's address
+only**, and treat those rules as scaffolding to be removed in §9.
 
-Upload the raw image to S3, then import it as a snapshot and register that
-snapshot as an AMI. The import needs a `vmimport` service role with access to
-the bucket — that role does not exist by default and its absence is the usual
-first failure.
+**They must not stay.** The workstation's public address is the primary site's
+static IP — the same address that changes when that site fails over to its
+backup WAN. A rule pinned to it would deny access to the disaster-recovery
+cluster during exactly the disaster it exists for.
 
-Register the AMI with **ENA support enabled**, boot mode **UEFI** for Arm, and
-the architecture matching the image. Getting boot mode wrong produces an
-instance that launches and never becomes reachable, with no console clue.
+## 5. Machine configuration
 
-## 4. Launch
+Generate with the Elastic IP as the endpoint, and list it in the additional
+certificate SANs. Patch in: a schedulable control plane, no CNI (Cilium is
+installed separately, as at the primary site), kube-proxy disabled, the install
+disk, and the factory installer image carrying the mesh extension.
 
-Instance type `t4g.large`, the AMI from §3, a public IP, and a root volume of
-at least 20 GB.
+**Do not set a static hostname.** The platform supplies it and Talos rejects
+the entire config — `static hostname is already set in v1alpha1 config` —
+leaving the node in a config-acquire loop with its API never opening.
 
-Security group, inbound, **from your own address only**:
+Validate before launching, because a rejected config is visible only on the
+serial console:
 
-| Port | Purpose |
-|---|---|
-| 6443 | Kubernetes API |
-| 50000-50001 | Talos API |
+    talosctl validate --config controlplane.yaml --mode cloud
 
-Nothing else needs to be reachable from the internet. Public traffic arrives
-through the tunnel, which dials outbound.
+## 6. Launch
 
-Talos does not use SSH, so the key pair field is irrelevant — leave it empty
-rather than hunting for a key. The instance boots into maintenance mode and
-waits for a configuration.
+Pass the machine config as user-data. Note that the launch call base64-encodes
+a file for you while the *modify* call does not — it rejects a raw file and
+needs the content already encoded.
 
-## 5. Apply the machine configuration
+Associate the Elastic IP once the instance is running; it is refused while the
+instance is still pending.
 
-Deimos is a single schedulable control plane, so it needs its own rendered
-config — see `bootstrap/README.md` for how configs are rendered, and note that
-the cluster-identity fields differ from the primary's.
+Talos has no SSH, so the serial console is the only window into a boot that
+goes wrong.
 
-    talosctl apply-config --insecure --nodes <public-ip> --file deimos-controlplane.yaml
-    talosctl bootstrap --nodes <public-ip>
-    talosctl kubeconfig --nodes <public-ip>
+## 7. Bootstrap — endpoint public, node private
 
-Two differences from the primary site's nodes, both consequences of the
-platform rather than choices:
+**This asymmetry is load-bearing.** `talosctl` reaches the *endpoint*, then asks
+it to proxy to the *node* address. The cloud provider does not hairpin an
+Elastic IP, so a node set to the public address makes the instance try to reach
+itself and hang.
 
-- The install disk is the cloud root volume, not the primary's device path.
-  Confirm with `talosctl get disks` from maintenance mode rather than assuming.
-- The platform supplies networking, so no static addressing is configured.
+The symptom is thoroughly misleading: TCP connects, TLS completes, and the
+client still reports `dial tcp <elastic-ip>:50000: i/o timeout` exactly as
+though the port were filtered.
 
-## 6. Join the mesh and verify the one thing that matters
+    talosctl config endpoint <elastic-ip>
+    talosctl config node <private-ip>
+    talosctl bootstrap
+    talosctl kubeconfig ./kubeconfig --force
 
-The mesh extension takes an auth key through machine config. Once the node is
-on the mesh, confirm what the whole zone depends on before going further:
+The node registers about 100 seconds later and reports `NotReady` until a CNI
+exists, which is correct.
 
-    # from the node, that the primary's database is reachable
-    nc -zv postgres.infra.<primary-zone> 5432
+## 8. CNI, then the mesh
 
-If that fails, nothing downstream is worth attempting — the standby cannot
-stream and the zone is decorative.
+Install the Gateway API CRDs and Cilium using the same values as the primary
+site, with one override: **the operator needs a single replica on a single
+node**. The chart defaults to two with anti-affinity, so the second never
+schedules and the install appears to fail on a timeout having actually
+succeeded.
 
-## 7. Hand over to GitOps
+Then add the mesh client by upgrading to the factory installer image. This
+reboots the node, and replaces the published image's own schematic — so any
+extension it shipped with is gone, which is a removal rather than an addition.
 
-From here it is ordinary cluster work: install the CNI and Argo CD as
-`bootstrap/kubernetes/provision.sh` does, inject the secrets-store token, and
-apply the deimos root application.
+**If that upgrade is interrupted, the node stays cordoned.** The tool cordons
+before rebooting and uncordons afterwards; a killed client never reaches the
+second half. It presents as pods stuck `Pending` with `node(s) were
+unschedulable` on a cluster that otherwise reports healthy.
+
+The mesh client takes its auth key through a machine config *document*, not a
+v1alpha1 field. **The vendor's `curl | sh` installer cannot be used** — Talos
+has no shell, no package manager and no `sudo`:
+
+```yaml
+apiVersion: v1alpha1
+kind: ExtensionServiceConfig
+name: tailscale
+environment:
+  - TS_AUTHKEY=<one-shot key>
+  - TS_HOSTNAME=<node name>
+  - TS_EXTRA_ARGS=--accept-routes
+```
+
+`--accept-routes` is what lets the node use the subnet routes the mesh
+advertises. Without it the node joins the mesh and still cannot see the primary
+site — which looks like success until something tries to use it.
+
+Verify from a **pod**, not the node, since that is what the workloads do:
+
+    kubectl run netcheck --image=<busybox> --restart=Never \
+      --command -- sh -c "nc -z -w5 <primary-db> 5432 && echo REACHABLE"
+
+## 9. Close the door
+
+Add the mesh address to the certificate SANs first, or management over the mesh
+fails certificate verification. Confirm both APIs answer over the mesh
+**before** revoking anything, then remove every rule from §4.
+
+The security group ends with **zero inbound rules**. Nothing needs to reach it:
+the tunnel connector dials out, and so does the mesh client.
+
+    nc -z -w6 <elastic-ip> 50000                       # must fail
+    talosctl -e <tailnet-ip> -n <private-ip> version   # must still work
+
+## 10. Cluster DNS must ask the primary site
+
+The primary site's zone answers over **public DNS with proxy addresses, not
+NXDOMAIN**. So a cluster using ordinary upstream DNS resolves the database name
+to the CDN and connects to entirely the wrong thing — a failure that reads as a
+database problem rather than a name-resolution one.
+
+Point the zone at the primary site's own resolver, reachable over the mesh:
+
+```
+asn.casa:53 {
+    errors
+    cache 30
+    forward . <internal-resolver> {
+        max_concurrent 100
+    }
+}
+```
+
+Confirm from a pod that the data-tier names resolve to **private** addresses
+rather than proxy ones. Cached wrong answers survive the reload, so re-check
+after the cache TTL before concluding it failed.
+
+This currently lives in the cluster's own CoreDNS ConfigMap and should move
+into the GitOps tree with the rest of the zone's configuration.
 
 ## Living within the credits
 
-Compute is the dominant cost and scales with instance size, so the lever is the
-instance type. Sizing for the event and shrinking afterwards is a stop, change
-type, start — the root volume and its data survive.
+Compute dominates and scales with instance size, so the instance type is the
+lever: size for the event, shrink afterwards with a stop, a type change, and a
+start, leaving the volume and its data intact.
 
-The harder constraint is the end date. When credits or the promotional period
-run out, **access ends**, so this zone is a bridge rather than a home. Whatever
-replaces it — the other house returning, or a different provider — should be
-decided well before that date rather than discovered on it.
+The harder constraint is the end date. When the credits or the promotional
+period run out, **access ends** — so this zone is a bridge, and its replacement
+should be chosen well before that date rather than discovered on it.

@@ -1,10 +1,14 @@
 context: athena
 contexts:
     athena:
+        # Control-plane addresses come from the same 1Password note as the PKI
+        # (keys controlplane.ip1..ip3). This repo is public, so they are not
+        # written here literally — see bootstrap/athena.template.zsh, which
+        # redacts the same values.
         endpoints:
-            - 10.10.80.150
-            - 10.10.80.151
-            - 10.10.80.152
+            - {{ controlplane.ip1 }}
+            - {{ controlplane.ip2 }}
+            - {{ controlplane.ip3 }}
         ca: {{ certs.os.crt }}
         crt: {{ talosconfig.admin.crt }}
         key: {{ talosconfig.admin.key }}
