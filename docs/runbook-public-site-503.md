@@ -36,7 +36,7 @@ flowchart TD
 
     T --> T1{Status code?}
     T1 -->|"530 / 1033"| T2[No connectors, or hostname<br/>not routed to this tunnel]
-    T1 -->|404| T3[Gateway matched no route:<br/>missing https-tunnel parentRef,<br/>or denied by the asn.casa rule]
+    T1 -->|404| T3[Denied by the asn.casa rule by design,<br/>or no HTTPRoute exists for the hostname]
     T1 -->|"502 / 504"| T4[Connector reached the Gateway,<br/>origin unhealthy — check pods]
 
     H --> H1{Whose error page?}
@@ -200,21 +200,28 @@ Reached here from §0 because the hostname is a CNAME to `*.cfargotunnel.com`.
 | Evidence | Meaning |
 |---|---|
 | Cloudflare **1033** / **530** | The tunnel has no healthy connectors, or this hostname is not routed to the tunnel at all. Go to §7.2 |
-| **404**, and the same hostname works through HAProxy | The Gateway matched no route. Either the HTTPRoute is missing its `https-tunnel` parentRef, or the hostname is under `asn.casa` and the deny rule refused it **by design** |
+| **404**, and the same hostname works through HAProxy | Either the hostname is under `asn.casa`, where the tunnel's deny rule refuses it **by design**, or no HTTPRoute exists for it at all |
 | **502 / 504** | The connector reached the Gateway and the origin is unhealthy. This is an ordinary app problem — §3, §4 |
 | **200** | This hostname is fine; you are debugging the wrong one |
 
-The 404 case is the one that wastes time. A newly published site 404s through
-the tunnel while working perfectly through HAProxy, because routes here pin
-themselves to a listener and must name `https-tunnel` explicitly:
+**Do not go hunting for a missing `https-tunnel` parentRef.** Public routes
+name that listener, but it does not gate anything: Cilium serves every route on
+the Gateway through the hostname-less listener whether or not the route names
+it. Measured, and re-checked while writing this — hostnames that never opted in
+still return 200 through `:8443`. The parentRef is intent and future-proofing,
+not a switch.
+
+So a 404 here has two real causes. Check the cheap one first:
 
 ```bash
-kubectl get httproute <route> -n <ns> \
-  -o jsonpath='{range .status.parents[*]}{.parentRef.sectionName}={.conditions[?(@.type=="Accepted")].status}{"\n"}{end}'
+kubectl get httproute -A | grep <site>
 ```
 
-Two lines, both `True`, is healthy. One line means the route never opted in —
-see `AGENTS.md` on the tunnel listener.
+Nothing listed means no route exists, which is an ordinary missing-manifest
+problem — §4. If a route does exist and the hostname is under `asn.casa`, the
+tunnel's deny rule refused it deliberately: that zone is never served over a
+tunnel, and the fix is to give the site a hostname outside it, not to weaken
+the rule.
 
 ### 7.2 Are there connectors?
 
