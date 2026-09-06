@@ -4,8 +4,9 @@ Standing up the cloud second zone (`docs/design-multi-az-boreas.md` §4c). Ends
 with a single-node Talos cluster reaching the primary site's data tier over the
 mesh, with **no inbound rules from the internet at all**.
 
-Placeholders throughout — `<elastic-ip>`, `<private-ip>`, `<tailnet-ip>`,
-`<primary-zone>`, `<internal-resolver>`. Concrete addresses, account
+Placeholders throughout — `<elastic-ip>` (the instance's public address),
+`<private-ip>`, `<tailnet-ip>`, `<primary-zone>`, `<internal-resolver>`,
+`<primary-db>`, `<node name>`, `<busybox>`. Concrete addresses, account
 identifiers and the exact command log live in the private infrastructure repo.
 
 Everything before §7 needs cloud credentials; everything after is ordinary
@@ -101,7 +102,7 @@ Elastic IP, so a node set to the public address makes the instance try to reach
 itself and hang.
 
 The symptom is thoroughly misleading: TCP connects, TLS completes, and the
-client still reports `dial tcp <public-ip>:50000: i/o timeout` exactly as
+client still reports `dial tcp <elastic-ip>:50000: i/o timeout` exactly as
 though the port were filtered.
 
     talosctl config endpoint <elastic-ip>
