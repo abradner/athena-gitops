@@ -97,7 +97,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/crm:sha-15dc9b9343525322659b690171bd5c40a6e1b63e
+          image: ghcr.io/abradner/crm:v202609071235@sha256:c6445c2e78cf39aae1a0b8a0d1aa90214ee6f172d85088945f0b46b83c57d6b9
           imagePullPolicy: IfNotPresent
           args: ["./bin/temporal-worker"]
           env:
@@ -141,7 +141,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: ensure-schedules
-          image: ghcr.io/abradner/crm:sha-15dc9b9343525322659b690171bd5c40a6e1b63e
+          image: ghcr.io/abradner/crm:v202609071235@sha256:c6445c2e78cf39aae1a0b8a0d1aa90214ee6f172d85088945f0b46b83c57d6b9
           imagePullPolicy: IfNotPresent
           # The namespace-registration hook lives in a *different* Argo
           # Application (../temporal), so nothing orders it before this one —
