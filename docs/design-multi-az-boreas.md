@@ -385,6 +385,46 @@ volume and its data intact.
 
 The date this zone expires should be in the calendar the day it is created.
 
+## 4d. What a secondary zone actually runs
+
+**Production namespaces only.** Staging and, later, development stay switched
+off in every zone but the primary.
+
+This is not tidiness, it is what makes the zone fit. Measured on the primary
+cluster:
+
+| | Pods | Memory in use |
+|---|---|---|
+| Production namespaces | 24 | 3.7 GB |
+| Staging namespaces | 20 | 1.9 GB |
+
+Against a secondary zone's 8 GB, with roughly 2.5 GB for a control plane whose
+apiserver alone settles near 1.4 GB, and roughly 0.8 GB for the database
+standby and object-storage node, production-only lands around 7 GB. Adding
+staging needs about 9 GB and does not fit at all. Reduced replica counts in the
+secondary claw back a little more, since the autoscaler minimums drop to one.
+
+So the ceiling is not a preference to revisit if things get tight — it is the
+reason the zone is possible on this footprint.
+
+### Two consequences worth expecting
+
+**The overlay gets simpler, not more complex.** A secondary zone's tree omits
+the staging applications entirely rather than carrying them patched to zero
+replicas. Nothing to keep in step, and no risk of a patch silently failing open
+and scheduling a staging workload into a zone with no room for it.
+
+**Staging breaks during a failover, by design.** Tunnel hostnames are served by
+whichever connectors are registered, so when a secondary zone takes over it
+receives staging hostnames too — and has nothing to answer them with. Expect a
+404 for staging during any failover. That is correct behaviour rather than a
+fault to debug: staging is not in the disaster-recovery scope, and a site
+outage taking staging with it costs nothing.
+
+The alternative — separate tunnels so staging never fails over — buys a tidier
+error for a hostname nobody is looking at mid-incident, at the price of more
+tunnels to hold in your head. Not worth it.
+
 ## 5. Verification
 
 | Phase | Test | Pass |
