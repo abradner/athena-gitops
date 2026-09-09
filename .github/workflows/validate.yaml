@@ -106,7 +106,7 @@ jobs:
             echo "::notice::Rendered Helm output changed — check the diff for anything you did not intend, especially REMOVED lines."
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: rendered-manifests
