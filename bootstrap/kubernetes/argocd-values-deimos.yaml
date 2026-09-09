@@ -1,0 +1,23 @@
+# Argo CD values for the deimos zone. Deliberately smaller than the primary's.
+#
+# This is a single 8 GB node that also has to carry the workloads and a data
+# tier, so components the zone does not use are switched off rather than left
+# idling: there are no ApplicationSets in cluster/deimos, no SSO (the API is
+# reached over the mesh, not published), and no notifications (alerting runs on
+# the primary's observability tier, which watches this zone from outside).
+#
+# Keep the shared setting in step with argocd-values.yaml.
+configs:
+  params:
+    # TLS terminates at the Gateway, not in Argo.
+    server.insecure: true
+
+dex:
+  enabled: false
+notifications:
+  enabled: false
+# This chart has no applicationSet.enabled key — scaling to zero is how you
+# switch it off. There are no ApplicationSets in cluster/deimos, so the
+# controller would idle for nothing.
+applicationSet:
+  replicas: 0
