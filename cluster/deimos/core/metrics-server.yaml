@@ -1,0 +1,26 @@
+---
+# Required, not optional: spritz-web is driven by a HorizontalPodAutoscaler, and
+# without a metrics source the HPA cannot read utilisation. It reports
+# <unknown>/70% and never scales — including up, when this zone is the one
+# serving.
+#
+# Same chart and version as the primary. The name carries the deimos- prefix so
+# it cannot collide if these manifests are ever applied to the wrong cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-metrics-server
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    targetRevision: 3.14.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

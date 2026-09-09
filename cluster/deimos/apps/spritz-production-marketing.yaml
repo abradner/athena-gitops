@@ -1,0 +1,30 @@
+---
+# Points at the SAME path the primary's own Application uses. Two Argo
+# instances, two clusters, one set of manifests — so an image bump reaches both
+# zones without anything being copied or kept in step by hand.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-marketing-spritz-production
+  namespace: argocd
+spec:
+  project: deimos-workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-production/marketing
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

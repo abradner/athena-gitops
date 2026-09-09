@@ -1,0 +1,13 @@
+---
+# Data tier namespace. The workloads in it — a read-only standby of the
+# primary's database, a small read-write instance for the Solid cache/queue/cable
+# databases, and a Garage node — are added in a later change.
+#
+# This bends the primary's placement doctrine (state lives outside Kubernetes)
+# deliberately and narrowly: everything here is a replica or a rebuildable
+# cache, re-seedable from the primary in minutes. Nothing in this namespace is
+# a source of truth, so the property that doctrine protects does not apply.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data

@@ -42,6 +42,13 @@ spec:
                 name: spritz-config
             - secretRef:
                 name: spritz-app
+            # Per-zone overrides, last so they win. Absent on the primary, where
+            # `optional` makes it a no-op; present in a secondary zone to point
+            # the app at that zone's own data tier. Keys not mentioned here fall
+            # through to spritz-config unchanged.
+            - configMapRef:
+                name: cluster-overrides
+                optional: true
           readinessProbe:
             httpGet:
               path: /up
@@ -121,6 +128,13 @@ spec:
                 name: spritz-config
             - secretRef:
                 name: spritz-app
+            # Per-zone overrides, last so they win. Absent on the primary, where
+            # `optional` makes it a no-op; present in a secondary zone to point
+            # the app at that zone's own data tier. Keys not mentioned here fall
+            # through to spritz-config unchanged.
+            - configMapRef:
+                name: cluster-overrides
+                optional: true
           resources:
             requests:
               cpu: 25m
@@ -224,6 +238,13 @@ spec:
                 name: spritz-config
             - secretRef:
                 name: spritz-app
+            # Per-zone overrides, last so they win. Absent on the primary, where
+            # `optional` makes it a no-op; present in a secondary zone to point
+            # the app at that zone's own data tier. Keys not mentioned here fall
+            # through to spritz-config unchanged.
+            - configMapRef:
+                name: cluster-overrides
+                optional: true
           resources:
             requests:
               cpu: 50m

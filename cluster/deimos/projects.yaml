@@ -1,0 +1,59 @@
+---
+# AppProjects for this cluster. Argo projects are per-cluster, so these mirror
+# the primary's rather than being shared with it.
+#
+# Wave -1: these must exist before any Application referencing them syncs.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: deimos-core-project
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: Foundational cluster services for the deimos zone
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+    - 'https://kubernetes-sigs.github.io/metrics-server/'
+    - 'https://charts.external-secrets.io'
+    - 'https://charts.jetstack.io'
+    - 'https://argoproj.github.io/argo-helm'
+    - 'https://victoriametrics.github.io/helm-charts/'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: argocd
+    - server: 'https://kubernetes.default.svc'
+      namespace: kube-system
+    - server: 'https://kubernetes.default.svc'
+      namespace: external-secrets
+    - server: 'https://kubernetes.default.svc'
+      namespace: cert-manager
+    - server: 'https://kubernetes.default.svc'
+      namespace: default
+    - server: 'https://kubernetes.default.svc'
+      namespace: cloudflared
+    - server: 'https://kubernetes.default.svc'
+      namespace: data
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: deimos-workloads
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: Application workloads, synced from the same paths as the primary
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'spritz-*'
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'asn-*'
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: Namespace
