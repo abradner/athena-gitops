@@ -1,0 +1,30 @@
+---
+# Per-zone overrides for spritz-production in this zone.
+#
+# Consumed as the LAST envFrom entry on every spritz container, so these keys
+# win over spritz-config. Anything absent here falls through unchanged — this
+# file should stay as short as the genuine differences between zones.
+#
+# The namespace is created by the workload Application; this ConfigMap is
+# tolerated arriving in either order because the container reference is
+# `optional: true`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-overrides
+  namespace: spritz-production
+data:
+  # The database in this zone is a read-only streaming standby of the primary.
+  # Pointing at it rather than across the mesh at the primary is what makes the
+  # zone survive the primary being unreachable — which is the entire purpose.
+  SPRITZ_DATABASE_HOST: postgres-standby.data.svc.cluster.local
+
+  # Object storage is a local Garage node in the same storage cluster, so reads
+  # are served locally and writes replicate back when the link allows.
+  GARAGE_ENDPOINT: http://garage.data.svc.cluster.local:3900
+
+  # This zone runs no Temporal server — two servers against one persistence
+  # store corrupts it. Workers here point at the primary's frontend over the
+  # mesh, and simply fail while the primary is down, which is acceptable:
+  # nothing a guest does synchronously depends on Temporal.
+  TEMPORAL_HOST_PORT: temporal-frontend.spritz-production.svc.cluster.local:7233

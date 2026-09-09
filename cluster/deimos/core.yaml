@@ -1,0 +1,32 @@
+---
+# Zone-specific core: the per-zone override ConfigMap, the tunnel connector held
+# at zero replicas, and cluster DNS. Everything else in this cluster comes from
+# the shared application paths.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-core
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/deimos/core
+    directory:
+      recurse: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

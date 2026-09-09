@@ -1,0 +1,46 @@
+---
+# The deimos app-of-apps root. Applied once by hand on the deimos cluster
+# (kubectl apply -f cluster/deimos/root.yaml); after that it manages itself.
+#
+# The primary cluster never syncs this directory: its own root syncs only the
+# top level of cluster/ (recurse defaults to false), and cluster/deimos is a
+# subdirectory, so nothing here is visible to it. No exclusion is needed.
+#
+# Like the primary's root, prune is off at this level so a bad rename degrades
+# to "orphaned, fix in git" rather than cascading deletes.
+#
+# Every Application and AppProject in this tree is prefixed `deimos-`, and that
+# is a safety property rather than tidiness: without it these share names with
+# the primary's, and applying this file to the wrong cluster would silently
+# repoint the primary's own root at this path.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-root
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/deimos
+    # Do NOT add `directory: {recurse: false}` — false is Go's zero value, gets
+    # dropped on serialization, and the resulting git/live mismatch produces a
+    # permanent sync loop. See the note in cluster/root.yaml.
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
