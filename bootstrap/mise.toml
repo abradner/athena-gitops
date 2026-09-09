@@ -2,7 +2,7 @@
 #kubectl = "1.34"
 #talosctl = "1.11"
 
-kubectl = "1.36"
+kubectl = "1.37.0"
 talosctl = "1.13"
 
 [env]
