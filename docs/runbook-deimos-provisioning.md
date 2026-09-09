@@ -21,6 +21,19 @@ not — anything else is refused outright. Ask what is permitted rather than
 assuming credits buy any shape, because exactly one eligible type has 8 GB and
 it is x86_64. The Arm options stop at 2 GB.
 
+**"Free-tier-eligible" does not mean free, and on this plan nothing is.** That
+flag gates which instance types a restricted account may *start*; it is not a
+discount and it does not grant free hours. Measured on this account: compute,
+storage and the public address were each billed at exactly list price, to four
+decimal places. The clearest proof is storage — 4.65 GB-months charged in full,
+where an old-style 30 GB-month allowance would have covered it many times over.
+
+Credits replaced the traditional free tier here rather than supplementing it.
+Everything runs at list price and the credits pay the bill, so **the number that
+governs this zone is the burn rate, not the promotional end date the console
+advertises**. Measured: about $2.95/day, near enough $89/month, of which the
+instance is 91%. A $100 balance is therefore roughly five weeks, not six months.
+
 That architecture switch costs nothing: the application images are multi-arch.
 
 8 GB is a floor rather than a preference. The primary cluster's

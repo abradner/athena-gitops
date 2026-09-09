@@ -337,7 +337,10 @@ not a plan, so the zone moved to a provider whose signup completes immediately.
 Every other free tier bottoms out at 1 GB instances, which would have reduced
 this zone to replication with nowhere to serve from. What makes the current
 provider workable is **promotional credits**, which buy a properly sized
-instance rather than a token one. The catch is in the wording on the console:
+instance rather than a token one — at list price, because this plan has no free
+allowances at all. The "free-tier-eligible" label on an instance type gates what
+a restricted account may launch; it grants nothing free. Measured on the running
+zone, every line bills at exact list price. The catch is in the wording on the console:
 access to services ends when the credits are exhausted **or** when the
 promotional period ends. This zone is therefore a bridge with a known expiry,
 not a permanent home, and its replacement should be chosen before that date.
@@ -370,6 +373,19 @@ per-architecture digests into a manifest list and explicitly guards against
 publishing a single-arch manifest under the full tag set. So the third zone can
 be Intel, and a cloud zone can be whichever architecture is cheaper or
 available — Arm, for now, on price.
+
+### The burn rate, which governs everything
+
+Measured once the zone was running: **about $2.95/day, near enough $89/month**,
+of which the instance is 91%, storage 5% and the public address 4%.
+
+That makes the runway roughly **five weeks per $100 of credit** — not the
+multi-month promotional window the console advertises, which only bounds the
+offer and says nothing about how fast the balance drains. Plan against the burn.
+
+A stopped instance costs about $0.27/day, since only the volume and the address
+keep charging. Idle stretches between build phases are therefore worth stopping
+for; the zone only needs to be warm for rehearsals and for the event itself.
 
 ### The expiry, which is the real risk
 
