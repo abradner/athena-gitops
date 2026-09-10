@@ -34,6 +34,15 @@ spec:
       namespace: cloudflared
     - server: 'https://kubernetes.default.svc'
       namespace: data
+    # The per-zone override ConfigMap lands in the workload namespaces, so this
+    # project must be allowed to write there. Without it Argo rejects the sync
+    # as "one or more synchronization tasks are not valid" — which reads like a
+    # broken manifest rather than a project-scope problem. Same trap as
+    # local-path-storage on the primary; see AGENTS.md.
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'spritz-*'
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'asn-*'
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
