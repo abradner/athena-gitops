@@ -19,6 +19,7 @@ spec:
     - 'https://charts.jetstack.io'
     - 'https://argoproj.github.io/argo-helm'
     - 'https://victoriametrics.github.io/helm-charts/'
+    - 'https://postfinance.github.io/kubelet-csr-approver'
   destinations:
     - server: 'https://kubernetes.default.svc'
       namespace: argocd
