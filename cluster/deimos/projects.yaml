@@ -46,6 +46,12 @@ spec:
       namespace: 'asn-*'
     - server: 'https://kubernetes.default.svc'
       namespace: observability
+    # The storage provisioner lands in its own namespace. Omitting it is the
+    # same trap as the workload namespaces above: Argo rejects the sync as
+    # "one or more synchronization tasks are not valid", which reads like a
+    # broken manifest rather than a project-scope problem.
+    - server: 'https://kubernetes.default.svc'
+      namespace: local-path-storage
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
