@@ -145,3 +145,60 @@ kubectl --context admin@deimos -n data rollout restart sts/postgres-standby
 
 The restart is needed because the passfile is written by the init container
 from the Secret; the running instance does not re-read it.
+
+## Object storage
+
+`garage` in the same namespace is a **mirror**, not a cluster member. It holds
+a one-way copy of the primary's `spritz-production` bucket, pulled by an
+`rclone sync` CronJob every fifteen minutes, and nothing written to it
+propagates back.
+
+That was a deliberate trade. Joining the primary's Garage cluster would need
+`rpc_public_addr` changed from `127.0.0.1:3901` — as it stands no second node
+can connect at all — and the replication factor raised, each requiring a
+restart of the live service, and it would stretch a storage cluster across the
+same WAN link whose failure is the reason this zone exists. The objects are
+immutable and uniquely keyed, so a one-way copy loses nothing but recency.
+
+The node is given the *primary's own access key*, imported with the same id and
+secret, so the application's credentials work unchanged and only
+`GARAGE_ENDPOINT` differs between zones.
+
+### Checking the mirror
+
+```bash
+kubectl --context admin@deimos -n data get cronjob garage-mirror
+kubectl --context admin@deimos -n data logs -l job-name --tail=20 --prefix
+```
+
+A run that fails while the primary is unreachable is expected and needs no
+action; the next run is fifteen minutes later.
+
+### Forcing a sync now
+
+```bash
+kubectl --context admin@deimos -n data create job --from=cronjob/garage-mirror mirror-now
+```
+
+### If the bootstrap looks wrong
+
+The `bootstrap` sidecar re-checks the layout, key, bucket and permissions every
+hour and repairs whatever is missing, so the usual fix is to wait or restart
+the pod. Its log says what it did. `/health` on the admin port returns 503
+until the layout is applied, which is what the readiness probe reads — a
+`garage` pod stuck `0/2` Ready almost always means the layout never applied.
+
+### After a promotion
+
+The application starts writing objects to this node, and they exist nowhere
+else. When the primary returns, those objects must be copied back **before**
+the mirror runs again, because `rclone sync` deletes anything on the
+destination that is not on the source:
+
+```bash
+kubectl --context admin@deimos -n data patch cronjob garage-mirror \
+  -p '{"spec":{"suspend":true}}'
+```
+
+Suspend first, copy back, then resume. This is the same shape as the database
+reconciliation above: pick a winner, copy by hand, do not merge.
