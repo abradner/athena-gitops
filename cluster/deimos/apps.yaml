@@ -1,0 +1,32 @@
+---
+# Fans out the workload Applications in cluster/deimos/apps. The root syncs only
+# the top level of cluster/deimos, so without this the files in apps/ are never
+# read and the zone quietly runs nothing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-apps
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/deimos/apps
+    directory:
+      recurse: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
