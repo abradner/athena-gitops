@@ -1,0 +1,43 @@
+---
+# Approves the kubelet's serving-certificate CSRs.
+#
+# Required as a pair with `serverTLSBootstrap: true` in the machine config.
+# Without the bootstrap the kubelet serves a self-signed certificate carrying
+# no IP SANs at all, and metrics-server refuses it:
+#
+#   cannot validate certificate for 172.31.13.230 because it doesn't contain
+#   any IP SANs
+#
+# With the bootstrap but no approver, the CSR is created and never signed, so
+# the kubelet keeps the same certificate and nothing changes — the failure is
+# identical and looks like the bootstrap did not work.
+#
+# That chain is why metrics matter here beyond dashboards: no metrics API means
+# the spritz HPA reads <unknown>/70% and never scales, including up, at the
+# moment this zone is the one serving.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-kubelet-csr-approver
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: https://postfinance.github.io/kubelet-csr-approver
+    chart: kubelet-csr-approver
+    targetRevision: 1.2.15
+    helm:
+      valuesObject:
+        providerRegex: '.*'
+        # The node's hostname does not resolve in DNS here, so requiring a
+        # forward lookup would reject every CSR.
+        bypassDnsResolution: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
