@@ -5,7 +5,7 @@
 # Without the bootstrap the kubelet serves a self-signed certificate carrying
 # no IP SANs at all, and metrics-server refuses it:
 #
-#   cannot validate certificate for 172.31.13.230 because it doesn't contain
+#   cannot validate certificate for <node-ip> because it doesn't contain
 #   any IP SANs
 #
 # With the bootstrap but no approver, the CSR is created and never signed, so
