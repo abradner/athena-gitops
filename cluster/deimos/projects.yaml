@@ -43,6 +43,8 @@ spec:
       namespace: 'spritz-*'
     - server: 'https://kubernetes.default.svc'
       namespace: 'asn-*'
+    - server: 'https://kubernetes.default.svc'
+      namespace: observability
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

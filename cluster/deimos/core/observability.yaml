@@ -1,0 +1,70 @@
+---
+# VictoriaMetrics operator and agent for this zone.
+#
+# Two reasons this is not optional. The workload manifests carry VMServiceScrape
+# and VMPodScrape resources, so without the CRDs they fail to apply at all —
+# "no matches for kind VMServiceScrape" — and the applications never sync.
+# And a disaster-recovery zone nobody can see the inside of is worth very little
+# at the moment it starts serving.
+#
+# Cheap, measured on the primary: the operator uses ~57 Mi and the agent
+# ~163 Mi.
+#
+# Everything stateful is disabled, exactly as on the primary: metrics are
+# remote-written to the observability tier at the primary site over the mesh,
+# because a zone must not depend on the thing it exists to survive the loss of.
+# The 2 Gi buffer covers the link being down — which is precisely when this zone
+# is serving and its metrics matter most.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-vm-stack
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: 'https://victoriametrics.github.io/helm-charts/'
+    chart: victoria-metrics-k8s-stack
+    targetRevision: 0.91.2
+    helm:
+      valuesObject:
+        fullnameOverride: vmk8s
+        vmsingle:
+          enabled: false
+        vmalert:
+          enabled: false
+        alertmanager:
+          enabled: false
+        grafana:
+          enabled: false
+        vmagent:
+          enabled: true
+          spec:
+            # externalLabels is what makes this zone distinguishable in the
+            # primary's dashboards and alerts. Without it deimos series are
+            # indistinguishable from athena's and would silently double-count.
+            externalLabels:
+              cluster: deimos
+            remoteWrite:
+              - url: http://obs-metrics.infra.asn.casa:8428/api/v1/write
+            statefulMode: true
+        # Talos exposes none of these and runs no kube-proxy, same as the
+        # primary — leaving them on produces permanently failing scrape targets.
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
