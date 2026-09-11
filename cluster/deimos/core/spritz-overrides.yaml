@@ -19,8 +19,31 @@ data:
   # zone survive the primary being unreachable — which is the entire purpose.
   SPRITZ_DATABASE_HOST: postgres-standby.data.svc.cluster.local
 
-  # Object storage is a local Garage node in the same storage cluster, so reads
-  # are served locally and writes replicate back when the link allows.
+  # Solid Cache, Solid Queue and Solid Cable write on ordinary requests, so
+  # they cannot live on the standby. They point at a small local instance that
+  # is writable, unreplicated and disposable. See core/postgres-solid.yaml.
+  #
+  # Username and password are deliberately not overridden: that instance is
+  # created with the application's own role, so the existing
+  # SPRITZ_DATABASE_USERNAME/PASSWORD are correct for it too.
+  SPRITZ_SOLID_DATABASE_HOST: postgres-solid.data.svc.cluster.local
+
+  # Consumed by bin/docker-entrypoint. `db:prepare` opens a write transaction
+  # and therefore fails outright against the standby, taking every container
+  # with it — which is what a read-only zone looks like if nothing tells the
+  # application it is one. The Solid databases still need preparing, because
+  # those are local and start empty.
+  #
+  # This flag is a statement about the zone, not about an incident: the
+  # database here is ALWAYS a standby. Promotion is the escalation that clears
+  # it, and it is a human decision.
+  SPRITZ_DATABASE_READONLY: "true"
+
+  # Object storage is a local Garage node holding a read-only MIRROR of the
+  # primary's bucket, refreshed every fifteen minutes. It is not a member of
+  # the primary's cluster and nothing written here propagates back — see the
+  # reasoning in core/garage-mirror.yaml. Objects uploaded to the primary
+  # within the last quarter of an hour are therefore missing here.
   GARAGE_ENDPOINT: http://garage.data.svc.cluster.local:3900
 
   # This zone runs no Temporal server — two servers against one persistence

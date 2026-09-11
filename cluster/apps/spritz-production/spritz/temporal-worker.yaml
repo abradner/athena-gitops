@@ -1,0 +1,49 @@
+---
+# Temporal worker — same image, run via rake.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-temporal-worker
+  namespace: spritz-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spritz-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: spritz-temporal-worker
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: worker
+          image: ghcr.io/abradner/spritz:v202609100602@sha256:70575dfdd00643d54eb7f43f66507261063352a5be39ab191c295b3a1209ba29
+          imagePullPolicy: IfNotPresent
+          args: ["bundle", "exec", "rake", "temporal:run_worker"]
+          ports:
+            # Temporal SDK core Prometheus endpoint (see monitoring.yaml).
+            - name: metrics
+              containerPort: 9464
+          env:
+            - name: TEMPORAL_METRICS_ADDR
+              value: 0.0.0.0:9464
+          envFrom:
+            - configMapRef:
+                name: spritz-config
+            - secretRef:
+                name: spritz-app
+            # Per-zone overrides, last so they win. Absent on the primary, where
+            # `optional` makes it a no-op; present in a secondary zone to point
+            # the app at that zone's own data tier. Keys not mentioned here fall
+            # through to spritz-config unchanged.
+            - configMapRef:
+                name: cluster-overrides
+                optional: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 384Mi
+            limits:
+              memory: 768Mi

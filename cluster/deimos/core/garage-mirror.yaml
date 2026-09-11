@@ -1,0 +1,447 @@
+---
+# A local S3 endpoint for this zone, holding a read-only copy of the primary's
+# object storage, refreshed on a schedule.
+#
+# WHY A MIRROR AND NOT A CLUSTER MEMBER. The original plan had deimos join the
+# primary's Garage cluster at replication_factor 2. That would be higher
+# fidelity, and it costs two things this zone should not spend: the primary
+# currently runs `rpc_public_addr = "127.0.0.1:3901"`, so no second node can
+# connect to it at all, and both that and the replication factor need a restart
+# of the live Garage. It would also stretch a storage cluster across the very
+# WAN link whose failure is the reason this zone exists.
+#
+# A one-way copy is a good fit for what is actually stored. The objects are
+# immutable and uniquely keyed — Active Storage blobs — so there is no
+# reconciliation to get wrong, and `rclone sync --size-only` is exactly right
+# rather than merely adequate.
+#
+# SUSPEND THIS BEFORE PROMOTING, NOT AFTER. `rclone sync` treats the primary as
+# the source of truth and deletes whatever the destination has and the source
+# does not. The moment this zone can accept writes, every upload is
+# deimos-only, and the next run — at most fifteen minutes later — deletes it
+# irrecoverably. Suspending the CronJob is therefore step 1 of the promotion
+# procedure in docs/runbook-deimos-data-tier.md, ahead of pg_promote() itself.
+#
+# WHAT IT COSTS. Objects uploaded since the last sync are missing during a
+# failover, and nothing written here propagates back. In degraded mode the
+# application does not write anyway; after a promotion it would, and those
+# uploads would need copying back by hand when the primary returns. That is the
+# same shape as the database reconciliation in
+# docs/runbook-deimos-data-tier.md: pick a winner, copy by hand, do not merge.
+#
+# THE KEY IS THE PRIMARY'S OWN. Garage can import an access key with a given id
+# and secret, so this node is given the same credentials the application
+# already holds. The application's GARAGE_ACCESS_KEY_ID and
+# GARAGE_SECRET_ACCESS_KEY therefore work unchanged against this endpoint, and
+# only GARAGE_ENDPOINT differs between zones.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: garage-keys
+  namespace: data
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: garage-keys
+  data:
+    - secretKey: GARAGE_ACCESS_KEY_ID
+      remoteRef:
+        key: "spritz-production/garage-access-key-id"
+    - secretKey: GARAGE_SECRET_ACCESS_KEY
+      remoteRef:
+        key: "spritz-production/garage-secret-access-key"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: data
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "lmdb"
+
+    # One node, one copy. This is a mirror of the primary, not a member of its
+    # cluster, so there is nothing here to replicate to.
+    replication_factor = 1
+
+    rpc_bind_addr = "[::]:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+
+    # Both secrets are generated per pod start into an emptyDir rather than
+    # kept anywhere. Nothing else needs to know them: no peer ever connects
+    # over RPC, and the only admin API client is the sidecar in this same pod.
+    #
+    # Garage REFUSES TO START if either file is more permissive than 0600 —
+    # "File ... is world-readable! (mode: 0100644, expected 0600)" — which is
+    # why the init container chmods them rather than trusting the default.
+    rpc_secret_file = "/run/garage-secrets/rpc_secret"
+
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage"
+
+    [admin]
+    api_bind_addr = "[::]:3903"
+    admin_token_file = "/run/garage-secrets/admin_token"
+    metrics_token_file = "/run/garage-secrets/admin_token"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: data
+  labels:
+    app.kubernetes.io/name: garage
+spec:
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: s3
+      port: 3900
+      targetPort: s3
+    - name: admin
+      port: 3903
+      targetPort: admin
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: data
+spec:
+  serviceName: garage
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      initContainers:
+        - name: secrets
+          image: busybox:1.37
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              umask 077
+              gen() {
+                # 32 bytes of hex, which is what Garage expects for both.
+                od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$1"
+                chmod 0600 "$1"
+              }
+              gen /run/garage-secrets/rpc_secret
+              gen /run/garage-secrets/admin_token
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/garage-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.3.0
+          imagePullPolicy: IfNotPresent
+          # The image is FROM scratch — one static binary, no shell — so this
+          # is the entrypoint verbatim and there is nowhere to put a wrapper
+          # script. That is why the bootstrap is a sidecar talking to the admin
+          # API rather than something this container does on the way up.
+          command: ["/garage"]
+          args: ["server"]
+          ports:
+            - name: s3
+              containerPort: 3900
+            - name: rpc
+              containerPort: 3901
+            - name: admin
+              containerPort: 3903
+          # /health needs no token and returns 503 until the cluster layout is
+          # applied and the node holds its partitions — so it reports exactly
+          # "can this actually serve objects", including on the very first
+          # start before the sidecar has bootstrapped anything.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: s3
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage.toml
+              subPath: garage.toml
+              readOnly: true
+            - name: secrets
+              mountPath: /run/garage-secrets
+              readOnly: true
+            - name: meta
+              mountPath: /var/lib/garage/meta
+            - name: data
+              mountPath: /var/lib/garage/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+
+        # Brings the node's layout, key and bucket to the state described here,
+        # then re-checks hourly. Written as a reconcile loop rather than a Job
+        # because it shares localhost with Garage, which is the only place the
+        # admin API is reachable from — and because re-checking costs four HTTP
+        # requests an hour and turns a hand-repair into a self-repair.
+        #
+        # Every step is guarded by a state check. The API rejects repeats
+        # outright: importing an existing key is 409, creating an existing
+        # bucket is 409, and re-applying the current layout version is 500.
+        - name: bootstrap
+          image: curlimages/curl:8.11.1
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              ADMIN=http://127.0.0.1:3903
+              CAPACITY=21474836480   # 20 GiB, the node's advertised size
+              ZONE=deimos
+              BUCKET=spritz-production
+
+              api() {
+                method="$1"; path="$2"; shift 2
+                curl -sS -X "$method" \
+                  -H "Authorization: Bearer $(cat /run/garage-secrets/admin_token)" \
+                  -H 'Content-Type: application/json' \
+                  "${ADMIN}${path}" "$@"
+              }
+              code() {
+                method="$1"; path="$2"; shift 2
+                curl -sS -o /dev/null -w '%{http_code}' -X "$method" \
+                  -H "Authorization: Bearer $(cat /run/garage-secrets/admin_token)" \
+                  -H 'Content-Type: application/json' \
+                  "${ADMIN}${path}" "$@"
+              }
+
+              reconcile() {
+                # 1. Layout. Version 0 means no node has ever been given a
+                #    role, so nothing can be stored yet.
+                version="$(api GET /v2/GetClusterStatus | sed -n 's/.*"layoutVersion"[ :]*\([0-9]*\).*/\1/p')"
+                if [ "${version:-0}" = "0" ]; then
+                  node="$(api GET /v2/GetClusterStatus | sed -n 's/.*"id"[ :]*"\([0-9a-f]*\)".*/\1/p' | head -n1)"
+                  echo "bootstrap: assigning node ${node} to zone ${ZONE}"
+                  api POST /v2/UpdateClusterLayout \
+                    -d "{\"roles\":[{\"id\":\"${node}\",\"zone\":\"${ZONE}\",\"capacity\":${CAPACITY},\"tags\":[]}]}" >/dev/null
+                  api POST /v2/ApplyClusterLayout -d '{"version":1}' >/dev/null
+                  echo "bootstrap: layout applied"
+                fi
+
+                # 2. The application's own access key, imported with the same
+                #    id and secret it uses against the primary.
+                if [ "$(code GET "/v2/GetKeyInfo?id=${GARAGE_ACCESS_KEY_ID}")" = "404" ]; then
+                  echo "bootstrap: importing access key ${GARAGE_ACCESS_KEY_ID}"
+                  api POST /v2/ImportKey \
+                    -d "{\"accessKeyId\":\"${GARAGE_ACCESS_KEY_ID}\",\"secretAccessKey\":\"${GARAGE_SECRET_ACCESS_KEY}\",\"name\":\"spritz-production\"}" >/dev/null
+                fi
+
+                # 3. The bucket.
+                if [ "$(code GET "/v2/GetBucketInfo?globalAlias=${BUCKET}")" = "404" ]; then
+                  echo "bootstrap: creating bucket ${BUCKET}"
+                  api POST /v2/CreateBucket -d "{\"globalAlias\":\"${BUCKET}\"}" >/dev/null
+                fi
+
+                # 4. Permissions. Unlike the three above this one is idempotent
+                #    — repeating it returns 200 — so it is applied every pass
+                #    and needs no check.
+                bucket_id="$(api GET "/v2/GetBucketInfo?globalAlias=${BUCKET}" | sed -n 's/.*"id"[ :]*"\([0-9a-f]*\)".*/\1/p' | head -n1)"
+                api POST /v2/AllowBucketKey \
+                  -d "{\"bucketId\":\"${bucket_id}\",\"accessKeyId\":\"${GARAGE_ACCESS_KEY_ID}\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":false}}" >/dev/null
+              }
+
+              echo "bootstrap: waiting for the admin API"
+              until code GET /v2/GetClusterStatus | grep -q '^200$'; do sleep 2; done
+
+              while true; do
+                reconcile || echo "bootstrap: reconcile failed, will retry"
+                sleep 3600
+              done
+          envFrom:
+            - secretRef:
+                name: garage-keys
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/garage-secrets
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: config
+          configMap:
+            name: garage-config
+        - name: secrets
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: meta
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # The primary holds 134 MB across both buckets and only
+        # spritz-production is mirrored. 8 Gi leaves room for the wedding's
+        # own uploads several times over.
+        resources:
+          requests:
+            storage: 8Gi
+
+---
+# Pulls the primary's objects into the local node. One direction only: this
+# never writes back, and never deletes on the primary.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: garage-mirror
+  namespace: data
+spec:
+  schedule: "*/15 * * * *"
+  # While the primary is unreachable every run fails, which is correct and
+  # uninteresting. Forbid keeps those failures from piling into overlapping
+  # pods, and the small history limits keep the failed ones visible without
+  # accumulating.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+          containers:
+            - name: rclone
+              image: rclone/rclone:1.71.0
+              args:
+                - "sync"
+                - "primary:spritz-production"
+                - "local:spritz-production"
+                # Active Storage blobs are immutable and uniquely keyed, so an
+                # object that exists on both sides with the same size IS the
+                # same object. Comparing sizes rather than checksums or
+                # timestamps avoids re-reading 134 MB every quarter of an hour
+                # to learn nothing.
+                - "--size-only"
+                - "--transfers=4"
+                - "--checkers=8"
+                # Fail fast rather than hold a pod open against a link that is
+                # down; the next run is fifteen minutes away.
+                - "--retries=1"
+                - "--contimeout=10s"
+                - "--timeout=120s"
+                - "--stats-log-level=NOTICE"
+              env:
+                # rclone takes its entire configuration from the environment,
+                # so there is no config file to template or mount. Both remotes
+                # use the same credentials because the local node was given the
+                # primary's key.
+                - name: RCLONE_CONFIG_PRIMARY_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_PRIMARY_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_PRIMARY_REGION
+                  value: garage
+                # No trailing dot on this hostname, unlike the standby's
+                # PRIMARY_HOST. Here the host is also part of the S3 request:
+                # it is signed into the SigV4 Host header and matched against
+                # Garage's root_domain for vhost-style addressing. Both forms
+                # were measured to resolve correctly from this zone, so the dot
+                # would buy four fewer lookups at the cost of perturbing
+                # request signing — not a trade worth making.
+                - name: RCLONE_CONFIG_PRIMARY_ENDPOINT
+                  value: http://garage.infra.asn.casa:3900
+                - name: RCLONE_CONFIG_PRIMARY_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-keys
+                      key: GARAGE_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_PRIMARY_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-keys
+                      key: GARAGE_SECRET_ACCESS_KEY
+                - name: RCLONE_CONFIG_LOCAL_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_LOCAL_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_LOCAL_REGION
+                  value: garage
+                - name: RCLONE_CONFIG_LOCAL_ENDPOINT
+                  value: http://garage.data.svc.cluster.local:3900
+                - name: RCLONE_CONFIG_LOCAL_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-keys
+                      key: GARAGE_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_LOCAL_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-keys
+                      key: GARAGE_SECRET_ACCESS_KEY
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault

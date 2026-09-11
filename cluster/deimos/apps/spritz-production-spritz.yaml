@@ -13,6 +13,28 @@ spec:
     repoURL: 'https://github.com/abradner/athena-gitops.git'
     targetRevision: main
     path: cluster/apps/spritz-production/spritz
+    directory:
+      # The two background workers are deliberately absent from this zone.
+      # Excluding them is not the same as scaling them to zero: Argo prunes
+      # what it no longer renders, and nothing can drift them back up.
+      #
+      # SOLID QUEUE. Jobs are enqueued to the LOCAL Solid Queue database, which
+      # is writable — so a worker here would happily claim them and then fail
+      # on the first write to the read-only primary, retrying forever. Worse,
+      # it would claim jobs that the primary's own worker should be running,
+      # so work would go missing rather than merely fail. The queue is meant to
+      # accumulate here and be drained after a promotion, not processed now.
+      #
+      # To turn it on after promoting, delete `solid-queue.yaml` from this
+      # exclusion and let Argo sync. That is the whole procedure, and it is a
+      # one-line reviewable change rather than a kubectl scale nobody records.
+      #
+      # TEMPORAL WORKER. There is no Temporal server in this zone — two servers
+      # against one persistence store corrupts it — and the frontend it would
+      # connect to is a ClusterIP in the primary's cluster, unreachable from
+      # here. It has nothing to do in this zone and nothing a guest does
+      # synchronously depends on it, so it would only CrashLoop and alert.
+      exclude: '{solid-queue.yaml,temporal-worker.yaml}'
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: spritz-production

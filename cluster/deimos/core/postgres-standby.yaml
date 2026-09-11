@@ -1,0 +1,374 @@
+---
+# A read-only streaming standby of the primary's PostgreSQL, running inside
+# this zone so that the zone keeps serving when the primary is unreachable.
+#
+# WHY IN-CLUSTER AND NOT A CONTAINER ON A HOST, AS THE PRIMARY DOES IT: there
+# is no hypervisor here. The zone is one EC2 instance running Talos, so
+# "outside Kubernetes" is not a place that exists. See the note on the `data`
+# namespace in namespaces.yaml for why that is acceptable — nothing here is a
+# source of truth.
+#
+# WHAT THIS REPLICATES: physical replication copies the whole database cluster,
+# not one database. So this standby carries every database the primary has,
+# including spritz_production_cache/_queue/_cable — read-only, and therefore
+# useless to Solid Cache, Solid Queue and Solid Cable, which all write on
+# ordinary requests. Those three are pointed at a separate, local, writable
+# instance; see postgres-solid.yaml.
+#
+# THE IMAGE IS THE SAME BUILD AS THE PRIMARY. Measured 2026-09-11: the primary
+# reports `PostgreSQL 18.4 (Debian 18.4-1.pgdg13+1)` and so does
+# docker.io/library/postgres:18.4-trixie — the same pgdg package, so the same
+# glibc collation and the same on-disk layout. That matters more than it looks:
+# a physical standby is a byte copy, so an image built against musl (any
+# -alpine tag) would read glibc-ordered text indexes with musl collation rules
+# and return wrong answers from correct-looking data. Pin the exact patch tag
+# and check the primary before bumping it.
+#
+# NOT MANAGED BY A HELM CHART OR AN OPERATOR ON PURPOSE: CloudNativePG or
+# Zalando would each want to own the primary too, and the primary is not going
+# to move before the wedding. A StatefulSet whose init container runs
+# pg_basebackup is about eighty lines and every line is inspectable.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: postgres-replication
+  namespace: data
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: postgres-replication
+  data:
+    - secretKey: username
+      remoteRef:
+        key: "deimos-postgres-replication/username"
+    - secretKey: password
+      remoteRef:
+        key: "deimos-postgres-replication/password"
+
+---
+# Configuration the init container writes into the freshly seeded data
+# directory. The primary is a Debian package install, which keeps
+# postgresql.conf and pg_hba.conf under /etc and outside PGDATA — so
+# pg_basebackup copies neither, and a seeded directory has no configuration at
+# all. That is convenient rather than annoying: the standby's configuration is
+# ours to state here in full, instead of inheriting the primary's.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-standby-config
+  namespace: data
+data:
+  postgresql.conf: |
+    listen_addresses = '*'
+    port = 5432
+
+    # A hot standby refuses to start if any of these is lower than the value
+    # the primary was running when the WAL was written. Measured against the
+    # primary 2026-09-11; all four are PostgreSQL defaults, and this file
+    # states them explicitly so that a future change on the primary shows up
+    # here as a diff rather than as a standby that will not start.
+    max_connections = 100
+    max_worker_processes = 8
+    max_locks_per_transaction = 64
+    max_prepared_transactions = 0
+
+    hot_standby = on
+
+    # Sized for a ~300 MB cluster on a 2 vCPU / 8 GB node that is also running
+    # the control plane, the metrics stack and the application. The primary
+    # runs the 128 MB default; there is no reason to exceed it here.
+    shared_buffers = 128MB
+    effective_cache_size = 512MB
+
+    # Feed back how far this standby has replayed, so the primary's
+    # pg_stat_replication shows real lag rather than nothing.
+    hot_standby_feedback = on
+
+    log_destination = 'stderr'
+    logging_collector = off
+    log_min_messages = warning
+    log_connections = off
+
+  pg_hba.conf: |
+    # Local socket, for the readiness probe and for pg_ctl.
+    local   all   all                     trust
+
+    # The application, from anywhere in the pod network. Scoped to the cluster
+    # CIDR rather than left open: the Service is ClusterIP, the zone allows no
+    # inbound traffic at all, and a password is still required, so this is the
+    # third lock rather than the first.
+    host    all   all   10.244.0.0/16     scram-sha-256
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-standby
+  namespace: data
+  labels:
+    app.kubernetes.io/name: postgres-standby
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-standby
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-standby
+  namespace: data
+spec:
+  serviceName: postgres-standby
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-standby
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-standby
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+      initContainers:
+        # Decides, on every pod start, whether the data directory it finds is
+        # still usable — and re-seeds from the primary when it is not.
+        #
+        # This runs at exactly the moment that matters. The zone is stopped
+        # between the rehearsal and the wedding week, so the interesting start
+        # is the one after a fortnight of downtime, when the answer to "can we
+        # still stream from where we left off" is the whole question.
+        - name: seed
+          image: postgres:18.4-trixie
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-eu", "-o", "pipefail", "-c"]
+          args:
+            - |
+              PGDATA=/var/lib/postgresql/data/pgdata
+              # Fully qualified, trailing dot included. Without it the pod
+              # resolver tries four search domains first, because ndots is 5 and
+              # this name has four dots. Both forms resolve correctly here
+              # (measured), so the dot buys speed and determinism, not a fix.
+              PRIMARY_HOST=postgres.infra.asn.casa.
+              SLOT=deimos_standby
+
+              export PGPASSWORD="$REPLICATION_PASSWORD"
+              export PGUSER="$REPLICATION_USERNAME"
+
+              # The password must not land on the data volume, which is why
+              # --write-recovery-conf is not used below and primary_conninfo is
+              # written by hand pointing at this passfile. The passfile lives
+              # on an emptyDir, recreated from the Secret on every pod start,
+              # so a rotation takes effect on the next restart and no copy of
+              # the password survives on the PVC.
+              PASSFILE=/etc/postgres-passfile/pgpass
+              printf '%s:5432:*:%s:%s\n' "$PRIMARY_HOST" "$PGUSER" "$PGPASSWORD" > "$PASSFILE"
+              chmod 0600 "$PASSFILE"
+
+              seed() {
+                echo "seed: taking a base backup from ${PRIMARY_HOST}"
+
+                # The slot is recreated rather than reused. A slot that went
+                # `lost` still exists, and pg_basebackup would happily use it
+                # while its restart_lsn still points at WAL the primary has
+                # already recycled — which produces a standby that seeds
+                # cleanly and then cannot start streaming.
+                psql --host="$PRIMARY_HOST" --dbname=postgres --no-psqlrc --quiet \
+                  --command="select pg_drop_replication_slot('${SLOT}')" >/dev/null 2>&1 || true
+                psql --host="$PRIMARY_HOST" --dbname=postgres --no-psqlrc --quiet \
+                  --command="select pg_create_physical_replication_slot('${SLOT}')" >/dev/null
+
+                rm -rf "${PGDATA:?}"/* "${PGDATA:?}"/.[!.]* 2>/dev/null || true
+                mkdir -p "$PGDATA"
+                chmod 0700 "$PGDATA"
+                # NO --write-recovery-conf. It generates primary_conninfo from
+                # the live libpq connection, and GenerateRecoveryConfig skips
+                # only `replication`, `dbname` and `fallback_application_name`
+                # — so the password supplied through PGPASSWORD is written
+                # verbatim into postgresql.auto.conf and stays on the volume,
+                # including after a rotation. The two settings it would have
+                # written are written below instead, with a passfile.
+                pg_basebackup \
+                  --host="$PRIMARY_HOST" --port=5432 \
+                  --pgdata="$PGDATA" \
+                  --wal-method=stream \
+                  --slot="$SLOT" \
+                  --checkpoint=fast \
+                  --progress --verbose
+
+                # Written only here, on a directory this container seeded. A
+                # promoted instance has had its standby.signal removed by
+                # PostgreSQL and must NOT have it put back — see below.
+                touch "$PGDATA/standby.signal"
+              }
+
+              if [ ! -s "$PGDATA/PG_VERSION" ]; then
+                echo "seed: no data directory here yet"
+                seed
+              else
+                # Ask the primary whether the slot we left behind still holds
+                # the WAL we need. `lost` means the primary recycled it — the
+                # data directory is then unrecoverably behind and only a fresh
+                # base backup fixes it.
+                status="$(psql --host="$PRIMARY_HOST" --dbname=postgres \
+                            --no-psqlrc --tuples-only --no-align \
+                            --command="select coalesce(wal_status, 'unknown') from pg_replication_slots where slot_name = '${SLOT}'" \
+                          2>/dev/null || echo unreachable)"
+                status="${status:-absent}"
+                echo "seed: replication slot ${SLOT} reports '${status}'"
+
+                case "$status" in
+                  lost|absent)
+                    echo "seed: cannot resume from this data directory, re-seeding"
+                    seed
+                    ;;
+                  unreachable)
+                    # THE IMPORTANT CASE. The primary being unreachable is the
+                    # scenario this whole zone exists for; it must never keep
+                    # the standby from starting, and it must never be mistaken
+                    # for a lost slot. Start with the data we have and let
+                    # PostgreSQL retry the connection on its own.
+                    echo "seed: primary unreachable — starting read-only from local data"
+                    ;;
+                  *)
+                    echo "seed: resuming from the existing data directory"
+                    ;;
+                esac
+              fi
+
+              # Rewritten from scratch on every start rather than appended to,
+              # so a rotated password or a changed host takes effect and the
+              # file cannot grow a new pair of lines per pod restart. Nothing
+              # else writes here: no ALTER SYSTEM is used in this zone.
+              #
+              # The password stays out of it. Only a path to the passfile,
+              # which lives on an emptyDir recreated from the Secret each
+              # start, is recorded.
+              cat > "$PGDATA/postgresql.auto.conf" <<EOF
+              # Managed by the seed init container. Edits here are overwritten.
+              primary_conninfo = 'host=${PRIMARY_HOST} port=5432 user=${PGUSER} passfile=${PASSFILE} sslmode=require application_name=deimos_standby'
+              primary_slot_name = '${SLOT}'
+              EOF
+
+              # Configuration lives outside PGDATA on the primary, so a seeded
+              # directory has none. Refreshed on every start, which makes the
+              # ConfigMap above the single source of truth for it.
+              install -m 0600 /etc/postgres-config/postgresql.conf "$PGDATA/postgresql.conf"
+              install -m 0600 /etc/postgres-config/pg_hba.conf "$PGDATA/pg_hba.conf"
+
+              # DELIBERATELY NOT touching standby.signal here. pg_promote()
+              # removes it, and that removal is the whole record of the
+              # decision to promote: recreating it on the next pod start —
+              # a node reboot, a liveness restart, any rollout — would quietly
+              # turn the promoted, writable, authoritative database back into a
+              # standby and point it at the old primary it has since diverged
+              # from. The file is written once, inside seed(), on a directory
+              # this container built.
+              echo "seed: ready"
+          env:
+            - name: REPLICATION_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-replication
+                  key: username
+            - name: REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-replication
+                  key: password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: passfile
+              mountPath: /etc/postgres-passfile
+            - name: config
+              mountPath: /etc/postgres-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:18.4-trixie
+          imagePullPolicy: IfNotPresent
+          # The image's entrypoint would run initdb against an empty directory;
+          # the directory is never empty by the time this starts, and postgres
+          # is invoked directly so there is no chance of it being initialised
+          # over the top of a seeded one.
+          command: ["postgres"]
+          args:
+            - "-D"
+            - "/var/lib/postgresql/data/pgdata"
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # pg_isready over the local socket answers "accepting connections"
+          # for a standby in recovery, which is what "ready" means here — the
+          # zone wants reads, and reads work during recovery.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "/var/run/postgresql", "-U", "postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "/var/run/postgresql", "-U", "postgres"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: passfile
+              mountPath: /etc/postgres-passfile
+            - name: run
+              mountPath: /var/run/postgresql
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: passfile
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: postgres-standby-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # The whole cluster measured 300 MB on 2026-09-11. 8 Gi is room for it
+        # to grow an order of magnitude and still hold streamed WAL, on a node
+        # with 44 GB of ephemeral storage that also carries the container
+        # images.
+        resources:
+          requests:
+            storage: 8Gi

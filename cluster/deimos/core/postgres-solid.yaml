@@ -1,0 +1,171 @@
+---
+# A small, local, writable PostgreSQL holding only the Solid Cache, Solid Queue
+# and Solid Cable databases.
+#
+# WHY THIS EXISTS AT ALL. The standby next to it is read-only, and Rails writes
+# to all three of these on ordinary traffic — most sharply Rack::Attack, whose
+# throttle counters go through Rails.cache, which is Solid Cache, which is a
+# database table. Its rules match the guest paths, so against a read-only
+# database *browsing the site* fails, not merely submitting an RSVP. Pointing
+# the three Solid databases somewhere writable is what makes read-only mode
+# behave like the site rather than like a broken variant of it.
+#
+# WHY NOT MEMORY STORES INSTEAD. Swapping in :memory_store and :async would
+# also stop the writes, and would also mean this zone runs a configuration
+# nobody has ever exercised. Here, throttling really throttles, jobs really
+# enqueue, broadcasts really broadcast, and the only difference from the
+# primary is which host the three connections point at.
+#
+# NOTHING HERE IS WORTH KEEPING. It is a cache, a job queue and a message bus:
+# rebuildable from empty, never replicated, never backed up. If the volume is
+# lost, Rails recreates the schema on the next boot.
+#
+# CREDENTIALS ARE THE APPLICATION'S OWN, deliberately. This instance is
+# reachable only from inside this cluster, and the application already holds
+# these credentials in this same cluster, so reusing them grants nobody
+# anything they did not already have — and it avoids a second 1Password item
+# that would have to be created by hand and remembered at rotation time.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: postgres-solid
+  namespace: data
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: postgres-solid
+  data:
+    - secretKey: POSTGRES_USER
+      remoteRef:
+        key: "spritz-production/database-username"
+    - secretKey: POSTGRES_PASSWORD
+      remoteRef:
+        key: "spritz-production/database-password"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-solid
+  namespace: data
+  labels:
+    app.kubernetes.io/name: postgres-solid
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-solid
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-solid
+  namespace: data
+spec:
+  serviceName: postgres-solid
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-solid
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-solid
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+      containers:
+        - name: postgres
+          # Matched to the standby's tag for one reason only: one image pulled
+          # instead of two on a node that pays for its own egress.
+          image: postgres:18.4-trixie
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # PGDATA must be a subdirectory of the mount, not the mount itself
+            # — the entrypoint refuses to initialise a directory containing
+            # lost+found, and rejects one it cannot chmod 0700.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            # The role Rails connects as. It owns this instance, so `db:prepare`
+            # can create spritz_production_cache/_queue/_cable on first boot
+            # without any provisioning step here.
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_INITDB_ARGS
+              value: "--encoding=UTF8"
+          envFrom:
+            - secretRef:
+                name: postgres-solid
+          args:
+            - "-c"
+            - "max_connections=100"
+            - "-c"
+            - "shared_buffers=64MB"
+            # Everything in here is disposable, so durability is not worth the
+            # fsync. A crash loses recent cache entries and queued jobs; both
+            # are already tolerated, because a pod restart loses them anyway.
+            - "-c"
+            - "fsync=off"
+            - "-c"
+            - "synchronous_commit=off"
+            - "-c"
+            - "full_page_writes=off"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "/var/run/postgresql", "-U", "postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "/var/run/postgresql", "-U", "postgres"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: run
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # The three Solid databases measure about 25 MB together on the
+        # primary. 2 Gi is the smallest number that does not look like a
+        # mistake.
+        resources:
+          requests:
+            storage: 2Gi
