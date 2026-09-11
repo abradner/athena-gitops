@@ -15,6 +15,13 @@
 # reconciliation to get wrong, and `rclone sync --size-only` is exactly right
 # rather than merely adequate.
 #
+# SUSPEND THIS BEFORE PROMOTING, NOT AFTER. `rclone sync` treats the primary as
+# the source of truth and deletes whatever the destination has and the source
+# does not. The moment this zone can accept writes, every upload is
+# deimos-only, and the next run — at most fifteen minutes later — deletes it
+# irrecoverably. Suspending the CronJob is therefore step 1 of the promotion
+# procedure in docs/runbook-deimos-data-tier.md, ahead of pg_promote() itself.
+#
 # WHAT IT COSTS. Objects uploaded since the last sync are missing during a
 # failover, and nothing written here propagates back. In degraded mode the
 # application does not write anyway; after a promotion it would, and those
@@ -389,6 +396,13 @@ spec:
                   value: Other
                 - name: RCLONE_CONFIG_PRIMARY_REGION
                   value: garage
+                # No trailing dot on this hostname, unlike the standby's
+                # PRIMARY_HOST. Here the host is also part of the S3 request:
+                # it is signed into the SigV4 Host header and matched against
+                # Garage's root_domain for vhost-style addressing. Both forms
+                # were measured to resolve correctly from this zone, so the dot
+                # would buy four fewer lookups at the cost of perturbing
+                # request signing — not a trade worth making.
                 - name: RCLONE_CONFIG_PRIMARY_ENDPOINT
                   value: http://garage.infra.asn.casa:3900
                 - name: RCLONE_CONFIG_PRIMARY_ACCESS_KEY_ID

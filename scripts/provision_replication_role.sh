@@ -52,9 +52,15 @@ exists="$("${PSQL[@]}" -c "select 1 from pg_roles where rolname = '${ROLE}'")"
 if [[ -n "$exists" && "$ROTATE" == false ]]; then
   echo "role ${ROLE} already exists; pass --rotate to change its password"
 else
-  # 32 bytes of base64 with the URL-unsafe characters removed, so the value
-  # survives being pasted into a connection string or a passfile unquoted.
-  password="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40)"
+  # Alphanumeric only, so the value survives being pasted into a connection
+  # string or a passfile unquoted.
+  #
+  # Note the bounded producer and `cut` rather than the obvious
+  # `tr -dc ... < /dev/urandom | head -c 40`. Under `set -o pipefail` that
+  # pipeline exits 141: head closes the pipe after 40 bytes, tr takes SIGPIPE,
+  # and the script aborts before creating the role. 512 random bytes yield
+  # ~120 alphanumeric characters, comfortably more than the 40 taken.
+  password="$(head -c 512 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-40)"
 
   if [[ -n "$exists" ]]; then
     "${PSQL[@]}" -c "alter role ${ROLE} with password '${password}'"
@@ -102,14 +108,20 @@ cat <<EOF
 
 Remaining step, on the primary host — psql cannot do this one:
 
-  1. Add to pg_hba.conf, above any 'reject' lines:
+  1. Add to pg_hba.conf, above any 'reject' lines, substituting the subnet
+     router's address for <MESH_GATEWAY> — it is recorded in asn-infra, and
+     is deliberately not written down in this public repository:
 
        # deimos standby. The source address is the Tailscale subnet router,
        # not deimos itself, because it SNATs; every tailnet client reaches
        # PostgreSQL as this address. The password is what actually
        # distinguishes deimos here.
-       host  replication  ${ROLE}  10.10.20.103/32  scram-sha-256
-       host  postgres     ${ROLE}  10.10.20.103/32  scram-sha-256
+       host  replication  ${ROLE}  <MESH_GATEWAY>/32  scram-sha-256
+       host  postgres     ${ROLE}  <MESH_GATEWAY>/32  scram-sha-256
+
+     Confirm the address rather than assuming it, from a pod in the zone:
+
+       psql ... -Atc 'select inet_client_addr()'
 
      The second line is not redundant: the standby's init container makes an
      ordinary connection to ask whether its replication slot is still valid,

@@ -158,17 +158,22 @@ spec:
           args:
             - |
               PGDATA=/var/lib/postgresql/data/pgdata
-              PRIMARY_HOST=postgres.infra.asn.casa
+              # Fully qualified, trailing dot included. Without it the pod
+              # resolver tries four search domains first, because ndots is 5 and
+              # this name has four dots. Both forms resolve correctly here
+              # (measured), so the dot buys speed and determinism, not a fix.
+              PRIMARY_HOST=postgres.infra.asn.casa.
               SLOT=deimos_standby
 
               export PGPASSWORD="$REPLICATION_PASSWORD"
               export PGUSER="$REPLICATION_USERNAME"
 
-              # The password must not land on the data volume. pg_basebackup -R
-              # would write the whole connection string into
-              # postgresql.auto.conf, so the connection string is rewritten
-              # below to read a passfile instead, and the passfile lives on an
-              # emptyDir that is recreated from the Secret on every pod start.
+              # The password must not land on the data volume, which is why
+              # --write-recovery-conf is not used below and primary_conninfo is
+              # written by hand pointing at this passfile. The passfile lives
+              # on an emptyDir, recreated from the Secret on every pod start,
+              # so a rotation takes effect on the next restart and no copy of
+              # the password survives on the PVC.
               PASSFILE=/etc/postgres-passfile/pgpass
               printf '%s:5432:*:%s:%s\n' "$PRIMARY_HOST" "$PGUSER" "$PGPASSWORD" > "$PASSFILE"
               chmod 0600 "$PASSFILE"
@@ -189,14 +194,25 @@ spec:
                 rm -rf "${PGDATA:?}"/* "${PGDATA:?}"/.[!.]* 2>/dev/null || true
                 mkdir -p "$PGDATA"
                 chmod 0700 "$PGDATA"
+                # NO --write-recovery-conf. It generates primary_conninfo from
+                # the live libpq connection, and GenerateRecoveryConfig skips
+                # only `replication`, `dbname` and `fallback_application_name`
+                # — so the password supplied through PGPASSWORD is written
+                # verbatim into postgresql.auto.conf and stays on the volume,
+                # including after a rotation. The two settings it would have
+                # written are written below instead, with a passfile.
                 pg_basebackup \
                   --host="$PRIMARY_HOST" --port=5432 \
                   --pgdata="$PGDATA" \
                   --wal-method=stream \
                   --slot="$SLOT" \
-                  --write-recovery-conf \
                   --checkpoint=fast \
                   --progress --verbose
+
+                # Written only here, on a directory this container seeded. A
+                # promoted instance has had its standby.signal removed by
+                # PostgreSQL and must NOT have it put back — see below.
+                touch "$PGDATA/standby.signal"
               }
 
               if [ ! -s "$PGDATA/PG_VERSION" ]; then
@@ -233,10 +249,16 @@ spec:
                 esac
               fi
 
-              # Written after any seed, so it wins over whatever
-              # pg_basebackup -R recorded: same connection, but reading the
-              # password from the passfile rather than carrying it inline.
-              cat >> "$PGDATA/postgresql.auto.conf" <<EOF
+              # Rewritten from scratch on every start rather than appended to,
+              # so a rotated password or a changed host takes effect and the
+              # file cannot grow a new pair of lines per pod restart. Nothing
+              # else writes here: no ALTER SYSTEM is used in this zone.
+              #
+              # The password stays out of it. Only a path to the passfile,
+              # which lives on an emptyDir recreated from the Secret each
+              # start, is recorded.
+              cat > "$PGDATA/postgresql.auto.conf" <<EOF
+              # Managed by the seed init container. Edits here are overwritten.
               primary_conninfo = 'host=${PRIMARY_HOST} port=5432 user=${PGUSER} passfile=${PASSFILE} sslmode=require application_name=deimos_standby'
               primary_slot_name = '${SLOT}'
               EOF
@@ -247,11 +269,14 @@ spec:
               install -m 0600 /etc/postgres-config/postgresql.conf "$PGDATA/postgresql.conf"
               install -m 0600 /etc/postgres-config/pg_hba.conf "$PGDATA/pg_hba.conf"
 
-              # standby.signal is what makes this a standby rather than a
-              # promoted primary. pg_basebackup -R writes it; assert it,
-              # because a data directory that lost it comes up read-write and
-              # starts diverging from the primary silently.
-              touch "$PGDATA/standby.signal"
+              # DELIBERATELY NOT touching standby.signal here. pg_promote()
+              # removes it, and that removal is the whole record of the
+              # decision to promote: recreating it on the next pod start —
+              # a node reboot, a liveness restart, any rollout — would quietly
+              # turn the promoted, writable, authoritative database back into a
+              # standby and point it at the old primary it has since diverged
+              # from. The file is written once, inside seed(), on a directory
+              # this container built.
               echo "seed: ready"
           env:
             - name: REPLICATION_USERNAME

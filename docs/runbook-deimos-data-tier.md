@@ -11,6 +11,15 @@ they are not variations on each other:
 | If the volume is lost | Re-seeds from the primary automatically | Rails recreates it on next boot |
 | Worth backing up | No — the primary is the backup | No |
 
+**The Solid Queue worker is not deployed in this zone.** It is excluded from
+the deimos Application rather than scaled to zero, so nothing can drift it back
+up. Jobs still enqueue — the Solid Queue database here is writable — and simply
+accumulate unprocessed until a promotion. A worker running against a read-only
+primary would claim jobs and then fail on the first write, and claimed-then-
+failed is worse than never claimed: the primary's own worker would never see
+them. The Temporal worker is excluded for a simpler reason: there is no
+Temporal server in this zone for it to talk to.
+
 The split exists because Rails writes to the Solid databases on ordinary guest
 traffic. Rack::Attack's throttle counters go through `Rails.cache`, which is
 Solid Cache, which is a table — so with everything on a read-only standby,
@@ -37,9 +46,13 @@ exact two lines and the reload command. It is a reload, not a restart, and
 drops no connections.
 
 Note what the source address is. deimos reaches the lab through the Tailscale
-subnet router, which SNATs, so PostgreSQL sees `10.10.20.103` — the router —
-for every tailnet client, not deimos's own address. The `pg_hba` rule
-therefore cannot single deimos out; the password is what does that.
+subnet router, which SNATs, so PostgreSQL sees **the router's address** for
+every tailnet client, not deimos's own. The `pg_hba` rule therefore cannot
+single deimos out; the password is what does that.
+
+The address itself is in `asn-infra` and deliberately not written down here —
+this repository is public. Confirm it rather than assuming, from a pod in the
+zone: `select inet_client_addr()`.
 
 **3. Let Argo sync.** The ExternalSecret pulls the credentials, the init
 container takes a base backup, and the standby starts. The cluster is around
@@ -100,17 +113,43 @@ Promote only when the primary is unreachable on **both** the public and mesh
 paths, sustained, with no expectation of return. On the wedding day, lean
 towards promoting: the day-of features need writes.
 
+**Do these in order. Step 1 is not optional and is not a tidy-up.**
+
+**1. Suspend the object mirror, before anything becomes writable.**
+
+```bash
+kubectl --context admin@deimos -n data patch cronjob garage-mirror \
+  -p '{"spec":{"suspend":true}}'
+```
+
+`rclone sync` treats the primary as the source of truth and deletes anything on
+the destination the source does not have. The moment the application here can
+write, every upload is deimos-only — and the next mirror run, at most fifteen
+minutes later, would delete it irrecoverably. Suspending afterwards is too
+late: the window is the whole promoted interval.
+
+**2. Promote the database.**
+
 ```bash
 kubectl --context admin@deimos -n data exec sts/postgres-standby -- \
   psql -U postgres -c "select pg_promote(wait => true)"
 ```
 
-Then remove `SPRITZ_DATABASE_READONLY` from
+**3. Turn off read-only mode.** Remove `SPRITZ_DATABASE_READONLY` from
 `cluster/deimos/core/spritz-overrides.yaml` and let Argo roll the application.
 
+**4. Start the job worker.** Delete `solid-queue.yaml` from the `exclude` list
+in `cluster/deimos/apps/spritz-production-spritz.yaml`. Until now jobs have
+been accumulating in the local Solid Queue database unprocessed, which is
+deliberate — a worker running against a read-only primary would claim them and
+fail, and claimed-then-failed is worse than never claimed.
+
 Promotion is one-way. `standby.signal` is gone, the instance is a primary, and
-the init container will not put it back — it asserts `standby.signal` only on a
-data directory it seeded itself.
+the init container will **not** put it back: it writes that file only inside
+the seed path, on a data directory it built itself. Recreating it on a later
+pod start — a node reboot, a liveness restart, a rollout — would silently turn
+the promoted, authoritative database back into a standby of a primary it has
+since diverged from.
 
 ## Two writable databases
 
@@ -191,14 +230,16 @@ until the layout is applied, which is what the readiness probe reads — a
 ### After a promotion
 
 The application starts writing objects to this node, and they exist nowhere
-else. When the primary returns, those objects must be copied back **before**
-the mirror runs again, because `rclone sync` deletes anything on the
-destination that is not on the source:
+else. They survive only because the mirror was suspended as step 1 of the
+promotion procedure — if it was not, they are already gone.
+
+When the primary returns, copy those objects back to it before resuming the
+mirror, then unsuspend:
 
 ```bash
 kubectl --context admin@deimos -n data patch cronjob garage-mirror \
-  -p '{"spec":{"suspend":true}}'
+  -p '{"spec":{"suspend":false}}'
 ```
 
-Suspend first, copy back, then resume. This is the same shape as the database
-reconciliation above: pick a winner, copy by hand, do not merge.
+This is the same shape as the database reconciliation above: pick a winner,
+copy by hand, do not merge.

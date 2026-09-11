@@ -1,0 +1,68 @@
+---
+# Solid Queue supervisor, extracted from Puma.
+#
+# It previously ran in-process via SOLID_QUEUE_IN_PUMA. That was correct for a
+# single always-on server, but not once the web Deployment autoscales: job
+# capacity would become a side effect of web traffic, scaling 2->5 and back,
+# and the recurring scheduler in config/recurring.yml would run in every
+# replica.
+#
+# Kept at one replica. Concurrency belongs in config/queue.yml (JOB_CONCURRENCY
+# processes x 3 threads), not in the replica count — Solid Queue claims work
+# with FOR UPDATE SKIP LOCKED, so more replicas is safe but is the wrong dial.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-solid-queue
+  namespace: spritz-production
+spec:
+  replicas: 1
+  strategy:
+    # Never run two supervisors at once, even briefly. Recreate keeps the
+    # recurring scheduler single-writer across a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: spritz-solid-queue
+  template:
+    metadata:
+      labels:
+        app: spritz-solid-queue
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: jobs
+          image: ghcr.io/abradner/spritz:v202609100602@sha256:70575dfdd00643d54eb7f43f66507261063352a5be39ab191c295b3a1209ba29
+          imagePullPolicy: IfNotPresent
+          args: ["bin/jobs"]
+          ports:
+            # Supervisor-process exporter (config/initializers/
+            # solid_queue_metrics.rb in the app): supervisor GC stats,
+            # queue-state gauges, per-role RSS for the forked processes.
+            - name: metrics
+              containerPort: 9394
+          env:
+            - name: SOLID_QUEUE_METRICS_ADDR
+              value: 0.0.0.0:9394
+          envFrom:
+            - configMapRef:
+                name: spritz-config
+            - secretRef:
+                name: spritz-app
+            # Per-zone overrides, last so they win. Absent on the primary, where
+            # `optional` makes it a no-op; present in a secondary zone to point
+            # the app at that zone's own data tier. Keys not mentioned here fall
+            # through to spritz-config unchanged.
+            - configMapRef:
+                name: cluster-overrides
+                optional: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 384Mi
+            limits:
+              # AnalyzeJob drives libvips for Active Storage metadata, which is
+              # the same memory-spiky work that OOMKilled the web container at
+              # 1Gi. Give it comparable headroom rather than the worker's 768Mi.
+              memory: 1536Mi
