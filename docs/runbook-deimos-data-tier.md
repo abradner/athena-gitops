@@ -138,11 +138,36 @@ kubectl --context admin@deimos -n data exec sts/postgres-standby -- \
 **3. Turn off read-only mode.** Remove `SPRITZ_DATABASE_READONLY` from
 `cluster/deimos/core/spritz-overrides.yaml` and let Argo roll the application.
 
-**4. Start the job worker.** Delete `solid-queue.yaml` from the `exclude` list
-in `cluster/deimos/apps/spritz-production-spritz.yaml`. Until now jobs have
-been accumulating in the local Solid Queue database unprocessed, which is
-deliberate — a worker running against a read-only primary would claim them and
-fail, and claimed-then-failed is worse than never claimed.
+**4. Start the job worker.** In
+`cluster/deimos/apps/spritz-production-spritz.yaml`, change the `exclude` line
+from:
+
+```yaml
+      exclude: '{solid-queue.yaml,temporal-worker.yaml}'
+```
+
+to exactly:
+
+```yaml
+      exclude: temporal-worker.yaml
+```
+
+Note the braces go too — a brace list of one is not worth relying on. The
+Temporal worker stays excluded either way; there is still no Temporal server in
+this zone.
+
+Until this point jobs have been accumulating unprocessed in the local Solid
+Queue database, which is deliberate: a worker running while the primary was
+read-only would have claimed them and then failed on the first write, and
+claimed-then-failed is worse than never claimed — the primary's own worker
+never sees them again.
+
+Once Argo syncs, the backlog drains against the newly writable database. Watch
+it rather than assuming:
+
+```bash
+kubectl --context admin@deimos -n spritz-production logs -f deploy/spritz-solid-queue
+```
 
 Promotion is one-way. `standby.signal` is gone, the instance is a primary, and
 the init container will **not** put it back: it writes that file only inside
