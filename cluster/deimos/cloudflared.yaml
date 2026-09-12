@@ -1,0 +1,50 @@
+---
+# The tunnel connectors' shared parts — namespace, ingress config, credential
+# ExternalSecrets, pod scrape — deployed from the SAME path the primary uses,
+# so an ingress-rule change or a credential rotation reaches both zones with
+# nothing copied. Same technique as cluster/deimos/apps/*.yaml.
+#
+# Only deployments.yaml is excluded. Replica count is the one zone-specific
+# thing: this zone holds both tunnels at zero until the failover watchdog says
+# otherwise, and the shared file's PodDisruptionBudgets and
+# topologySpreadConstraints assume two replicas across several nodes. The
+# zero-replica Deployments live in core/cloudflared-deployments.yaml, owned by
+# the deimos-core Application, which is also where the replicas
+# ignoreDifferences lives — Argo applies that per owning Application, so it
+# would do nothing here.
+#
+# The shared config needs no per-zone edit: its catch-all targets
+# cilium-gateway-homelab-gateway.default.svc.cluster.local:8443, and this
+# zone's Gateway has the same name, so Cilium creates the same Service.
+#
+# Top-level file, next to core.yaml, because root.yaml reads this directory
+# without recursion — a new Application under core/ or apps/ would be applied
+# as a plain resource by that directory's own Application, not by root.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-cloudflared
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/core/cloudflared
+    directory:
+      exclude: deployments.yaml
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: cloudflared
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
