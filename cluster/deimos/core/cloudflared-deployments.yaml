@@ -1,0 +1,198 @@
+---
+# The tunnel connectors for this zone, held at ZERO replicas. The failover
+# watchdog (failover-watchdog.yaml) is the only thing that changes that, and
+# the deimos-cloudflared Application ignores /spec/replicas so Argo's selfHeal
+# does not fight it.
+#
+# GENERATED FROM THE PRIMARY'S cluster/core/cloudflared/deployments.yaml, not
+# hand-copied: replicas 2 -> 0, topologySpreadConstraints removed (one node),
+# the two PodDisruptionBudgets dropped (minAvailable: 1 against a desired
+# count of 0 is noise). Everything else — image, args, probes, resources,
+# securityContext, mounts — is byte-for-byte the primary's, so an image bump
+# there is the cue to regenerate here:
+#
+#   python3 - <<'EOF'
+#   import yaml
+#   src=[d for d in yaml.safe_load_all(open('cluster/core/cloudflared/deployments.yaml')) if d]
+#   for d in src:
+#       if d['kind']!='Deployment': continue
+#       d['spec']['replicas']=0
+#       d['spec']['template']['spec'].pop('topologySpreadConstraints',None)
+#   print(yaml.safe_dump_all([d for d in src if d['kind']=='Deployment'],sort_keys=False))
+#   EOF
+#
+# Config, credentials and the pod scrape come from the shared path via the
+# deimos-cloudflared Application; this file carries only what differs.
+#
+# THE PROBES ARE THE PRIMARY'S LESSON, KEPT. Liveness is /metrics (answers
+# whenever the process runs); readiness is /ready (answers when the edge is
+# connected). /ready as a liveness probe killed healthy connectors mid-WAN-fault
+# on the primary, which in this zone would mean killing them at the exact
+# moment they are the only path in.
+#
+# Wave 5: after the Gateway at wave 4, as on the primary.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-personal
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-wave: '5'
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: personal
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        tunnel: personal
+    spec:
+      containers:
+      - name: cloudflared
+        image: docker.io/cloudflare/cloudflared:2026.8.3
+        args:
+        - tunnel
+        - --config
+        - /etc/cloudflared/config.yaml
+        - --credentials-file
+        - /etc/cloudflared/creds/credentials.json
+        - run
+        - $(TUNNEL_ID)
+        env:
+        - name: TUNNEL_ID
+          valueFrom:
+            secretKeyRef:
+              name: cloudflared-personal
+              key: tunnel-id
+        ports:
+        - name: metrics
+          containerPort: 2000
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 2000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 2000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: config
+          mountPath: /etc/cloudflared
+          readOnly: true
+        - name: creds
+          mountPath: /etc/cloudflared/creds
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: cloudflared-config
+      - name: creds
+        secret:
+          secretName: cloudflared-personal
+          items:
+          - key: credentials.json
+            path: credentials.json
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-simplytics
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-wave: '5'
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: simplytics
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        tunnel: simplytics
+    spec:
+      containers:
+      - name: cloudflared
+        image: docker.io/cloudflare/cloudflared:2026.8.3
+        args:
+        - tunnel
+        - --config
+        - /etc/cloudflared/config.yaml
+        - --credentials-file
+        - /etc/cloudflared/creds/credentials.json
+        - run
+        - $(TUNNEL_ID)
+        env:
+        - name: TUNNEL_ID
+          valueFrom:
+            secretKeyRef:
+              name: cloudflared-simplytics
+              key: tunnel-id
+        ports:
+        - name: metrics
+          containerPort: 2000
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 2000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 2000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: config
+          mountPath: /etc/cloudflared
+          readOnly: true
+        - name: creds
+          mountPath: /etc/cloudflared/creds
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: cloudflared-config
+      - name: creds
+        secret:
+          secretName: cloudflared-simplytics
+          items:
+          - key: credentials.json
+            path: credentials.json
