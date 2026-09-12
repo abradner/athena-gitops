@@ -66,3 +66,24 @@ spec:
               # the same memory-spiky work that OOMKilled the web container at
               # 1Gi. Give it comparable headroom rather than the worker's 768Mi.
               memory: 1536Mi
+
+---
+# Kept in this file rather than monitoring.yaml so that a zone which excludes
+# the Deployment excludes its scrape with it. See temporal-worker.yaml.
+# The solid-queue pod runs bin/jobs (no Puma), so the yabeda Puma plugins
+# never start there. Its exporter is the supervisor-process one in the app's
+# config/initializers/solid_queue_metrics.rb, gated on
+# SOLID_QUEUE_METRICS_ADDR in the Deployment — supervisor GC stats,
+# queue-state gauges, and per-role RSS for the forked dispatcher/workers.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: spritz-solid-queue
+  namespace: spritz-production
+spec:
+  selector:
+    matchLabels:
+      app: spritz-solid-queue
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

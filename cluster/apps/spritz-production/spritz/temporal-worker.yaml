@@ -47,3 +47,23 @@ spec:
               memory: 384Mi
             limits:
               memory: 768Mi
+
+---
+# Kept in this file rather than monitoring.yaml so that a zone which excludes
+# the Deployment excludes its scrape with it. A VMPodScrape with no pods
+# behind it is a scrape pool with zero targets, which vmagent reports as a
+# misconfiguration — and it is one.
+# The Temporal worker has no Service — scrape the pod directly. The port
+# name refers to the containerPort named `metrics` (9464) on the worker.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: spritz-temporal-worker
+  namespace: spritz-production
+spec:
+  selector:
+    matchLabels:
+      app: spritz-temporal-worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
