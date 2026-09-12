@@ -64,6 +64,20 @@ spec:
         # --- scraping --------------------------------------------------
         vmagent:
           spec:
+            # Every series from this cluster carries cluster=athena. deimos has
+            # carried cluster=deimos since it was built, and until this landed
+            # the primary's series had NO cluster label at all — so the
+            # vendored rules rendered "on cluster " with nothing after it, the
+            # reference dashboards' cluster variable was empty for the primary,
+            # and Alertmanager could neither group nor inhibit per cluster.
+            #
+            # One-time cost: every series is relabelled at the moment this
+            # syncs, so graphs show a break here and staleness-based alerts
+            # may blip once. Checked before landing: every hand-written join
+            # in asn-infra's rules uses an explicit on(node), so none of them
+            # match on the full label set and none break.
+            externalLabels:
+              cluster: athena
             # Single write target: the out-of-cluster store on pve
             # (obs-metrics). The dual-write parallel-run phase is
             # over; the in-cluster vmsingle target was removed with the

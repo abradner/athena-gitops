@@ -357,6 +357,12 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 1
+      # A failed run is the WAN blipping, and the next run is fifteen minutes
+      # away. Keep the pod an hour for its logs, then let it go — a failed job
+      # that lingers is what KubeJobFailed keys on, and that alert is routed
+      # to the blackhole for this job anyway; the real signal is
+      # DeimosGarageMirrorStale in asn-infra.
+      ttlSecondsAfterFinished: 3600
       template:
         spec:
           restartPolicy: Never
