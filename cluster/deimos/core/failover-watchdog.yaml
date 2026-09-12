@@ -1,0 +1,275 @@
+---
+# The failover watchdog: the only thing that changes the connectors' replica
+# count in this zone. It decides, once a minute, whether deimos should be
+# advertising itself to Cloudflare, and scales cloudflared 0 <-> 1.
+#
+# WHY IT LIVES HERE, ON THE ZONE IT CONTROLS. The primary site's doctrine
+# puts watchers of a thing outside that thing, and its existing watchdog sits
+# on the home hypervisor tier accordingly. That tier is dark in exactly the
+# failure this zone exists for — the home site hard-down — so a watchdog
+# there could see the problem and do nothing about it. The survivor is the
+# only vantage point that can act. deimos is the survivor.
+#
+# WHAT IT NEVER DOES: promote the database. Connectors going up is not the
+# dangerous act; a second writable database is. This scales connectors and
+# nothing else, and every message it sends says so.
+#
+# THE VANTAGE-POINT RULE, which is the whole design:
+#   UP   needs athena gone over the mesh (obs-metrics unreachable, or it
+#        reports zero athena connectors) AND the public site failing through
+#        Cloudflare, for 3 consecutive minutes. Never on the mesh alone —
+#        athena may be serving fine over 4G while the mesh is broken, and
+#        then deimos advertising itself would only split traffic onto a
+#        read-only zone.
+#   DOWN needs athena healthy over the mesh for 10 consecutive minutes. The
+#        public probe is not consulted: while deimos is up, a 200 from the
+#        public site is deimos seeing itself.
+#
+# STATE lives in the failover-state ConfigMap: mode, the two streak counters,
+# and `hold`. Set hold=down to forbid scaling up (the rehearsal safety valve
+# while athena is deliberately broken), hold=up to force it, empty to let the
+# signals decide. A missing ConfigMap is created as mode=down with zero
+# streaks, so a cold boot — the instance started by the power Lambda into a
+# dark world — cannot flip on its first run; it needs three minutes of
+# evidence like any other. That is the intended cost of never flapping.
+#
+# A CronJob rather than a Deployment: minute granularity is exactly the
+# resolution wanted, all state is external, and there is no long-lived
+# process to crash-loop or leak. Same shape as garage-mirror.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: failover-watchdog
+  namespace: cloudflared
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: failover-watchdog
+  namespace: cloudflared
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["failover-state"]
+    verbs: ["get", "update", "patch"]
+  # `create` cannot be scoped by resourceNames — the object does not exist
+  # yet — so it is a separate, unscoped rule. Used once, on first run.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: failover-watchdog
+  namespace: cloudflared
+subjects:
+  - kind: ServiceAccount
+    name: failover-watchdog
+    namespace: cloudflared
+roleRef:
+  kind: Role
+  name: failover-watchdog
+  apiGroup: rbac.authorization.k8s.io
+---
+# The same 1Password item the alert pipeline uses (see
+# cluster/core/observability/alertmanager-config.yaml). Messages go to
+# Telegram directly, not through Alertmanager: Alertmanager is at the home
+# site, which is the thing that has just gone dark when this fires.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: failover-watchdog-telegram
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: failover-watchdog-telegram
+  data:
+    - secretKey: token
+      remoteRef:
+        key: "Telegram Bot/credential"
+    - secretKey: chat-id
+      remoteRef:
+        key: "Telegram Bot/chat-id"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: failover-watchdog-script
+  namespace: cloudflared
+data:
+  run.sh: |
+    #!/bin/sh
+    # See the header of failover-watchdog.yaml for the design. This is the
+    # mechanism only.
+    set -eu
+    NS=cloudflared
+    CM=failover-state
+    OBS=http://obs-metrics.infra.asn.casa:8428
+    PUBLIC=https://rabalex.wedding/
+    UP_AFTER=3
+    DOWN_AFTER=10
+
+    # ---- state, bootstrapped on first run ---------------------------------
+    if ! kubectl -n "$NS" get cm "$CM" >/dev/null 2>&1; then
+      kubectl -n "$NS" create cm "$CM" \
+        --from-literal=mode=down --from-literal=fail_streak=0 \
+        --from-literal=ok_streak=0 --from-literal=hold= >/dev/null
+      echo "state: created $CM (mode=down)"
+    fi
+    state=$(kubectl -n "$NS" get cm "$CM" -o json)
+    mode=$(echo "$state" | jq -r '.data.mode // "down"')
+    fail_streak=$(echo "$state" | jq -r '.data.fail_streak // "0"')
+    ok_streak=$(echo "$state" | jq -r '.data.ok_streak // "0"')
+    hold=$(echo "$state" | jq -r '.data.hold // ""')
+
+    # ---- signals: every probe reads as "not ok" on any failure ------------
+    mesh_ok=false
+    curl -fsS -m 5 -o /dev/null "$OBS/health" 2>/dev/null && mesh_ok=true
+
+    athena_connectors=0
+    if [ "$mesh_ok" = true ]; then
+      q='min(count by (tunnel) (cloudflared_tunnel_ha_connections{cluster="athena"} > 0))'
+      athena_connectors=$(curl -fsS -m 8 --data-urlencode "query=$q" "$OBS/api/v1/query" 2>/dev/null \
+        | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo 0)
+      athena_connectors=${athena_connectors%%.*}
+    fi
+
+    public_ok=false
+    code=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$PUBLIC" 2>/dev/null || echo 000)
+    [ "$code" = 200 ] && public_ok=true
+
+    # ---- decide ------------------------------------------------------------
+    new_mode=$mode
+    if [ "$hold" = down ]; then
+      new_mode=down
+    elif [ "$hold" = up ]; then
+      new_mode=up
+    elif [ "$mode" = up ]; then
+      if [ "$mesh_ok" = true ] && [ "$athena_connectors" -ge 1 ]; then
+        ok_streak=$((ok_streak + 1))
+      else
+        ok_streak=0
+      fi
+      [ "$ok_streak" -ge "$DOWN_AFTER" ] && new_mode=down
+    else
+      athena_gone=false
+      { [ "$mesh_ok" = false ] || [ "$athena_connectors" -eq 0 ]; } && athena_gone=true
+      if [ "$athena_gone" = true ] && [ "$public_ok" = false ]; then
+        fail_streak=$((fail_streak + 1))
+      else
+        fail_streak=0
+      fi
+      [ "$fail_streak" -ge "$UP_AFTER" ] && new_mode=up
+    fi
+
+    # ---- act on a change ---------------------------------------------------
+    if [ "$new_mode" != "$mode" ]; then
+      replicas=0; [ "$new_mode" = up ] && replicas=1
+      kubectl -n "$NS" scale deploy/cloudflared-personal deploy/cloudflared-simplytics --replicas="$replicas"
+      fail_streak=0; ok_streak=0
+      if [ "$new_mode" = up ]; then head="🚨 0️⃣ <b>deimos</b> · FailoverConnectorsUp"; else head="✅ 0️⃣ <b>deimos</b> · FailoverConnectorsDown"; fi
+      text="$head
+    cloudflared/connectors scaled to $replicas
+    mesh_ok=$mesh_ok athena_connectors=$athena_connectors public_ok=$public_ok hold=${hold:-none}
+    The database was NOT promoted. deimos is serving read-only."
+      curl -fsS -m 8 -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "parse_mode=HTML" \
+        --data-urlencode "text=$text" >/dev/null 2>&1 || true
+    fi
+    echo "mode=$new_mode (was $mode) mesh_ok=$mesh_ok athena_connectors=$athena_connectors public_ok=$public_ok fail_streak=$fail_streak ok_streak=$ok_streak hold=${hold:-none}"
+
+    # ---- persist -----------------------------------------------------------
+    kubectl -n "$NS" patch cm "$CM" --type merge -p \
+      "{\"data\":{\"mode\":\"$new_mode\",\"fail_streak\":\"$fail_streak\",\"ok_streak\":\"$ok_streak\"}}" >/dev/null
+
+    # ---- expose, best effort -----------------------------------------------
+    # Pushed rather than scraped: a once-a-minute Job is an awkward scrape
+    # target and obs-metrics accepts Prometheus text directly. Absent while
+    # the mesh is down, which is itself the signal.
+    m=0; [ "$new_mode" = up ] && m=1
+    mo=0; [ "$mesh_ok" = true ] && mo=1
+    po=0; [ "$public_ok" = true ] && po=1
+    printf 'failover_mode{cluster="deimos"} %s\nfailover_mesh_ok{cluster="deimos"} %s\nfailover_public_ok{cluster="deimos"} %s\nfailover_athena_connectors{cluster="deimos"} %s\n' \
+      "$m" "$mo" "$po" "$athena_connectors" \
+      | curl -fsS -m 5 -X POST --data-binary @- "$OBS/api/v1/import/prometheus" >/dev/null 2>&1 || true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: failover-watchdog
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A run that cannot start within its own minute is skipped, not queued —
+  # the next minute's run has fresher signals anyway.
+  startingDeadlineSeconds: 50
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 55
+      ttlSecondsAfterFinished: 600
+      template:
+        spec:
+          serviceAccountName: failover-watchdog
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: watchdog
+              # sh + curl + jq + kubectl in one small image. Client 1.34
+              # against server 1.36 is within kubectl's supported skew.
+              image: alpine/k8s:1.34.1
+              command: ["/bin/sh", "/scripts/run.sh"]
+              env:
+                - name: TELEGRAM_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: failover-watchdog-telegram
+                      key: token
+                - name: TELEGRAM_CHAT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: failover-watchdog-telegram
+                      key: chat-id
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 96Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: script
+              configMap:
+                name: failover-watchdog-script
+                defaultMode: 0755
