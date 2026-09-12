@@ -33,11 +33,15 @@ data:
   TEMPORAL_HOST_PORT: temporal-frontend.spritz-staging.svc.cluster.local:7233
   TEMPORAL_NAMESPACE: spritz
   MAILER_HOST: staging.rabalex.wedding
-  # WhatsApp is OFF in the cluster for now. config/initializers/whatsapp.rb
-  # fail-fasts on WHATSAPP_ACCESS_TOKEN unless this is false, and those
-  # tokens are not in the spritz-* 1Password items yet. Production already
-  # ran with it false on the VM; STAGING DID NOT — staging genuinely uses
-  # WhatsApp, so this is a temporary reduction there, not parity. Restore by
-  # adding the tokens to 1Password and the ExternalSecret, then flipping to
-  # true.
-  WHATSAPP_ENABLED: "false"
+  # WhatsApp is ON in staging — it runs against the STAGING Meta app and its
+  # free test number (5-recipient allowlist), never production's WABA.
+  # config/initializers/whatsapp.rb fail-fasts at boot on the four
+  # WHATSAPP_* keys whenever this is not "false", and both web and
+  # temporal-worker load them from the spritz-app Secret via envFrom — so
+  # this flag must only be true once external-secrets.yaml has synced all
+  # four. envFrom changes do not restart pods: the flip is inert until the
+  # next restart, and so is the CrashLoopBackOff if the keys are missing.
+  # Set explicitly rather than deleted (Whatsapp.enabled? is opt-out, so an
+  # absent key also means on) so a reader can grep for the decision.
+  # Kill switch: flip back to "false" and restart; the Secret can stay.
+  WHATSAPP_ENABLED: "true"
