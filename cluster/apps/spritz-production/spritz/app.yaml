@@ -37,6 +37,10 @@ spec:
             # under Kubernetes (unprivileged port start is 1024).
             - name: HTTP_PORT
               value: "8080"
+            # Explicit cap on request bodies at Thruster, ahead of Rails —
+            # covers the photo bingo guest upload path (up to 12 MB photos).
+            - name: MAX_REQUEST_BODY
+              value: "20971520" # 20 MiB
           envFrom:
             - configMapRef:
                 name: spritz-config
