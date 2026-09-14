@@ -31,7 +31,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz-marketing:v202609131801-hotfix-photo-bingo-open-feed-c45bdad@sha256:6d0348776b266ede6ba2fcf99f249d3f53ae5d196afbce644ebea569ca689758
+          image: ghcr.io/abradner/spritz-marketing:v202609140413@sha256:c395308614ff133366f105f4555e3e959e5426020247d9ad992f09596a7e08a4
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
