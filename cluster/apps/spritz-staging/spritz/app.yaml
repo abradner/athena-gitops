@@ -21,7 +21,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz:v202609131801-hotfix-photo-bingo-open-feed-c45bdad@sha256:9582f6477899eba077f6eb3cf0b7d31d87f9dc1bcac3707c2f476cc17eabb700
+          image: ghcr.io/abradner/spritz:v202609140413@sha256:6f75ba0f1131c4728ae1ea88f921aaf3fc568f3d2f39f065520ad71700d4d6b1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -99,7 +99,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/spritz:v202609131801-hotfix-photo-bingo-open-feed-c45bdad@sha256:9582f6477899eba077f6eb3cf0b7d31d87f9dc1bcac3707c2f476cc17eabb700
+          image: ghcr.io/abradner/spritz:v202609140413@sha256:6f75ba0f1131c4728ae1ea88f921aaf3fc568f3d2f39f065520ad71700d4d6b1
           imagePullPolicy: IfNotPresent
           args: ["bundle", "exec", "rake", "temporal:run_worker"]
           ports:
