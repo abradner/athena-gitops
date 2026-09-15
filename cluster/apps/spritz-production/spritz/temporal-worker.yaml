@@ -19,7 +19,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/spritz:v202609131801-hotfix-photo-bingo-open-feed-c45bdad@sha256:9582f6477899eba077f6eb3cf0b7d31d87f9dc1bcac3707c2f476cc17eabb700
+          image: ghcr.io/abradner/spritz:v202609151328@sha256:3a6efe7226af3d9d88bcf13ab0eefe7514fa6273fd3a214b738a4d95597c017b
           imagePullPolicy: IfNotPresent
           args: ["bundle", "exec", "rake", "temporal:run_worker"]
           ports:
