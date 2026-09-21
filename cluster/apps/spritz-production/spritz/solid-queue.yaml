@@ -33,7 +33,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: jobs
-          image: ghcr.io/abradner/spritz:v202609181126-hotfix-guest-matrix-bugs-9dc9295@sha256:94715a74f67545366d2fa58e20cd5a582bdb409492bf6e97df935e02845016ce
+          image: ghcr.io/abradner/spritz:v202609210619@sha256:f22cc44bdd20f52a0faf0cd4ced09796a6c1f8809a19fad3fc818c606b208967
           imagePullPolicy: IfNotPresent
           args: ["bin/jobs"]
           ports:
