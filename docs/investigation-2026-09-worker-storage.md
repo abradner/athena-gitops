@@ -21,8 +21,7 @@ infrastructure repo, per the public/private split in `AGENTS.md`.
   the new 128 GB scratch workers, so they differ from the rest only by a label and a soft taint.
 - **Upgrades are a separate problem.** The workers are Raspberry Pi CM5 Lites that stock Talos
   can't yet boot from SD, so every worker upgrade (including to Talos 1.14) goes through a pinned
-  community image. That work is a separate PR, bringing
-  `docs/runbook-cm5-worker-upgrade.md`; the file doesn't exist until that PR merges.
+  community image. That's separate work (the CM5 upgrade path), with its own PR and runbook.
 
 ## What we found
 
@@ -113,8 +112,7 @@ from memory.
   name it too and need moving to Image Factory before 1.14. That's tracked in the private
   tracker, not here.
 - **Upgrade path.** Talos recommends the latest patch of each intermediate minor. The CM5 image
-  source constrains the exact hops; see `docs/runbook-cm5-worker-upgrade.md` (in the CM5
-  upgrade-path PR).
+  source constrains the exact hops. They're decided in the CM5 upgrade-path work, not here.
 - **Deprecated but still accepted.** `machine.nodeLabels`/`nodeTaints` (now `KubeNodeConfig`),
   `machine.install` (now `UnattendedInstallConfig`), `machine.kubelet` (now `KubeletConfig`),
   `features.kubePrism`/`hostDNS`, and much of `cluster.*`. Migrate after the upgrade. The scratch
