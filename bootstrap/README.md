@@ -134,9 +134,14 @@ and a matching `PreferNoSchedule` taint. `apply-worker.sh` applies both. Things
 to get right:
 
 - **Same image as the other workers.** Flash exactly the image the existing
-  workers run, and compare `talosctl version` (Tag and SHA) against an existing
-  worker while the new node is still in maintenance mode, before applying
-  anything.
+  workers run. Before applying anything, while the new node is still in
+  maintenance mode, compare Tag and SHA with an existing worker. The
+  maintenance API needs `--insecure`:
+
+  ```bash
+  talosctl -n <new-node-ip> version --insecure   # new node, maintenance mode
+  talosctl -n <existing-worker-ip> version       # existing worker
+  ```
 - **Same address range.** The observability rule above applies to these nodes
   too.
 - **After joining, confirm the NVMe placement:**
