@@ -126,6 +126,24 @@ Check the placement with `talosctl -n <ip> get volumestatus EPHEMERAL`.
 **Do not `talosctl upgrade` workers from the template's `install.image`.**
 The workers are CM5 Lites on a community build; see the warning on that line.
 
+**Scratch workers.** These are the nodes listed in `NVME_WORKER_IP`: CM5 Lites
+with a 128 GB NVMe, meant for GitHub runners and other workloads that need a
+lot of disk but keep nothing. They get the same `worker.yaml` plus
+`worker-nvme.patch.yaml`, which adds the label `athena.asn.casa/scratch=nvme`
+and a matching `PreferNoSchedule` taint. `apply-worker.sh` applies both. Things
+to get right:
+
+- **Same image as the other workers.** Flash exactly the image the existing
+  workers run, and compare `talosctl version` (Tag and SHA) against an existing
+  worker while the new node is still in maintenance mode, before applying
+  anything.
+- **Same address range.** The observability rule above applies to these nodes
+  too.
+- **After joining, confirm the NVMe placement:**
+  - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
+  - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
+  - `kubectl describe node` shows the label and taint.
+
 **Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node
 addresses — cluster egress masquerades, so a Vector pod arrives as its node
