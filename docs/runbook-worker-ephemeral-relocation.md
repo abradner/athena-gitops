@@ -47,8 +47,11 @@ talosctl -n <worker-ip> read /proc/diskstats | awk '$3=="mmcblk0"{print "sectors
 Record the sector count and the time. Take it again after 15 minutes. That
 gives the SD's write rate *before* the move, the baseline the final check
 compares against. The original workers' Optanes still carry two stale xfs
-partitions (about 9.0 + 5.4 GB) from the old `machine.disks` layout. Note
-their names; the wipe below removes them.
+partitions (about 9.0 + 5.4 GB) from the old `machine.disks` layout. Record
+their device names from the `discoveredvolumes` output, and confirm they are
+exactly those two: xfs, no label, the expected sizes, and nothing else on the
+NVMe. The wipe below uses the names you recorded; don't assume numbering.
+If the NVMe holds anything else, stop.
 
 ## Procedure
 
@@ -73,7 +76,9 @@ their names; the wipe below removes them.
    Provisioning needs free space, and the stale partitions fill the disk.
 
    ```bash
-   talosctl -n <worker-ip> wipe disk nvme0n1p1 nvme0n1p2 --drop-partition
+   # the partition names you recorded and verified in pre-flight
+   # (on the original workers: typically nvme0n1p1 and nvme0n1p2)
+   talosctl -n <worker-ip> wipe disk <stale-partition-1> <stale-partition-2> --drop-partition
    talosctl -n <worker-ip> get discoveredvolumes | grep nvme   # only nvme0n1 left
    ```
 
