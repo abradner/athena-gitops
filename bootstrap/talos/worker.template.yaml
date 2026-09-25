@@ -213,9 +213,10 @@ machine:
         # in. Pinned by immutable build tag *and* digest. It is the next hop of
         # docs/runbook-cm5-worker-upgrade.md, and that runbook, not this line, is
         # how a worker gets upgraded. Bump the pin in the PR that records each
-        # completed hop. (First installs never read this line: the SD card is
-        # flashed with the image directly and install is skipped when booted
-        # from disk.)
+        # completed hop. Not yet proven on CM5 hardware: run the runbook's
+        # spare-node proof before any worker upgrade. (First installs never
+        # read this line: the SD card is flashed with the image directly and
+        # install is skipped when booted from disk.)
         image: ghcr.io/yama6a/talos-raspberry-pi5:v1.13.9-9@sha256:7d008485ea4ebdce07e4316cb1237feb140534cda0be038b74b5ea5ecd2739ab # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
         grubUseUKICmdline: true # Indicates if legacy GRUB bootloader should use kernel cmdline from the UKI instead of building it on the host.
