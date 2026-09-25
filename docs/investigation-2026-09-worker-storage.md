@@ -129,6 +129,10 @@ from memory.
 
 ## CM5 Lite image status
 
+> **Superseded (2026-09-26):** upstream Talos v1.14.1 from Image Factory now boots a CM5 Lite from
+> SD. See [`investigation-2026-09-cm5-upstream-talos.md`](investigation-2026-09-cm5-upstream-talos.md).
+> The notes below are kept as the record of what was known before that test.
+
 - **Upstream.** `siderolabs/sbc-raspberrypi` supports Pi 5, but a CM5 Lite doesn't bring its SD card
   up (`#98`, open and stalled; the maintainer suspects DTB selection). `v0.2.2` fixed CM5 Ethernet,
   not SD, and `#97` is about Pi 5 D0 u-boot.
