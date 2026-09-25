@@ -1,0 +1,30 @@
+# Config patch for the scratch workers: CM5 Lites identical to the other
+# workers except for a 128 GB NVMe where the others have a 14 GB Optane.
+# Applied on top of worker.yaml by apply-worker.sh for every NVME_WORKER_IP.
+#
+# Why a patch and not a separate template: the hardware differs only in
+# storage, and storage needs no per-node config. The base template's
+# EPHEMERAL VolumeConfig already selects "the NVMe", so /var lands on the
+# 128 GB drive here and on the Optane elsewhere. What differs is scheduling
+# intent, and this patch holds only that.
+#
+# Contains no secrets, so it is committed as-is and never hydrated.
+#
+# Scheduling (the soft taint is deliberate):
+#   - Scratch-heavy workloads (GitHub runners, other disk-hungry ephemeral
+#     jobs) select these nodes with
+#       nodeSelector: {athena.asn.casa/scratch: nvme}
+#     and tolerate the taint. They should size their scratch with
+#     emptyDir.sizeLimit; diskQuotaSupport enforces it via XFS project quotas.
+#   - PreferNoSchedule, not NoSchedule: general pods avoid these nodes but
+#     may still land here when the other workers are full, e.g. while one
+#     is drained for docs/runbook-worker-ephemeral-relocation.md.
+#
+# Talos 1.14 deprecates machine.nodeLabels/nodeTaints in favour of a
+# KubeNodeConfig document. These fields are correct for the 1.13 the
+# workers run; move them when the workers move.
+machine:
+    nodeLabels:
+        athena.asn.casa/scratch: nvme
+    nodeTaints:
+        athena.asn.casa/scratch: nvme:PreferNoSchedule

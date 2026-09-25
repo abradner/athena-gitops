@@ -28,6 +28,15 @@ WORKER_IP=(
   "10.10.80.x"
 )
 
+# Scratch worker IPs (CM5 Lites with a 128 GB NVMe), applied by
+# apply-worker.sh with worker-nvme.patch.yaml on top of worker.yaml.
+# Same address-range rule as WORKER_IP. Must be declared even when empty:
+# NVME_WORKER_IP=() means "none", unset is an error.
+NVME_WORKER_IP=(
+  "10.10.80.x"
+  "10.10.80.x"
+)
+
 # The control plane node used for `talosctl bootstrap` and kubeconfig
 # retrieval. Set explicitly (see indexing note above).
 BOOTSTRAP_NODE="10.10.80.x"
