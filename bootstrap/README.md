@@ -130,8 +130,11 @@ The workers are CM5 Lites on a community build; see the warning on that line.
 with a 128 GB NVMe, meant for GitHub runners and other workloads that need a
 lot of disk but keep nothing. They get the same `worker.yaml` plus
 `worker-nvme.patch.yaml`, which adds the label `athena.asn.casa/scratch=nvme`
-and a matching `PreferNoSchedule` taint. `apply-worker.sh` applies both. Things
-to get right:
+and a matching `PreferNoSchedule` taint. `apply-worker.sh` merges the two with
+yq and applies the result. Like the rest of that script it uses `--insecure`,
+so it only works on nodes in maintenance mode (provisioning and reprovisioning).
+Live nodes are changed per the relevant runbook, never with this script.
+Things to get right:
 
 - **Same image as the other workers.** Flash exactly the image the existing
   workers run. Before applying anything, while the new node is still in
@@ -147,7 +150,12 @@ to get right:
 - **After joining, confirm the NVMe placement:**
   - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
-  - `kubectl describe node` shows the label and taint.
+  - `kubectl describe node` shows the label and taint;
+  - `talosctl -n <ip> get resolvers` shows `searchDomains: []`. This is only
+    meaningful from Talos 1.14, which applies DHCP search domains; 1.13
+    ignores them, so on 1.13 it can't fail. On 1.14, check it **before any
+    runner is scheduled there**: a DHCP-supplied search domain blackholes
+    external API calls (AGENTS.md Gotchas #5).
 
 **Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node

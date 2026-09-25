@@ -632,6 +632,14 @@ auto: stable # A method to automatically generate a hostname for the machine.
 # 1c156458a). disableDefault also drops the hostname-derived domain. Both
 # 1.13 and 1.14 accept this document, and 1.13 ignores DHCP domains anyway,
 # so apply it before a worker's 1.14 upgrade and there is no window.
+#
+# Don't route this config through a 1.13 talosctl's patcher (`--config-patch`,
+# `machineconfig patch`, `patch machineconfig`). It re-serializes and drops
+# the empty list, which silently turns "override" back into "inherit DHCP".
+# Reproduced with the 1.13.10 client that bootstrap/mise.toml pins; the
+# 1.14.1 client keeps it. Nothing enforces the client version, so
+# apply-worker.sh merges the scratch patch with yq and refuses to apply
+# without the literal [].
 apiVersion: v1alpha1
 kind: ResolverConfig
 searchDomains:

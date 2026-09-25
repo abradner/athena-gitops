@@ -23,6 +23,9 @@ jobs:
           sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_arm64"
           sudo chmod +x /usr/local/bin/yq
       - run: ./scripts/validate_yaml.sh
+      # Shares this job for its yq install. Guards the worker DHCP
+      # search-domain override through apply-worker.sh (AGENTS.md Gotchas #5).
+      - run: ./scripts/test_apply_worker.sh
 
   k8s-schema:
     name: Kubernetes schema (kubeconform)
