@@ -9,9 +9,12 @@ upgrade and rollback. It supersedes the "CM5 Lite image status" section of
 Topology (addresses, the board, the exact schematic ID, the switch) is in the private
 infrastructure repo, per the public/private split in `AGENTS.md`.
 
-> **Status:** everything below was measured on hardware except where marked *untested*. One test
-> still decides the rollback story: upgrading from the fleet's exact community image (see "Next
-> steps"). Until then, a reflash is the rollback.
+> **Status:** three kinds of claim appear below, and each is labelled where it's made. Results
+> **measured** on the test board (the tables under "What was tested", the EFI inventory, the
+> Ethernet counters). Facts **read from upstream**: the Image Factory API, Talos and
+> sbc-raspberrypi source, commits, issues and release notes. **Inferences**, marked as inferred
+> or *untested*. The upgrade from the fleet's exact community image, which decides the rollback
+> story, has **not** been tested (see "Next steps"). Until it is, a reflash is the rollback.
 
 ## Summary
 
@@ -75,7 +78,8 @@ The overlay-by-release mapping comes from the Image Factory API. The board still
 `cannot verify signal voltage switch` warning and then enumerates at SDR104 anyway. #98 is still
 open. The most likely fix is v0.2.1's regeneration of the Pi 5 device trees from the kernel Talos
 actually ships (`3efdf1a0`), but that's inferred, not bisected. Either way, the only Factory target
-shown to work is v1.14.1, reached directly from the community build.
+shown to work is v1.14.1. The fleet would have to reach it directly from the community build, and
+that jump is *untested*: the only upgrade performed here was Factory v1.14.1 to itself.
 
 ### 2. Rollback does not restore the EFI partition, and on a Pi that holds the device tree
 
