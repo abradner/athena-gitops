@@ -425,7 +425,11 @@ general rule.** Argo-specific traps have their own section above.
    - Clear search domains explicitly with a `ResolverConfig` of
      `searchDomains: {disableDefault: true, domains: []}`. The empty list must be literal:
      Talos distinguishes "unset" (inherit DHCP) from "empty" (override), so a tool that drops
-     empty lists silently reverts it.
+     empty lists silently reverts it. **A 1.13 talosctl's own patcher is such a tool:** with
+     the 1.13.10 client (the one `bootstrap/mise.toml` pins), `--config-patch` and
+     `machineconfig patch` re-serialize the whole config and drop `[]`. The 1.14.1 client
+     keeps it. Since nothing enforces the client version, merge with yq and check the merged
+     file (see `bootstrap/talos/apply-worker.sh`).
    - Before any Talos minor upgrade, grep the release notes for DHCP and resolver changes.
    - Check `/etc/resolv.conf` from inside a pod on the first upgraded node before moving on.
    - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two

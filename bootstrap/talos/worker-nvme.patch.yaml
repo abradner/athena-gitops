@@ -1,6 +1,8 @@
 # Config patch for the scratch workers: CM5 Lites identical to the other
 # workers except for a 128 GB NVMe where the others have a 14 GB Optane.
-# Applied on top of worker.yaml by apply-worker.sh for every NVME_WORKER_IP.
+# Applied on top of worker.yaml by apply-worker.sh for every NVME_WORKER_IP,
+# merged with yq rather than talosctl's --config-patch. A 1.13 talosctl's
+# patcher drops the base's empty ResolverConfig `domains: []` (see apply-worker.sh).
 #
 # Why a patch and not a separate template: the hardware differs only in
 # storage, and storage needs no per-node config. The base template's
