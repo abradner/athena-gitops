@@ -43,7 +43,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-label="$(yq 'select(.machine) | .machine.nodeLabels."athena.asn.casa/scratch" // "none"' "$file")"
+# No `// "default"` here: yq 4.44 (CI's pin) applies the alternative to
+# documents the select() already filtered out, printing one line per doc.
+label="$(yq 'select(has("machine")) | .machine.nodeLabels."athena.asn.casa/scratch"' "$file")"
 domains="$(yq -o=json -I=0 'select(.kind == "ResolverConfig") | .searchDomains.domains' "$file")"
 mode="$(stat -c %a "$file")"
 echo "node=$node patched=$patched label=$label domains=$domains mode=$mode" >> "$APPLY_LOG"
@@ -78,7 +80,7 @@ echo "• scratch nodes get the label and keep domains: [] (no --config-patch)"
 setup 'WORKER_IP=("w1"); NVME_WORKER_IP=("n1" "n2")'
 run
 if [ "$status" -eq 0 ] && [ "$(applies)" -eq 3 ] \
-  && grep -q '^node=w1 patched=no label=none domains=\[\]' "$work/apply.log" \
+  && grep -q '^node=w1 patched=no label=null domains=\[\]' "$work/apply.log" \
   && [ "$(grep -c '^node=n[12] patched=no label=nvme domains=\[\] mode=600$' "$work/apply.log")" -eq 2 ]; then
   pass "1 base + 2 scratch applied correctly"
 else
