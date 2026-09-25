@@ -428,6 +428,10 @@ general rule.** Argo-specific traps have their own section above.
      empty lists silently reverts it.
    - Before any Talos minor upgrade, grep the release notes for DHCP and resolver changes.
    - Check `/etc/resolv.conf` from inside a pod on the first upgraded node before moving on.
+   - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two
+     can't coexist. A config that sets it (or v1alpha1 nameservers or search domains) alongside
+     a `ResolverConfig` fails validation with "already set in v1alpha1 config". Remove it in the
+     same apply that adds the document. The control-plane template still sets it.
 
 ## The public/private split
 

@@ -12,14 +12,18 @@ in one reboot means you cannot tell which one broke the node.
 The workers are **Raspberry Pi Compute Module 5 Lite** boards that boot from SD (`mmcblk0`).
 What boots them, by Talos version (the overlay is bound per Talos release by Image Factory):
 
-| Talos (official, Image Factory `rpi_5`) | Overlay | CM5 Lite |
-|---|---|---|
-| 1.13.0 – 1.13.10 | sbc-raspberrypi v0.2.0 | **SD init fails** (-110; siderolabs/sbc-raspberrypi#98) |
-| 1.14.0 | v0.2.1 | **No Ethernet** (fixed by v0.2.2, "restore CM5 Ethernet initialization"). Never a valid target. |
-| 1.14.1 | v0.2.2 | **Works.** Soaked on a spare CM5 Lite from SD, 2026-09-25 (see below). |
+| Talos (official, Image Factory `rpi_5`) | Overlay | CM5 Lite | Basis |
+|---|---|---|---|
+| 1.13.0 – 1.13.10 | sbc-raspberrypi v0.2.0 | SD init fails (-110) | upstream report, siderolabs/sbc-raspberrypi#98. Not tested here. |
+| 1.14.0 | v0.2.1 | No Ethernet. Never a valid target. | upstream commit `b1fe7bda` ("restore CM5 Ethernet initialization", in v0.2.2). Not tested here. |
+| 1.14.1 | v0.2.2 | **Works** | **tested:** soaked on a spare CM5 Lite from SD, 2026-09-25 |
 
-The v0.2.1 change "generate Pi 5 DTBs from a kernel matching the one Talos ships" is the likely
-SD fix. #98 itself is still open.
+Overlay versions per Talos release come from the Factory API. Why 1.14.1 boots SD is inferred,
+not proven: probably v0.2.1's DTB regeneration from the Talos kernel (`3efdf1a0`). #98 is still
+open, and the soak board still logs its "cannot verify signal voltage switch" warning before
+enumerating at SDR104. The soak's full write-up is in the CM5 upstream-Talos investigation
+([#145](https://github.com/abradner/athena-gitops/pull/145),
+`docs/investigation-2026-09-cm5-upstream-talos.md`).
 
 Two installer defaults are wrong for these boards, so **always pass `--image`**:
 
@@ -90,54 +94,101 @@ calls failed TLS.
 
 `worker.template.yaml` therefore carries a `ResolverConfig` with
 `searchDomains: {disableDefault: true, domains: []}`. The explicit empty list is load-bearing:
-unset means "inherit DHCP" (siderolabs/talos `1c156458a`). Both 1.13 and 1.14 accept the
-document, and 1.13 ignores DHCP domains anyway, so **apply it to each worker before its upgrade**
-and there is no window. Following AGENTS.md Gotcha #4, diff the rendered template against the
-node's live config (`talosctl -n $W get machineconfig -o yaml`) first. Apply only if the one
-intended difference is all that changes. If a 1.13.2 node rejects the document, apply it
-straight after that node's upgrade instead, and check it before uncordoning.
+unset means "inherit DHCP" (siderolabs/talos `1c156458a`, in 1.14 only). Both 1.13 and 1.14
+accept the document, and 1.13 ignores DHCP domains anyway, so **apply it to each worker before
+its upgrade**, while it is still on 1.13. Then the first 1.14 boot already has it, and pods
+created by that boot get a clean `resolv.conf`.
+
+- **How to apply it:** `stage` in [Checks and staging](#checks-and-staging), per node. Not
+  `apply-worker.sh`: that script uses `--insecure`, so it only reaches nodes in maintenance mode.
+  Scratch workers need the scheduling patch merged in, and the **1.13** talosctl pinned in
+  `bootstrap/mise.toml` drops `domains: []` when it patches (`--config-patch`,
+  `machineconfig patch`). The 1.14.1 client keeps it, so `stage` patches with 1.14.1 and refuses
+  a file that has lost the list. An unpatched `apply-config` stores the bytes as given.
+- **Diff first** (AGENTS.md Gotcha #4). `stage` shows the server's own `--dry-run` diff and waits.
+  Expect **exactly two** changes against a node that matches the old template: the added
+  `ResolverConfig`, and `machine.install.image` moving to the Factory pin. The image change is
+  harmless because nothing reads it except an upgrade run without `--image`. Anything else
+  means live and git have drifted: stop and reconcile first.
+- **If a 1.13.2 node rejects the document**, upgrade it anyway, then apply it straight after the
+  1.14 boot and **reboot the node once more** before `check` and uncordoning. Pods keep the
+  `resolv.conf` they were created with, so DaemonSet pods started by the upgrade boot would keep
+  the DHCP domain, while a fresh test pod would look clean.
+- **Diagnose on the 1.14 node:** `talosctl -n $W get resolvers -o yaml` should show an empty
+  `searchDomains`. To see where a domain comes from, check
+  `talosctl -n $W get resolverspecs --namespace network-config`: a DHCP one appears as
+  `dhcp4/<link>/resolvers`, and the override as the machine-configuration layer.
 
 ## Access
 
-The talosconfig is not kept on disk. Fill **only** `bootstrap/talos/talosconfig.template.yaml`
-from the Talos bootstrap secure note in 1Password (the item `OP_TALOS_ITEM_ID` names; see
-`bootstrap/README.md`, and flatten the YAML to dotted keys). Do this by hand or with a one-off
-script, **not** `render-talos`: that command hydrates every template into `bootstrap/talos/`,
-including the machine configs that carry the full cluster PKI. Write the result outside the repo
-with mode `0600`, point `TALOSCONFIG` at it, and delete it when you're done. If `render-talos` was
-used anyway, delete every hydrated `bootstrap/talos/*.yaml` that isn't a `.template.yaml`.
-`talosctl` comes from `mise` in `bootstrap/`, and the worker addresses from `bootstrap/athena.zsh`.
+Render the configs with `render-talos` (`bootstrap/README.md` §2). It hydrates every template
+into `bootstrap/talos/`, including `talosconfig` and `worker.yaml`. These carry the full cluster
+PKI. They are gitignored, but don't leave them lying around: delete every hydrated
+`bootstrap/talos/*.yaml` that isn't a `.template.yaml`, plus `talosconfig`, when you're done.
+`export TALOSCONFIG=$PWD/bootstrap/talos/talosconfig`. `talosctl` comes from `mise` in
+`bootstrap/`. The 1.14.1 client for patching runs with `mise exec talosctl@1.14.1 -- talosctl`.
+The worker addresses are in `bootstrap/athena.zsh`.
 
-## Checks, after every boot
+## Checks and staging
 
 ```bash
 W=<Talos address>; NODE=<Kubernetes node name>   # match $W to INTERNAL-IP in: kubectl get nodes -o wide
 check() {
   talosctl -n $W version                                     # Tag + SHA
-  talosctl -n $W get extensions                              # expect none on the Factory image
+  talosctl -n $W get extensions                              # Factory: only the virtual "schematic" entry, version a636242d…
   talosctl -n $W dmesg | grep -E 'mmc0: new|mmc0:.*(error|-110|timeout)' | tail -3
                                                              # "new … SDR104" and no errors
   talosctl -n $W get links end0                              # up
+  talosctl -n $W get resolvers -o yaml | grep -A3 searchDomains   # on 1.14: empty
   talosctl -n $W read /proc/cmdline | grep -o 'BOOT_IMAGE=[^ ]*'   # which A/B slot booted
   kubectl wait --for=condition=Ready node/$NODE --timeout=10m
   kubectl run dnscheck-$RANDOM --rm -i --restart=Never --image=busybox \
     --overrides='{"spec":{"nodeName":"'$NODE'"}}' -- cat /etc/resolv.conf   # no "search" beyond cluster domains
 }
+
+# Put the current worker template on one node. Run from bootstrap/talos, with worker.yaml rendered.
+# SCRATCH=1 for a scratch worker: it merges worker-nvme.patch.yaml with the 1.14.1 client.
+stage() {
+  local f=worker.yaml rc=0
+  if [ "${SCRATCH:-0}" = 1 ]; then
+    f=$(mktemp) && chmod 600 "$f"
+    mise exec talosctl@1.14.1 -- talosctl machineconfig patch worker.yaml \
+      --patch @worker-nvme.patch.yaml -o "$f" || rc=1
+  fi
+  if [ $rc = 0 ] && [ "$(mise exec yq@4 -- yq -o=json 'select(.kind == "ResolverConfig").searchDomains.domains' "$f")" != "[]" ]; then
+    echo "ResolverConfig lost domains: [] in $f; not applying" >&2; rc=1
+  fi
+  if [ $rc = 0 ]; then
+    talosctl -n $W apply-config -f "$f" --dry-run    # read it: exactly two changes (see above)
+    read -r -p "apply? [y/N] " ok && [ "$ok" = y ] && talosctl -n $W apply-config -f "$f" || rc=1
+  fi
+  [ "$f" = worker.yaml ] || rm -f "$f"
+  return $rc
+}
 ```
+
+`check` runs after every boot. `stage` runs once per node, before its upgrade.
 
 ## Procedure
 
 ### 0. Prove the jump on the spare board first
 
 The soak proved Factory 1.14.1 on a CM5 Lite, including an A/B upgrade and rollback. It did
-**not** prove the jump *from* the community build, which is the step every worker takes.
-So prove it once, on the spare CM5 Lite, never on a fleet worker:
+**not** prove the jump *from* the community build, which is the step every worker takes. So
+prove it once, on the spare CM5 Lite, never on a fleet worker. The spare must be the same CM5
+Lite and carrier board as the fleet: the overlay ships only the official-carrier CM5 Lite DTBs
+(`cm5l-cm4io`, `cm5l-cm5io`), so a different carrier isn't covered by the soak.
 
-1. Flash the spare's SD with the exact johnlaur v1.13.2 image (sha256 above), join it as a worker
-   from `worker.template.yaml`, and `check`.
-2. Apply the resolver fix as described above, and `check`.
-3. `talosctl -n $W upgrade --image <pin> --wait`, then `check`. Expect v1.14.1 / `2f86b9d2`, no
-   extensions, the other boot slot.
+Step 0 also proves two things nothing else has:
+- a 1.13 `machined` pulling a `tag@digest` installer ref;
+- whether rollback across the jump boots.
+
+1. Flash the spare's SD with the exact johnlaur v1.13.2 image (sha256 above). Join it as a worker
+   using the **pre-#144** worker template, so it looks like a fleet node:
+   `git show 64491f9:bootstrap/talos/worker.template.yaml` (main just before #144). Then `check`.
+2. `stage` the current template, then `check`.
+3. `talosctl -n $W upgrade --image <pin> --wait`, then `check`. Expect v1.14.1 / `2f86b9d2`, only
+   the `schematic` extension, the other boot slot, and an empty `searchDomains`.
 4. `talosctl -n $W reboot --wait`, and `check`. Then power-cycle it hard, and `check` again.
 5. Try `talosctl -n $W rollback`, then `check`. **The outcome is unknown, and that is the point
    of trying it here.** See Rollback. Record what happens either way. If it doesn't come back,
@@ -148,6 +199,7 @@ So prove it once, on the spare CM5 Lite, never on a fleet worker:
 Start with a scratch worker. For each worker, only after the previous one is healthy:
 
 ```bash
+SCRATCH=<0|1> stage                # while still on 1.13; then confirm the apply
 kubectl drain $NODE --ignore-daemonsets --delete-emptydir-data
 talosctl -n $W upgrade --image <pin> --wait
 check

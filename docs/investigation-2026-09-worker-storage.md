@@ -19,9 +19,11 @@ infrastructure repo, per the public/private split in `AGENTS.md`.
 - **Fix:** every worker now puts its whole EPHEMERAL volume on "the NVMe" through one
   `VolumeConfig` in the shared template. The SD card is boot-only. That same definition covers
   the new 128 GB scratch workers, so they differ from the rest only by a label and a soft taint.
-- **Upgrades are a separate problem.** The workers are Raspberry Pi CM5 Lites that stock Talos
-  can't yet boot from SD, so every worker upgrade (including to Talos 1.14) goes through a pinned
-  community image. That's separate work, with its own runbook: [`runbook-cm5-worker-upgrade.md`](runbook-cm5-worker-upgrade.md).
+- **Upgrades are a separate problem.** The workers are Raspberry Pi CM5 Lites, which official
+  Talos couldn't boot from SD when this was written. Since a CM5 Lite soak (2026-09-25), the
+  pinned upgrade target is official Image Factory Talos 1.14.1. The fleet itself still runs the
+  community 1.13.2 build until it is upgraded. That's separate work, with its own runbook:
+  [`runbook-cm5-worker-upgrade.md`](runbook-cm5-worker-upgrade.md).
 
 ## What we found
 
