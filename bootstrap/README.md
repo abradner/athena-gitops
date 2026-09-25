@@ -151,9 +151,11 @@ Things to get right:
   - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
   - `kubectl describe node` shows the label and taint;
-  - `talosctl -n <ip> get resolvers` shows `searchDomains: []`. Check this
-    **before any runner is scheduled there**: a DHCP-supplied search domain
-    blackholes external API calls (AGENTS.md Gotchas #5).
+  - `talosctl -n <ip> get resolvers` shows `searchDomains: []`. This is only
+    meaningful from Talos 1.14, which applies DHCP search domains; 1.13
+    ignores them, so on 1.13 it can't fail. On 1.14, check it **before any
+    runner is scheduled there**: a DHCP-supplied search domain blackholes
+    external API calls (AGENTS.md Gotchas #5).
 
 **Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node
