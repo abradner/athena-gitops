@@ -160,7 +160,8 @@ stage() {
   fi
   if [ $rc = 0 ]; then
     if talosctl -n $W apply-config -f "$f" --dry-run; then   # read it: exactly two changes (see above)
-      read -r -p "apply? [y/N] " ok && [ "$ok" = y ] && talosctl -n $W apply-config -f "$f" || rc=1
+      printf 'apply? [y/N] '; read -r ok     # portable: zsh's read -p means something else
+      [ "$ok" = y ] && talosctl -n $W apply-config -f "$f" || rc=1
     else
       echo "dry-run failed; not applying" >&2; rc=1
     fi
@@ -186,9 +187,18 @@ Step 0 also proves two things nothing else has:
 - a 1.13 `machined` pulling a `tag@digest` installer ref;
 - whether rollback across the jump boots.
 
-1. Flash the spare's SD with the exact johnlaur v1.13.2 image (sha256 above). Join it as a worker
-   using the **pre-#144** worker template, so it looks like a fleet node:
-   `git show 64491f9:bootstrap/talos/worker.template.yaml` (main just before #144). Then `check`.
+1. Flash the spare's SD with the exact johnlaur v1.13.2 image (sha256 above), and join it as
+   a worker with the **pre-#144** config, so it looks like a fleet node. Derive that from the
+   rendered `worker.yaml`: #144 only added the `ResolverConfig` document and changed the install
+   image, so removing and reverting those gives exactly the old template, hydrated. (Checked
+   structurally against the template at `64491f9`.)
+   ```bash
+   f=$(mktemp) && chmod 600 $f
+   mise exec yq@4 -- yq 'select(.kind != "ResolverConfig") | (select(.machine) | .machine.install.image) = "ghcr.io/siderolabs/installer:v1.13.4"' worker.yaml > $f
+   talosctl apply-config --insecure -n $W -f $f     # the spare is in maintenance mode
+   rm -f $f
+   ```
+   Then `check`.
 2. `stage` the current template, then `check`.
 3. `talosctl -n $W upgrade --image <pin> --wait`, then `check`. Expect v1.14.1 / `2f86b9d2`, only
    the `schematic` extension, the other boot slot, and an empty `searchDomains`.
