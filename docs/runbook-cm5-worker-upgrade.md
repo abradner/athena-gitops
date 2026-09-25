@@ -122,11 +122,11 @@ created by that boot get a clean `resolv.conf`.
 ## Access
 
 Render the configs with `render-talos` (`bootstrap/README.md` §2). It hydrates every template
-into `bootstrap/talos/`, including `talosconfig` and `worker.yaml`. These carry the full cluster
-PKI. They are gitignored, but don't leave them lying around: delete every hydrated
-`bootstrap/talos/*.yaml` that isn't a `.template.yaml`, plus `talosconfig`, when you're done.
-`export TALOSCONFIG=$PWD/bootstrap/talos/talosconfig`. `talosctl` comes from `mise` in
-`bootstrap/`. The 1.14.1 client for patching runs with `mise exec talosctl@1.14.1 -- talosctl`.
+into `bootstrap/talos/`, including `talosconfig.yaml` and `worker.yaml`. These carry the full
+cluster PKI. They are gitignored, but don't leave them lying around: delete every hydrated
+`bootstrap/talos/*.yaml` that isn't a `.template.yaml` when you're done. `talosctl` comes from
+`mise` in `bootstrap/`, whose environment loads `bootstrap/athena.zsh`. That file already points
+`TALOSCONFIG` at the rendered `talos/talosconfig.yaml`, so don't override it. The 1.14.1 client for patching runs with `mise exec talosctl@1.14.1 -- talosctl`.
 The worker addresses are in `bootstrap/athena.zsh`.
 
 ## Checks and staging
@@ -159,8 +159,11 @@ stage() {
     echo "ResolverConfig lost domains: [] in $f; not applying" >&2; rc=1
   fi
   if [ $rc = 0 ]; then
-    talosctl -n $W apply-config -f "$f" --dry-run    # read it: exactly two changes (see above)
-    read -r -p "apply? [y/N] " ok && [ "$ok" = y ] && talosctl -n $W apply-config -f "$f" || rc=1
+    if talosctl -n $W apply-config -f "$f" --dry-run; then   # read it: exactly two changes (see above)
+      read -r -p "apply? [y/N] " ok && [ "$ok" = y ] && talosctl -n $W apply-config -f "$f" || rc=1
+    else
+      echo "dry-run failed; not applying" >&2; rc=1
+    fi
   fi
   [ "$f" = worker.yaml ] || rm -f "$f"
   return $rc
