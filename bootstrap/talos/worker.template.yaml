@@ -44,6 +44,12 @@ machine:
 
         # # The `extraConfig` field is used to provide kubelet configuration overrides.
         extraConfig:
+            # Tighter than the 85/80 default. First tuned for the 31 GB SD
+            # card; it now matters more, because EPHEMERAL is on a 14 GB
+            # Optane on the original workers. Images actually in use are
+            # ~2-3 GiB compressed per node, so this keeps plenty of headroom.
+            # The August recovery's regenerated config dropped these, so the
+            # live nodes ran on the defaults until they were re-applied.
             imageGCHighThresholdPercent: 75
             imageGCLowThresholdPercent: 55
             # Kubelet serving certs via CSRs (approved in-cluster by
@@ -193,13 +199,25 @@ machine:
 
     # Used to provide instructions for installations.
     install:
-        # /dev/mmcblk0, not /dev/sda. The workers are Pi 5s and have no sda at all —
-        # only the 31 GB SD card (mmcblk0) and an unused 14 GB Optane (nvme0n1).
+        # /dev/mmcblk0, not /dev/sda. The workers are CM5 Lites and have no sda at all —
+        # only the 31 GB SD card (mmcblk0), which is boot-only, and an NVMe
+        # (nvme0n1) that holds EPHEMERAL (see the VolumeConfig at the end).
         # The control-plane template keeps /dev/sda because those nodes are VMs
         # and it is correct for them. Verified against the live config on
         # a live worker (mmcblk0) and a live control-plane node (sda),
         # 2026-08-23.
         disk: /dev/mmcblk0 # The disk used for installations.
+        # !! DO NOT `talosctl upgrade` A WORKER WITH THIS IMAGE. !!
+        # The workers are CM5 Lites running a community v1.13.2 build, because
+        # upstream sbc-raspberrypi cannot boot a CM5 Lite from SD yet
+        # (siderolabs/sbc-raspberrypi#98). This stock installer has no CM5
+        # overlay and no extensions, and is not published at all from Talos
+        # 1.14. Pinning a CM5-capable installer here is a separate PR (the CM5
+        # upgrade path, with its own runbook); until it merges and replaces
+        # this line, do not upgrade workers from this config at all.
+        # (Initial installs are unaffected: the SD card is flashed with the
+        # community image and install is skipped when booted from disk, which
+        # is why the workers run v1.13.2 although this line says v1.13.4.)
         image: ghcr.io/siderolabs/installer:v1.13.4 # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
         grubUseUKICmdline: true # Indicates if legacy GRUB bootloader should use kernel cmdline from the UKI instead of building it on the host.
@@ -346,12 +364,11 @@ machine:
     #         - endpoint: tcp://1.2.3.4:12345 # Where to send logs. Supported protocols are "tcp" and "udp".
     #           format: json_lines # Logs format.
 
-    # Configures the kernel.
-    kernel:
-        # Kernel modules to load.
-        modules:
-            - name: btrfs # Module name.
-            - name: vc4
+    # # Configures the kernel.
+    # kernel:
+    #     # Kernel modules to load.
+    #     modules:
+    #         - name: btrfs # Module name.
 
     # # Configures the seccomp profiles for the machine.
     # seccompProfiles:
@@ -387,16 +404,14 @@ machine:
     # # node taints example.
     # nodeTaints:
     #     exampleTaint: exampleTaintValue:NoSchedule
-# Provides cluster specific configuration options.
-# Partition and mount the Optane NVMe drive
-    disks:
-        - device: /dev/nvme0n1
-          partitions:
-            - mountpoint: /var/lib/containerd
-              size: 9GB  # Dedicate 9GB purely for cached container images
-            - mountpoint: /var/lib/kubelet
-              # Omitting the size tells Talos to use the remaining ~5GB for pod logs and emptyDirs
 
+    # No machine.disks. Worker storage is the EPHEMERAL VolumeConfig document
+    # at the end of this file, which puts all of /var on the node's NVMe. The
+    # legacy block that used to sit here split the Optane 9 GB containerd /
+    # 5 GB kubelet; it was lost from the live nodes in the August recovery,
+    # and re-applying it now would mount 9 GB over ~14 GiB of containerd
+    # state. See AGENTS.md Gotchas #4.
+# Provides cluster specific configuration options.
 cluster:
     id: {{ cluster.id }} # Globally unique identifier for this cluster (base64 encoded random 32 bytes).
     secret: {{ cluster.secret }} # Shared secret of cluster (base64 encoded random 32 bytes).
@@ -605,3 +620,27 @@ auto: stable # A method to automatically generate a hostname for the machine.
 # # A static hostname to set for the machine.
 # hostname: controlplane1
 # hostname: controlplane1.example.org
+---
+# EPHEMERAL (/var: containerd, kubelet, pod logs, emptyDir, local-path PVs)
+# lives on the node's NVMe, not the SD card. The SD keeps only BOOT/STATE/
+# META, which are rarely written; keeping EPHEMERAL writes off it is the
+# whole reason the workers have an NVMe. The selector matches the 14 GB
+# Optane on the original workers and a larger NVMe on any worker that has
+# one, so every worker shares this one definition.
+#
+# Placement is decided only when EPHEMERAL is first created: at install, or
+# after the wipe in docs/runbook-worker-ephemeral-relocation.md. Applying
+# this to a running node records the intent but moves nothing.
+#
+# There is deliberately no fallback to the SD card: when this provisions,
+# Talos waits for a disk matching the selector rather than choosing another.
+# A worker whose NVMe is missing or dead should fail loudly, not quietly go
+# back to wearing out its SD card. Repair the disk; don't loosen the selector.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme"
+    minSize: 10GiB
+    grow: true

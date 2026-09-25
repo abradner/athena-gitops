@@ -113,6 +113,19 @@ cd bootstrap/talos
 
 Because the CNI is already active on the control plane, these nodes should successfully join and quickly transition to `Ready`.
 
+**Worker storage.** Workers boot from SD, but their EPHEMERAL volume (all of
+`/var`) goes on their NVMe via the `VolumeConfig` at the end of
+`worker.template.yaml`. Placement is decided when EPHEMERAL is first created,
+so a fresh worker gets it at install, provided its NVMe has free space. An
+original worker's Optane still carries stale partitions until the runbook's
+clear step. To move an existing worker whose
+EPHEMERAL is still on the SD, use
+[docs/runbook-worker-ephemeral-relocation.md](../docs/runbook-worker-ephemeral-relocation.md).
+Check the placement with `talosctl -n <ip> get volumestatus EPHEMERAL`.
+
+**Do not `talosctl upgrade` workers from the template's `install.image`.**
+The workers are CM5 Lites on a community build; see the warning on that line.
+
 **Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node
 addresses — cluster egress masquerades, so a Vector pod arrives as its node

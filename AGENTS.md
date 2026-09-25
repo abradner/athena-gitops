@@ -395,6 +395,26 @@ general rule.** Argo-specific traps have their own section above.
    pass while the real path fails — reproduce the resolver's actual search behaviour from inside
    an affected pod.
 
+4. **A config regenerated during recovery silently dropped every non-default setting, and
+   the loss went unnoticed for a month.** The workers each have an NVMe whose only job is to
+   take write traffic off their SD cards. It was found (2026-09) to be unused on every worker,
+   with all of `/var` on the SD. Root cause: during the August outage recovery, the worker
+   machine config was regenerated from scratch in an untracked working copy. That quietly lost
+   the disk layout and the kubelet image-GC tuning. The regenerated file was applied, and
+   later committed elsewhere as "the corrected one". Git's template still had both settings,
+   so git, the other copy and the live nodes disagreed three ways, and re-applying git's
+   version would have mounted a 9 GB partition over ~14 GiB of live containerd state. A
+   structural diff of template vs live also found a kernel-modules block that a
+   "prose only" PR had quietly uncommented. It had never reached a node, but it was waiting
+   for the next apply. General rules:
+   - After any regeneration, diff it structurally against the last known-good config before
+     applying it.
+   - Keep exactly one source of truth: this repo's templates.
+   - Before trusting a template, diff it against `talosctl get machineconfig` from a live
+     node.
+   - A PR that says it changes no functional value still gets its diff read. The description
+     is a claim.
+
 ## The public/private split
 
 **This repository is public.** Internal addresses, guest inventories, host-to-service mappings
