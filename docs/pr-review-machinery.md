@@ -36,7 +36,7 @@ Reviewers are not interchangeable and most do **not** fire on their own. Establi
 | Reviewer | Trigger | Cost | Notes |
 |---|---|---|---|
 | **Copilot** | Balanced review automatically when a PR is **opened ready for review, or flipped draft→ready**. Never on a draft, and never on push. | Cheap — unrationed | **Confirmed active** — reviewed every recent human PR checked (#94, #91, #88, #87). A followup push needs an explicit re-request through the GitHub PR review mechanism, or you are reading a verdict on superseded code. |
-| **Codex** | **Unconfirmed in this repo** — no evidence of any review, ever, across the PR history checked. Not a claim it wouldn't work if enabled; it has simply never been invoked here. If you turn it on, check its own "About Codex in GitHub" box on its first review, which states the repo's actual triggers, and update this row. | Expensive — budget it | Until confirmed, treat its absence as expected, not a process failure — don't wait on a Codex pass that has no basis to arrive. |
+| **Codex** (`chatgpt-codex-connector[bot]`) | **Confirmed active (2026-09-26, #145).** Its "About Codex in GitHub" box states the triggers: a PR **opened for review**, a **draft flipped to ready**, or a **`@codex review` comment**. On #145 it reviewed within ~10 minutes. The PR was opened and commented on in the same minute, so which trigger fired is unknown. If it has nothing to say, it reacts 👍 instead of commenting. | Expensive — budget it | Findings are **inline** (P1/P2 badges); the review body is boilerplate (§2). It can also push commits if asked ("address that feedback"). Ask for comments only. |
 
 Re-requesting Copilot through the API needs the literal `[bot]` suffix on the login:
 
