@@ -37,10 +37,15 @@ spec:
             # under Kubernetes (unprivileged port start is 1024).
             - name: HTTP_PORT
               value: "8080"
-            # Explicit cap on request bodies at Thruster, ahead of Rails —
-            # covers the photo bingo guest upload path (up to 12 MB photos).
+            # Explicit cap on request bodies at Thruster, ahead of Rails. Sized
+            # for the ORGANISER image upload (visual editor / guest portraits),
+            # which sends camera originals untouched — a 26.9 MB photo hit the
+            # old 20 MiB cap as a bare 413 (2026-09-29). Guest photo uploads
+            # are capped much tighter inside the app (Rack::Attack 25 MB edge
+            # block, 15 MB controller guard, ImageGate on the bytes), so this
+            # is the backstop for everything else, not the photo bingo limit.
             - name: MAX_REQUEST_BODY
-              value: "20971520" # 20 MiB
+              value: "67108864" # 64 MiB
           envFrom:
             - configMapRef:
                 name: spritz-config
