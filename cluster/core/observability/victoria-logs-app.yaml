@@ -128,6 +128,33 @@ spec:
                       ],
                       " "
                     )
+
+                    # 4. Grade request lines by their status. Thruster and Rails
+                    #    log every request at INFO whatever it answered, so a
+                    #    413 refusing an upload (spritz, 2026-09-29) sat in
+                    #    VictoriaLogs looking exactly like a 200. Only ever
+                    #    RAISES an info line - a level the app chose itself
+                    #    (warn/error/debug) is left alone. 401 and 404 stay
+                    #    info on purpose: expired sessions and scanner probes
+                    #    are routine, and grading them would bury the 4xx
+                    #    worth reading. Case follows the app's own (Thruster
+                    #    says INFO, others say info). A line with no level at
+                    #    all counts as info - to_string(null) is "", not an
+                    #    error, so the ?? fallback alone would not catch it.
+                    raw_level = to_string(.log.level) ?? ""
+                    if raw_level == "" || downcase(raw_level) == "info" {
+                      status = to_int(.log.status) ?? 0
+                      graded = if status >= 500 {
+                        "error"
+                      } else if status >= 400 && status != 401 && status != 404 {
+                        "warn"
+                      } else {
+                        ""
+                      }
+                      if graded != "" {
+                        .log.level = if raw_level == "INFO" { upcase(graded) } else { graded }
+                      }
+                    }
                   }
             sinks:
               # Ship to the out-of-cluster VictoriaLogs (obs-logs) by
