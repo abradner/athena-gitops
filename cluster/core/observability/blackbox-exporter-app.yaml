@@ -25,7 +25,7 @@ spec:
   source:
     repoURL: 'https://prometheus-community.github.io/helm-charts'
     chart: prometheus-blackbox-exporter
-    targetRevision: 11.17.2
+    targetRevision: 11.19.1
     helm:
       values: |
         # The default fullname is blackbox-exporter-prometheus-blackbox-exporter;
