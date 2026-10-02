@@ -48,6 +48,8 @@ spec:
             - name: TEMPORAL_NAMESPACE
               value: kaff
           envFrom:
+            - configMapRef:
+                name: kaff-config
             - secretRef:
                 name: kaff-app
           readinessProbe:
@@ -109,6 +111,8 @@ spec:
             - name: TEMPORAL_NAMESPACE
               value: kaff
           envFrom:
+            - configMapRef:
+                name: kaff-config
             - secretRef:
                 name: kaff-app
           resources:
