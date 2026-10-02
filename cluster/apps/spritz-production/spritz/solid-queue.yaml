@@ -33,7 +33,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: jobs
-          image: ghcr.io/abradner/spritz:v202610012314@sha256:4197a5127acc045a68d14c0b4c3abb59a119ea3fbe7d9e621c60cedd78b7b388
+          image: ghcr.io/abradner/spritz:v202610020212@sha256:a17e4ad92d381f1c26b98b4f3b4bc934b70feb3b5c89301b641e12badb08b900
           imagePullPolicy: IfNotPresent
           args: ["bin/jobs"]
           ports:
