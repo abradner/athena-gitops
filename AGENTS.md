@@ -415,6 +415,24 @@ general rule.** Argo-specific traps have their own section above.
    - A PR that says it changes no functional value still gets its diff read. The description
      is a claim.
 
+5. **A Talos minor upgrade started honouring DHCP data the old version ignored, and brought
+   Gotcha #3 to nodes it had never affected.** On a CM5 Lite soak board on the worker subnet,
+   running Talos 1.14.1, pods' calls to the GitHub API failed TLS. Root cause: Talos 1.14
+   applies DHCPv4 *search domains* to the node resolver (1.13 did not). The subnet's DHCP hands
+   one out, so pod lookups went through the zone wildcard exactly as in #3. `disableSearchDomain`
+   / `searchDomains.disableDefault` does not help here, because it only drops the
+   hostname-derived domain. General rules:
+   - Clear search domains explicitly with a `ResolverConfig` of
+     `searchDomains: {disableDefault: true, domains: []}`. The empty list must be literal:
+     Talos distinguishes "unset" (inherit DHCP) from "empty" (override), so a tool that drops
+     empty lists silently reverts it.
+   - Before any Talos minor upgrade, grep the release notes for DHCP and resolver changes.
+   - Check `/etc/resolv.conf` from inside a pod on the first upgraded node before moving on.
+   - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two
+     can't coexist. A config that sets it (or v1alpha1 nameservers or search domains) alongside
+     a `ResolverConfig` fails validation with "already set in v1alpha1 config". Remove it in the
+     same apply that adds the document. The control-plane template still sets it.
+
 ## The public/private split
 
 **This repository is public.** Internal addresses, guest inventories, host-to-service mappings

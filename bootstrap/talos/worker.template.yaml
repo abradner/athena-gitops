@@ -207,18 +207,19 @@ machine:
         # a live worker (mmcblk0) and a live control-plane node (sda),
         # 2026-08-23.
         disk: /dev/mmcblk0 # The disk used for installations.
-        # !! DO NOT `talosctl upgrade` A WORKER WITH THIS IMAGE. !!
-        # The workers are CM5 Lites running a community v1.13.2 build, because
-        # upstream sbc-raspberrypi cannot boot a CM5 Lite from SD yet
-        # (siderolabs/sbc-raspberrypi#98). This stock installer has no CM5
-        # overlay and no extensions, and is not published at all from Talos
-        # 1.14. Pinning a CM5-capable installer here is a separate PR (the CM5
-        # upgrade path, with its own runbook); until it merges and replaces
-        # this line, do not upgrade workers from this config at all.
-        # (Initial installs are unaffected: the SD card is flashed with the
-        # community image and install is skipped when booted from disk, which
-        # is why the workers run v1.13.2 although this line says v1.13.4.)
-        image: ghcr.io/siderolabs/installer:v1.13.4 # Allows for supplying the image used to perform the installation.
+        # The workers are CM5 Lites booting from SD. Official Talos boots them
+        # from 1.14.1 (sbc-raspberrypi v0.2.2); 1.13's overlay fails SD init
+        # (siderolabs/sbc-raspberrypi#98) and 1.14.0's has no CM5 Ethernet.
+        # So this is an Image Factory installer for the bare rpi_5 schematic
+        # (no extensions), pinned by tag *and* digest. It is the exact image
+        # soaked on a spare CM5 Lite. The fleet has not taken it yet: they
+        # still run a community 1.13.2 build, and the one-way jump to this is
+        # docs/runbook-cm5-worker-upgrade.md. That runbook, not this line, is
+        # how a worker gets upgraded. Always pass --image; talosctl's default
+        # has no Pi overlay. (First installs never read this line: the SD card
+        # is flashed with the image directly and install is skipped when
+        # booted from disk.)
+        image: factory.talos.dev/metal-installer/a636242df247ad4aad2e36d1026d8d4727b716a3061749bd7b19651e548f65e4:v1.14.1@sha256:fc4c62ec958a6e93823154a75dbb5fadfe7741a06fd15034569528a59450d2e7 # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
         grubUseUKICmdline: true # Indicates if legacy GRUB bootloader should use kernel cmdline from the UKI instead of building it on the host.
         
@@ -620,6 +621,22 @@ auto: stable # A method to automatically generate a hostname for the machine.
 # # A static hostname to set for the machine.
 # hostname: controlplane1
 # hostname: controlplane1.example.org
+---
+# No DNS search domains on pods, from any source. Talos 1.14 starts applying
+# DHCPv4 search domains to the resolver, and the node subnet's DHCP hands one
+# out. With ndots:5, a pod's lookup of an external name is tried with that
+# suffix first, matches the zone's public wildcard, and goes to a CDN edge.
+# That is AGENTS.md Gotcha #3, which until now only hit the control plane.
+# `domains: []` must stay an explicit empty list, because unset means
+# "inherit DHCP". Talos treats the two differently (siderolabs/talos
+# 1c156458a). disableDefault also drops the hostname-derived domain. Both
+# 1.13 and 1.14 accept this document, and 1.13 ignores DHCP domains anyway,
+# so apply it before a worker's 1.14 upgrade and there is no window.
+apiVersion: v1alpha1
+kind: ResolverConfig
+searchDomains:
+    disableDefault: true
+    domains: []
 ---
 # EPHEMERAL (/var: containerd, kubelet, pod logs, emptyDir, local-path PVs)
 # lives on the node's NVMe, not the SD card. The SD keeps only BOOT/STATE/
