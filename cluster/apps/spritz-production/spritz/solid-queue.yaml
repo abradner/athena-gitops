@@ -10,6 +10,10 @@
 # Kept at one replica. Concurrency belongs in config/queue.yml (JOB_CONCURRENCY
 # processes x 3 threads), not in the replica count — Solid Queue claims work
 # with FOR UPDATE SKIP LOCKED, so more replicas is safe but is the wrong dial.
+#
+# The one exception is image variant rendering, which is bounded per CONTAINER
+# (one libvips render each) and so scales by containers: see
+# spritz-variant-workers at the bottom of this file.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,6 +32,10 @@ spec:
     metadata:
       labels:
         app: spritz-solid-queue
+        # Shared with spritz-variant-workers, whose spread constraint counts
+        # this pod too: it renders variants as well, so the three renderers
+        # should be on three nodes.
+        spritz/render-pool: variants
     spec:
       imagePullSecrets:
         - name: ghcr-pull
@@ -65,6 +73,88 @@ spec:
               # AnalyzeJob drives libvips for Active Storage metadata, which is
               # the same memory-spiky work that OOMKilled the web container at
               # 1Gi. Give it comparable headroom rather than the worker's 768Mi.
+              memory: 1536Mi
+
+---
+# Extra renderers for Active Storage variants: worker-only Solid Queue
+# processes on the `variants` queue (config/queue_variants.yml in the app).
+#
+# Why this exists. The app allows three variant renders at once across the
+# cluster and exactly one per container (GuestMedia::VariantRendering), because
+# a 24MP HEIC decode peaks near 600MiB and the queue pod idles near 700MiB of
+# its 1536Mi. With only the supervisor pod above, two of the three slots can
+# never be used; measured on these nodes that is about six full-size photos a
+# minute, against a wedding's worth of guests uploading at once. Each replica
+# here is one more render at a time, on its own node's CPU.
+#
+# Why a second Deployment rather than `replicas: 3` on the supervisor. That
+# pod also runs the dispatcher and the recurring scheduler, and is Recreate so
+# that there is only ever one of them. These pods run neither: no dispatcher
+# in their config, and SOLID_QUEUE_SKIP_RECURRING stops the scheduler.
+#
+# They are optional capacity. The supervisor's own worker takes `variants`
+# too, so scaling this to zero slows rendering and breaks nothing. More than
+# two replicas buys nothing until the app's slot count (3) is raised.
+#
+# Same file as the supervisor on purpose: deimos excludes solid-queue.yaml,
+# and a renderer with no writable database there would only fail.
+#
+# NEEDS an image that contains config/queue_variants.yml (abradner/spritz
+# #942); on an older image this container exits at boot.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-variant-workers
+  namespace: spritz-production
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: spritz-variant-worker
+  template:
+    metadata:
+      labels:
+        app: spritz-variant-worker
+        spritz/render-pool: variants
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      # One renderer per node, counting the supervisor pod. Soft: a renderer
+      # doubling up on a node is slower, not wrong, and beats one left Pending
+      # when a node is down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              spritz/render-pool: variants
+      containers:
+        - name: jobs
+          image: ghcr.io/abradner/spritz:v202610020212@sha256:a17e4ad92d381f1c26b98b4f3b4bc934b70feb3b5c89301b641e12badb08b900
+          imagePullPolicy: IfNotPresent
+          args: ["bin/jobs"]
+          env:
+            - name: SOLID_QUEUE_CONFIG
+              value: config/queue_variants.yml
+            - name: SOLID_QUEUE_SKIP_RECURRING
+              value: "true"
+          envFrom:
+            - configMapRef:
+                name: spritz-config
+            - secretRef:
+                name: spritz-app
+            - configMapRef:
+                name: cluster-overrides
+                optional: true
+          resources:
+            requests:
+              # A render uses every core libvips can get for a few seconds;
+              # the request is the idle floor, not the peak.
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              # Same ceiling as the supervisor pod, for the same decode.
               memory: 1536Mi
 
 ---
