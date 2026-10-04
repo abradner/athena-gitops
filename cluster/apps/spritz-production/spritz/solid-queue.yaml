@@ -70,10 +70,15 @@ spec:
               cpu: 50m
               memory: 384Mi
             limits:
-              # AnalyzeJob drives libvips for Active Storage metadata, which is
-              # the same memory-spiky work that OOMKilled the web container at
-              # 1Gi. Give it comparable headroom rather than the worker's 768Mi.
-              memory: 1536Mi
+              # This pod renders guest photo variants as well as running the
+              # supervisor. Guest photos are kept as the phone took them, up to
+              # 52MP; measured on a real 48MP iPhone HEIC, three variants peak
+              # at about 625 MB in the rendering process, and the app allows
+              # ONE render per container. The pod idles near 700Mi, so
+              # 700 + 625 (670 at the 52MP cap) is about 1.4Gi: inside the old
+              # 1536Mi with nothing to spare. 2560Mi leaves a render's worth of
+              # headroom.
+              memory: 2560Mi
 
 ---
 # Extra renderers for Active Storage variants: worker-only Solid Queue
@@ -154,8 +159,10 @@ spec:
               cpu: 100m
               memory: 384Mi
             limits:
-              # Same ceiling as the supervisor pod, for the same decode.
-              memory: 1536Mi
+              # One render per container (the app's lock), up to about 670 MB
+              # for a 52MP photo, on a worker-only process that idles well
+              # under the supervisor's 700Mi.
+              memory: 2048Mi
 
 ---
 # Kept in this file rather than monitoring.yaml so that a zone which excludes
