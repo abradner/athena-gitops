@@ -12,6 +12,19 @@ data:
   # garage's S3 API listens plain-HTTP on :3900 (internal network only).
   GARAGE_ENDPOINT: http://garage.infra.asn.casa:3900
   GARAGE_BUCKET: spritz-staging
+  # Whether a web pod renders a guest photo's variant that the job queue has
+  # not rendered yet ("true": what the app has always done), or answers "not
+  # ready" and leaves it to the queue ("false").
+  #
+  # REQUIRED by app images from abradner/spritz "day photo originals" onward:
+  # the app reads it at boot and accepts only "true" or "false", so a pod
+  # without it does not start. Older images ignore it. That is why it is here
+  # before any image that needs it.
+  #
+  # "false" keeps 48MP decodes out of the web pods, and makes new guest photos
+  # depend on the queue: with the queue down, none appear. If photos stop
+  # appearing on the day, set this back to "true" and restart spritz-web.
+  GUEST_PHOTOS_RENDER_IN_WEB: "true"
   CANONICAL_HOST: staging.rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
