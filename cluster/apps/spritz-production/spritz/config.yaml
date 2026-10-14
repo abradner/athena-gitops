@@ -25,6 +25,26 @@ data:
   # depend on the queue: with the queue down, none appear. If photos stop
   # appearing on the day, set this back to "true" and restart spritz-web.
   GUEST_PHOTOS_RENDER_IN_WEB: "true"
+  # How the app answers a request for an occasion picture's original, or for
+  # a variant it no longer declares. "observe": serve it as before and log
+  # what "enforce" would have refused. "enforce": redirect an original to its
+  # stripped variant and refuse an undeclared variant key. A removed picture
+  # is refused in both.
+  #
+  # REQUIRED by app images from abradner/spritz "image library" (#1032–#1050)
+  # onward: read on the first image request, and any other value raises, so
+  # every picture errors. Older images ignore it.
+  #
+  # Stays "observe" for at least one release: a tab left open across the
+  # deploy still holds the old variant URLs, and "enforce" would 404 them.
+  # Flip to "enforce" together with a CDN purge of
+  # /rails/active_storage/blobs/* and /rails/active_storage/representations/*.
+  OCCASION_ASSET_GUARD: "observe"
+  # Whether the job that deletes the files of pictures removed more than 30
+  # days ago does anything. It acts only on exactly "true"; it is read when
+  # the job runs, and the job has no schedule yet. Leave "false" until a dry
+  # run against a production snapshot has been read.
+  ASSET_PURGE_ENABLED: "false"
   CANONICAL_HOST: rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
