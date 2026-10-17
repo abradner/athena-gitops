@@ -1,0 +1,118 @@
+---
+# The Moments video transcoder (abradner/spritz services/transcoder; contract:
+# its README.md, "Kubernetes shape"). It claims jobs from spritz-web over HTTP,
+# transcodes on an Intel iGPU and uploads through presigned URLs. No inbound
+# port, no Service, no probe: it only makes outbound calls.
+#
+# Runs only on the GPU workers (bootstrap/talos/worker-gpu.patch.yaml): it
+# tolerates their taint, and gpu.intel.com/i915 (cluster/core/intel-gpu-plugin)
+# is advertised nowhere else, so it cannot land on an arm worker.
+#
+# TRANSCODER_TOKEN: the transcoder's half of the shared secret. The app holds
+# only its SHA-256 (TRANSCODER_TOKEN_DIGEST in the spritz-app ExternalSecret;
+# both are fields of the spritz-production 1Password item). Video stays dark
+# regardless until gates G3-G7: accepts_video is off and every account's
+# allowance is 0, so a claim answers 204 (nothing queued).
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: spritz-transcoder
+  namespace: spritz-production
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: spritz-transcoder
+  data:
+    - secretKey: TRANSCODER_TOKEN
+      remoteRef:
+        key: "spritz-production/transcoder-token"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spritz-transcoder
+  namespace: spritz-production
+  labels:
+    app: spritz-transcoder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spritz-transcoder
+  # The GPU node's two device-plugin slots are both taken in steady state,
+  # one by staging's transcoder and one by this one, so a surge pod would wait
+  # Pending for ever. Instead the old pod finishes its job and exits (up to
+  # the grace period) before the new one starts. Jobs are leased and
+  # re-claimed, so the gap loses nothing.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: spritz-transcoder
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations:
+        - key: spritz.dev/gpu
+          operator: Equal
+          value: intel
+          effect: NoSchedule
+      # Above the longest job: a 10-minute clip (the album ceiling, 600 s) of
+      # up to 4 GiB, downloaded, encoded twice (HEVC + H.264) and uploaded.
+      # Measured on the i7-7700 before raising or lowering this.
+      terminationGracePeriodSeconds: 900
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+        # No supplementalGroups: Talos creates /dev/dri/renderD128 mode 0666.
+      containers:
+        - name: transcoder
+          image: ghcr.io/abradner/spritz-transcoder:v202610170753@sha256:6932328c49f8c1e54e19bef46f5e7eca42df0880a43574ab085233a8f2e9e5b1
+          env:
+            # In-cluster Service, never the public host: no tunnel, no edge.
+            - name: TRANSCODER_API_URL
+              value: "http://spritz-web/"
+            # VA-API: the iHD driver encodes on Gen 8+ (every GPU worker is
+            # Gen 9-11). qsv needs the oneVPL runtime, which is Gen 12+ only:
+            # on this node its preflight exits 78 (2026-10-17).
+            - name: TRANSCODER_ENCODER
+              value: "vaapi"
+            - name: TRANSCODER_WORK_DIR
+              value: /work
+            - name: TRANSCODER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: spritz-transcoder
+                  key: TRANSCODER_TOKEN
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 3Gi
+              gpu.intel.com/i915: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        # On the SSD (EPHEMERAL). The largest original is 4 GiB, plus outputs.
+        - name: work
+          emptyDir:
+            sizeLimit: 20Gi
