@@ -86,4 +86,23 @@ data:
       # and spritz.events fall through to the catch-all as intended. Re-run
       # that check if the connector image is ever bumped, since this is glob
       # behaviour in a dependency rather than a guarantee anyone owes us.
+      #
+      # The spritz video transcoder's API is cluster-internal (abradner/spritz
+      # deploy gate G7). The transcoder calls the spritz-web Service directly,
+      # never through the tunnel; anything arriving here for it came from
+      # outside. The app checks a token on every call, but it also exempts
+      # these paths from its canonical-host redirect for the in-cluster Host,
+      # so the edge is what keeps them unreachable from the internet. No
+      # hostname on purpose: it refuses the path for every Host the tunnel
+      # carries (rabalex.wedding, staging.rabalex.wedding, a forged
+      # `Host: spritz-web`). `path` is a regex on the URL path; this one
+      # anchors the prefix so /api/transcoder-lookalike paths are refused too.
+      #
+      #   cloudflared tunnel --config <this ingress block> ingress rule \
+      #     https://rabalex.wedding/api/transcoder/claims
+      #   => Matched rule #2        (this rule)
+      #   https://rabalex.wedding/api/v1/current_invitation
+      #   => Matched rule #3        (the catch-all)
+      - path: "^/api/transcoder"
+        service: http_status:404
       - service: https://cilium-gateway-homelab-gateway.default.svc.cluster.local:8443
