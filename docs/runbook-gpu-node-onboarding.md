@@ -135,6 +135,17 @@ Talos then applies the labels by itself.
   pod pinned to the node (`nodeSelector: spritz.dev/gpu-gen: <gen>`) and read
   its log for `transcoder up (encoder=vaapi`.
 
+## After a reboot: Failed transcoder pods are expected
+
+When a GPU node reboots, the kubelet re-admits the pods it had before the
+device plugin has registered again, and rejects the old transcoder pod:
+`UnexpectedAdmissionError ... no healthy devices present; cannot allocate
+unhealthy devices gpu.intel.com/i915`. The Deployment immediately makes a
+replacement, which schedules once the plugin is up. Kubernetes does not
+garbage-collect Failed pods until there are thousands of them, so the rejected
+ones stay listed (`Unknown`/`Failed`). They are harmless; delete them by name.
+Seen twice on the first node on 2026-10-17.
+
 ## Why VA-API and not QSV
 
 The transcoder runs `TRANSCODER_ENCODER=vaapi`. QSV in the image needs the
