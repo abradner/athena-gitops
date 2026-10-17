@@ -45,6 +45,13 @@ data:
   # the job runs, and the job has no schedule yet. Leave "false" until a dry
   # run against a production snapshot has been read.
   ASSET_PURGE_ENABLED: "false"
+  # The Host the video transcoder's in-cluster calls arrive on (it calls the
+  # web Service by name, http://spritz-web/). abradner/spritz #1093 exempts
+  # /api/transcoder/* on exactly this host from the canonical-host redirect
+  # and host authorization; every other path on it is still redirected.
+  # REQUIRED and non-blank at boot by app images from that PR onward, in every
+  # process. Older images ignore it, so it lands before the image.
+  TRANSCODER_INTERNAL_HOST: spritz-web
   CANONICAL_HOST: staging.rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
