@@ -148,6 +148,13 @@ to get right:
   - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
   - `kubectl describe node` shows the label and taint.
+- **Taint a new scratch node by hand, once.** Talos cannot add a taint to a
+  node that has already registered (NodeRestriction: `not allowed to modify
+  taints`), and the refusal also stops it applying the label. As soon as the
+  node appears, run
+  `kubectl taint node <name> athena.asn.casa/scratch=nvme:PreferNoSchedule`.
+  Talos then applies the label. Found on the first GPU worker, 2026-10-17;
+  see docs/runbook-gpu-node-onboarding.md.
 
 **GPU workers.** These are the nodes listed in `GPU_WORKER_IP` (as `<ip>:<gen>`):
 amd64 boxes with an Intel iGPU for the spritz video transcoder, on a Secure Boot
