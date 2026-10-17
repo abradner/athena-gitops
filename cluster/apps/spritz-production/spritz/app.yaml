@@ -46,6 +46,17 @@ spec:
             # is the backstop for everything else, not the photo bingo limit.
             - name: MAX_REQUEST_BODY
               value: "67108864" # 64 MiB
+            # Thruster's read timeout is Go's http.Server.ReadTimeout: the WHOLE
+            # request, body included, must arrive within it. Its 30s default
+            # means a Moments video part (8 MiB) needs at least ~2.2 Mbit/s up
+            # or Thruster drops it with a 502, every retry included: venue 4G
+            # is often slower. 120s brings that to ~560 kbit/s. Integer
+            # seconds; anything Thruster cannot parse silently falls back to
+            # 30, so check the effect, not the value (a slow-part PUT).
+            # First seen here on 2026-10-17 (abradner/spritz#1106); staging
+            # proved it in 5116f89.
+            - name: HTTP_READ_TIMEOUT
+              value: "120"
           envFrom:
             - configMapRef:
                 name: spritz-config
