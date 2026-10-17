@@ -21,10 +21,15 @@ data:
   # without it does not start. Older images ignore it. That is why it is here
   # before any image that needs it.
   #
-  # "false" keeps 48MP decodes out of the web pods, and makes new guest photos
-  # depend on the queue: with the queue down, none appear. If photos stop
-  # appearing on the day, set this back to "true" and restart spritz-web.
-  GUEST_PHOTOS_RENDER_IN_WEB: "true"
+  # "false" keeps 48MP decodes (about 1 GB each over idle) out of the web
+  # pods, and makes new guest photos depend on the queue: with the queue down,
+  # none appear. The queue alerts say so: SpritzVariantsBacklog (oldest wait
+  # over 2 min) and SpritzVariantsStalled (over 10 min), in asn-infra's
+  # observability rules, drilled on production 2026-10-17 (both reached
+  # Telegram on time). If photos stop appearing, set this back to "true" and
+  # restart spritz-web: since abradner/spritz#978 a web process renders one
+  # guest photo at a time, so the way back cannot run it out of memory.
+  GUEST_PHOTOS_RENDER_IN_WEB: "false"
   # How the app answers a request for an occasion picture's original, or for
   # a variant it no longer declares. "observe": serve it as before and log
   # what "enforce" would have refused. "enforce": redirect an original to its
