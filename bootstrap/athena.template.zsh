@@ -37,6 +37,13 @@ NVME_WORKER_IP=(
   "10.10.80.x"
 )
 
+# GPU worker IPs (amd64, Intel iGPU, spritz video transcoder), applied by
+# apply-worker.sh with worker-gpu.patch.yaml on top of worker.yaml.
+# Same address-range rule and same "must be declared" rule as above.
+GPU_WORKER_IP=(
+  "10.10.80.x:9.5"   # <ip>:<iGPU generation> (9, 9.5, 11): the spritz.dev/gpu-gen label
+)
+
 # The control plane node used for `talosctl bootstrap` and kubeconfig
 # retrieval. Set explicitly (see indexing note above).
 BOOTSTRAP_NODE="10.10.80.x"

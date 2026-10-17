@@ -1,0 +1,98 @@
+# Config patch for the GPU workers: amd64 desktops with an Intel iGPU, run as
+# the spritz video transcoder's nodes. Applied on top of worker.yaml by
+# apply-worker.sh for every GPU_WORKER_IP. Onboarding a new one:
+# docs/runbook-gpu-node-onboarding.md.
+#
+# Contains no secrets, so it is committed as-is and never hydrated.
+#
+# Hardware this assumes (first node: HP ProDesk 600 G3 SFF, i7-7700, 16 GB):
+#   - a small Intel Optane NVMe (16 GB M10),
+#   - a SATA SSD (~120 GB).
+# The first node also had a 500 GB HDD; it was removed (it had no consumer
+# and only drew power). See the storage notes below.
+# Selectors match on transport and rotation, never on a device name, model
+# or size, so the next box's different-sized SSD or HDD still matches.
+#
+# Storage, and why (decided 2026-10-17):
+#   - Optane: the Talos install (EFI/META/STATE) plus swap. It is the most
+#     reliable device, the install barely writes to it, and its latency and
+#     endurance make it the right swap device. The install comes first, and
+#     the swap partition then takes the rest of the disk.
+#   - SATA SSD: EPHEMERAL, i.e. all of /var. The transcoder's work dir is an
+#     emptyDir and must hold an original of up to 4 GiB plus its outputs,
+#     which the Optane (EPHEMERAL on the arm workers) cannot. If the SSD
+#     dies the node loses /var only, not its install or identity.
+#   - No HDD. Transcoder scratch does not need one: the worst job (a 4 GiB
+#     original plus outputs, ~10 GiB) fits the SSD's EPHEMERAL several times
+#     over, and a job is bound by the network download and the GPU, not by
+#     disk. Add one (a UserVolumeConfig matching
+#     disk.transport == "sata" && disk.rotational) only for a real bulk
+#     consumer.
+#
+# Scheduling:
+#   - Hard taint spritz.dev/gpu=intel:NoSchedule. The spritz app image is
+#     multi-arch, so without it web and queue pods would land here. Only
+#     pods that tolerate it (the transcoder, the GPU device plugin, the
+#     cluster DaemonSets that tolerate everything) run on these nodes.
+#   - spritz.dev/gpu-gen is informational (9 Skylake, 9.5 Kaby/Comet Lake,
+#     11 Ice Lake), for debugging and for pinning a generation that
+#     misbehaves. The transcoder does not select on it by default. It is
+#     per node, so it is NOT in this file: apply-worker.sh adds it from the
+#     node's GPU_WORKER_IP entry ("<ip>:<gen>").
+#   - Talos cannot ADD a taint to a node that has already registered
+#     (NodeRestriction: "not allowed to modify taints"), and that error also
+#     stops it applying the labels. Taint a new node once by hand; see
+#     docs/runbook-gpu-node-onboarding.md.
+#
+# Talos 1.14 deprecates machine.nodeLabels/nodeTaints/kubelet/install in
+# favour of separate documents. These fields are correct for 1.13.
+machine:
+    install:
+        # The Optane. Every GPU node so far has exactly one NVMe.
+        disk: /dev/nvme0n1
+        # Image Factory schematic: worker-gpu.schematic.yaml (extensions,
+        # serial console). Secure Boot variant, which these nodes need: see
+        # that file. Unlike the arm workers, this installer IS the right one
+        # to `talosctl upgrade` with (bump the tag only).
+        image: factory.talos.dev/metal-installer-secureboot/2e212ac69bdcc3bfcee2b21e462e9b748d96614d05adf3bab5fb6ef01d1ff744:v1.13.11
+    kubelet:
+        extraConfig:
+            # The node has swap (SwapVolumeConfig below). With the default
+            # failSwapOn the kubelet refuses to start. LimitedSwap lets only
+            # Burstable pods swap, in proportion to their memory request;
+            # Guaranteed and BestEffort pods get none.
+            failSwapOn: false
+            memorySwap:
+                swapBehavior: LimitedSwap
+    nodeLabels:
+        spritz.dev/gpu: intel
+    nodeTaints:
+        spritz.dev/gpu: intel:NoSchedule
+---
+# Override the base template's EPHEMERAL selector (the NVMe) with the SATA
+# SSD. The patch replaces the whole provisioning block (it does not merge
+# into the base one), so minSize/grow are restated here.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "sata" && !disk.rotational
+    minSize: 10GiB
+    grow: true
+---
+# Swap on the rest of the install disk (the Optane).
+apiVersion: v1alpha1
+kind: SwapVolumeConfig
+name: swap
+provisioning:
+    diskSelector:
+        match: system_disk
+    minSize: 4GiB
+    grow: true
+---
+# Compressed pool in RAM in front of the swap. zram would be RAM-only; zswap
+# compresses pages before they go out to the Optane.
+apiVersion: v1alpha1
+kind: ZswapConfig
+maxPoolPercent: 20

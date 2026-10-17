@@ -1,0 +1,114 @@
+---
+# Intel GPU device plugin, vendored from upstream v0.37.1:
+#   https://github.com/intel/intel-device-plugins-for-kubernetes/blob/v0.37.1/deployments/gpu_plugin/base/intel-gpu-plugin.yaml
+#
+# Advertises gpu.intel.com/i915 on the GPU workers (the amd64 boxes that run
+# the spritz video transcoder; bootstrap/talos/worker-gpu.patch.yaml) and
+# hands a pod that requests it /dev/dri/card0 + renderD128.
+#
+# Plain DaemonSet, not the Intel device-plugins operator: the operator adds a
+# controller, CRDs and a webhook (and wants cert-manager wiring) to manage
+# what is, here, one DaemonSet on one kind of node. Vendored rather than a
+# kustomize remote base so the exact bytes are reviewable and no new
+# sourceRepo is needed in the `core` AppProject. Same pattern as
+# cluster/core/storage/local-path-provisioner.yaml (applied directly by the
+# cluster-core Application; no Application of its own).
+#
+# CHANGES FROM UPSTREAM:
+#   1. namespace: kube-system. The pod bind-mounts host paths, so it needs a
+#      namespace PSA does not enforce on; Talos exempts kube-system.
+#   2. Image pinned by digest (single-arch amd64 manifest).
+#   3. nodeSelector spritz.dev/gpu=intel (upstream: any amd64 node) plus a
+#      toleration for the GPU workers' NoSchedule taint.
+#   4. -shared-dev-num=2: each iGPU is advertised as 2 x gpu.intel.com/i915.
+#      The transcoder has a long terminationGracePeriodSeconds (it finishes
+#      its job before exiting), so with one slot a rollout would wait for the
+#      old pod to drain before the new one could even schedule. Two slots let
+#      the new pod start beside it. QSV jobs share the GPU fine.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: intel-gpu-plugin
+  namespace: kube-system
+  labels:
+    app: intel-gpu-plugin
+spec:
+  selector:
+    matchLabels:
+      app: intel-gpu-plugin
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: intel-gpu-plugin
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - name: intel-gpu-plugin
+        args:
+          - -shared-dev-num=2
+        env:
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: HOST_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+        image: intel/intel-gpu-plugin:0.37.1@sha256:004641b2547d58f1eadce58473fa160ad71377de1eb588cf1f82832387bf3e33
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          seLinuxOptions:
+            type: "container_device_plugin_t"
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            memory: "45Mi"
+            cpu: 40m
+          limits:
+            memory: "115Mi"
+            cpu: 100m
+        volumeMounts:
+        - name: devfs
+          mountPath: /dev/dri
+          readOnly: true
+        - name: sysfsdrm
+          mountPath: /sys/class/drm
+          readOnly: true
+        - name: kubeletsockets
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: cdipath
+          mountPath: /var/run/cdi
+      volumes:
+      - name: devfs
+        hostPath:
+          path: /dev/dri
+      - name: sysfsdrm
+        hostPath:
+          path: /sys/class/drm
+      - name: kubeletsockets
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: cdipath
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        spritz.dev/gpu: intel
+      tolerations:
+      - key: spritz.dev/gpu
+        operator: Equal
+        value: intel
+        effect: NoSchedule

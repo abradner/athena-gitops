@@ -1,0 +1,36 @@
+# Image Factory schematic for the GPU workers. POST it to get the id:
+#   curl -sS -X POST --data-binary @worker-gpu.schematic.yaml https://factory.talos.dev/schematics
+# -> 2e212ac69bdcc3bfcee2b21e462e9b748d96614d05adf3bab5fb6ef01d1ff744
+# A changed file means a new id: update install.image in worker-gpu.patch.yaml.
+#
+# The nodes run Secure Boot, so boot media and installer must both be the
+# -secureboot variants (metal-amd64-secureboot.iso, metal-installer-secureboot).
+# The plain installer writes an unsigned bootloader, which the firmware skips:
+# the first node fell through to PXE that way (2026-10-17).
+#
+# Kernel args live HERE, not in machine.install.extraKernelArgs: with Secure
+# Boot the cmdline is baked into the signed UKI and extraKernelArgs is ignored.
+#   - console=ttyS4,115200n8: the Intel AMT serial-over-LAN UART (PCI
+#     0000:00:16.3, "KT Redirection"). These are budget AMT boxes without KVM,
+#     so SOL is the only remote console. Last console= is /dev/console.
+#   - 8250.nr_uarts=8: the kernel registers only 4 8250 ports by default, and
+#     the KT UART comes after ttyS0-3, so without this it gets no tty at all.
+#
+# Required for the GPU: i915, intel-ucode. The rest is harmless unconfigured.
+customization:
+  extraKernelArgs:
+    - console=tty0
+    - console=ttyS4,115200n8
+    - 8250.nr_uarts=8
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/binfmt-misc
+      - siderolabs/cloudflared
+      - siderolabs/i915
+      - siderolabs/intel-ice-firmware
+      - siderolabs/intel-ucode
+      - siderolabs/mei
+      - siderolabs/nut-client
+      - siderolabs/nvme-cli
+      - siderolabs/tailscale
+      - siderolabs/zfs

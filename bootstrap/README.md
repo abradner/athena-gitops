@@ -149,6 +149,14 @@ to get right:
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
   - `kubectl describe node` shows the label and taint.
 
+**GPU workers.** These are the nodes listed in `GPU_WORKER_IP` (as `<ip>:<gen>`):
+amd64 boxes with an Intel iGPU for the spritz video transcoder, on a Secure Boot
+Image Factory image (`worker-gpu.schematic.yaml`), with `worker-gpu.patch.yaml`
+on top of `worker.yaml`. That patch sets the install disk and swap on the Optane,
+EPHEMERAL on the SATA SSD, and a hard `spritz.dev/gpu=intel:NoSchedule` taint.
+Onboarding, including the one-time manual taint Talos cannot apply itself:
+[docs/runbook-gpu-node-onboarding.md](../docs/runbook-gpu-node-onboarding.md).
+
 **Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node
 addresses — cluster egress masquerades, so a Vector pod arrives as its node

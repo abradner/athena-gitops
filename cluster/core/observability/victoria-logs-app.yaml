@@ -196,6 +196,14 @@ spec:
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
               effect: NoSchedule
+            # And on the GPU workers (bootstrap/talos/worker-gpu.patch.yaml),
+            # where the spritz transcoder runs: its logs are collected here.
+            # Without it a Vector pod scheduled before a new GPU node was
+            # tainted fires KubeDaemonSetMisScheduled, and after a restart
+            # the node ships no logs at all.
+            - key: spritz.dev/gpu
+              operator: Exists
+              effect: NoSchedule
           resources:
             requests:
               cpu: 50m
