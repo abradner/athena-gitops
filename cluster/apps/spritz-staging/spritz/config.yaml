@@ -45,17 +45,6 @@ data:
   # the job runs, and the job has no schedule yet. Leave "false" until a dry
   # run against a production snapshot has been read.
   ASSET_PURGE_ENABLED: "false"
-  # SHA-256 of the video transcoder's token (abradner/spritz
-  # config/initializers/transcoder.rb). REQUIRED at boot by app images from
-  # v202610160907 (Moments video) onward, in every process: anything but 64
-  # hex characters and the pod does not start.
-  #
-  # This is the digest of a random token that was thrown away, so nothing can
-  # authenticate as the transcoder: right while video is dark (gates G1-G7 in
-  # abradner/spritz .agents/deployment.md). At G2, make a real pair, put the
-  # digest in the spritz-app ExternalSecret (a secret wins over this key under
-  # envFrom) and the token in the transcoder's Secret, then delete this line.
-  TRANSCODER_TOKEN_DIGEST: "8fe5c85bf46d0dc60f42aa3ee37a3231706f699c803b01a1510ffc7674106b21"
   CANONICAL_HOST: staging.rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
