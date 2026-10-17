@@ -20,11 +20,13 @@
 #   2. Image pinned by digest (single-arch amd64 manifest).
 #   3. nodeSelector spritz.dev/gpu=intel (upstream: any amd64 node) plus a
 #      toleration for the GPU workers' NoSchedule taint.
-#   4. -shared-dev-num=2: each iGPU is advertised as 2 x gpu.intel.com/i915.
-#      The transcoder has a long terminationGracePeriodSeconds (it finishes
-#      its job before exiting), so with one slot a rollout would wait for the
-#      old pod to drain before the new one could even schedule. Two slots let
-#      the new pod start beside it. QSV jobs share the GPU fine.
+#   4. -shared-dev-num=4: each iGPU is advertised as 4 x gpu.intel.com/i915.
+#      One node serves both spritz-staging and spritz-production (one
+#      transcoder each), and each needs a spare slot for a rollout: the
+#      transcoder has a long terminationGracePeriodSeconds (it finishes its
+#      job before exiting), so without one a surge pod sits Pending. Raised
+#      from 2 on 2026-10-18 when production joined. The media engine
+#      time-slices concurrent VA-API encodes; at this volume that is fine.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -50,7 +52,7 @@ spec:
       containers:
       - name: intel-gpu-plugin
         args:
-          - -shared-dev-num=2
+          - -shared-dev-num=4
         env:
           - name: NODE_NAME
             valueFrom:
