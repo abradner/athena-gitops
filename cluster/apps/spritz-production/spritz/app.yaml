@@ -143,6 +143,20 @@ spec:
   hostnames:
     - "rabalex.wedding"
   rules:
+    # The video transcoder's API is cluster-internal (abradner/spritz deploy
+    # gate G7): the transcoder calls the spritz-web Service directly and never
+    # comes through this Gateway, so a request for it here came from outside.
+    # This rule forwards nowhere, and Gateway API requires a rule with no
+    # backend to answer 500, so the Gateway refuses these paths on EVERY
+    # listener: the tunnel's and the one HAProxy passes :443 through to,
+    # whichever way a public request arrives. (cloudflared also refuses them
+    # at the tunnel, cluster/core/cloudflared/config.yaml; this rule is what
+    # covers the HAProxy path, which the tunnel never sees.) PathPrefix
+    # matches whole segments: /api/transcoder and /api/transcoder/...
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/transcoder
     - backendRefs:
         - name: spritz-web
           port: 80
