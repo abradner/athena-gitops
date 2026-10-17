@@ -1,0 +1,8 @@
+---
+# The heartbeat that tells the DR zone's power controller "athena is alive".
+# See cronjob.yaml for why this one thing lives inside the cluster it reports
+# on, when the site's doctrine puts watchers outside.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deimos-heartbeat
