@@ -145,7 +145,7 @@ Talos then applies the labels by itself.
 - `talosctl -n <ip> dmesg | grep -iE 'i915|ttyS4'`: i915 found the GPU and loaded
   its DMC firmware without errors, and `ttyS4` sits at `00:16.3`.
 - `kubectl get node <name> -o jsonpath='{.status.allocatable}'` includes
-  `gpu.intel.com/i915: 2`. A Ready plugin DaemonSet is not proof on its own.
+  `gpu.intel.com/i915: 4` (`-shared-dev-num=4`). A Ready plugin DaemonSet is not proof on its own.
 - **The transcoder's preflight is the real proof.** Each boot does a real
   0.1 s HEVC and H.264 encode, and exits 78 (crash-loops visibly) if the
   node cannot encode. On a new generation, especially Skylake, run a transcoder
@@ -159,23 +159,38 @@ one GPU node at a time: while there is only one, the transcoders are down from
 the drain until the node is back and the device plugin has registered (a few
 minutes), so pick a quiet moment and tell whoever is promoting spritz.
 
+talosctl cannot drain a worker by itself: its client-side drain fetches a
+kubeconfig from the node it is upgrading, and a worker refuses (`kubeconfig is
+only available on control plane nodes`). It then installs the new image and
+skips the drain AND the reboot, still exiting 0. So install without a reboot,
+drain with kubectl, and reboot through Talos:
+
 ```bash
-talosctl -n <ip> -e <ip> upgrade \
+talosctl -n <ip> -e <ip> upgrade --no-reboot \
   --image factory.talos.dev/metal-installer-secureboot/<schematic id>:<talos version>
+kubectl drain <name> --ignore-daemonsets --delete-emptydir-data --timeout=5m
+talosctl -n <ip> -e <ip> reboot --mode powercycle --wait
+kubectl uncordon <name>
 ```
 
 Use a plain upgrade, not `--stage`: a plain upgrade may take over a boot
 sequence that is still running (for example one stuck as in section 2), a
-staged one may not. Then bring the node's own config in line, so it does not
-keep naming the old installer (no reboot):
+staged one may not. `--mode powercycle` boots through the firmware, so the
+node comes up on the new signed UKI rather than kexec-ing. The drain also
+deletes any Failed transcoder pods left from earlier reboots.
+
+Then bring the node's own config in line, so it does not keep naming the old
+installer. It must be a strategic-merge patch: the config is multi-document,
+and talosctl refuses JSON6902 patches on it.
 
 ```bash
-talosctl -n <ip> -e <ip> patch mc --patch \
-  '[{"op":"replace","path":"/machine/install/image","value":"<the same image>"}]'
+talosctl -n <ip> -e <ip> patch mc --mode no-reboot \
+  --patch '{"machine":{"install":{"image":"<the same image>"}}}'
 ```
 
 Check `talosctl -n <ip> get extensionstatuses` lists the new schematic id, then
-verify as in section 7.
+verify as in section 7. On the first node (2026-10-19) the transcoders were
+down about 2.5 minutes, from the drain to `transcoder up`.
 
 ## After a reboot: Failed transcoder pods are expected
 
