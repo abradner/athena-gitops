@@ -54,6 +54,18 @@ spec:
             # First seen in production on 2026-10-17 (abradner/spritz#1106).
             - name: HTTP_READ_TIMEOUT
               value: "120"
+            # The read timeout alone is not enough. Go's http.Server.WriteTimeout
+            # (Thruster default 30s) also starts when the request headers are
+            # read, so a body that takes longer than 30s to arrive is read in
+            # full and then gets NO response: the connection closes before
+            # headers, and the Gateway answers 503 "upstream connect error ...
+            # reset before headers". Keep this at least HTTP_READ_TIMEOUT.
+            # Measured 2026-10-19 on staging: an 8 MiB part at 200 KB/s through
+            # Cloudflare (which buffers small bodies but streams this one) got
+            # a 503 at 41s. Same unparseable-falls-back-to-30 rule as above:
+            # check the effect with a slow upload, not the value.
+            - name: HTTP_WRITE_TIMEOUT
+              value: "120"
           envFrom:
             - configMapRef:
                 name: spritz-config
