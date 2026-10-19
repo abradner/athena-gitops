@@ -14,6 +14,21 @@ if ! declare -p GPU_WORKER_IP >/dev/null 2>&1; then
   echo "GPU_WORKER_IP is not set in athena.zsh (see athena.template.zsh; use GPU_WORKER_IP=() for none)" >&2
   exit 1
 fi
+# And for the GPU workers that are VMs (worker-gpu-vm.patch.yaml).
+if ! declare -p GPU_VM_WORKER_IP >/dev/null 2>&1; then
+  echo "GPU_VM_WORKER_IP is not set in athena.zsh (see athena.template.zsh; use GPU_VM_WORKER_IP=() for none)" >&2
+  exit 1
+fi
+
+# "<ip>:<gen>" -> sets ip and gen, or exits. Shared by both GPU lists.
+split_gpu_entry() {
+  ip="${1%%:*}"
+  gen="${1#*:}"
+  if [ "$gen" = "$1" ] || [ -z "$gen" ]; then
+    echo "GPU entry '$1' has no generation; use <ip>:<gen>, where <gen> is the iGPU generation (9, 9.5, 11)" >&2
+    exit 1
+  fi
+}
 
 for ip in "${WORKER_IP[@]}"; do
   echo "=== Applying configuration to node $ip ==="
@@ -41,17 +56,27 @@ done
 # Entries are "<ip>:<gen>"; the generation becomes the spritz.dev/gpu-gen
 # label. See docs/runbook-gpu-node-onboarding.md.
 for entry in "${GPU_WORKER_IP[@]}"; do
-  ip="${entry%%:*}"
-  gen="${entry#*:}"
-  if [ "$gen" = "$entry" ] || [ -z "$gen" ]; then
-    echo "GPU_WORKER_IP entry '$entry' has no generation; use <ip>:<gen>, e.g. 10.10.80.127:9.5" >&2
-    exit 1
-  fi
+  split_gpu_entry "$entry"
   echo "=== Applying configuration to GPU node $ip (gen $gen) ==="
   talosctl apply-config --insecure \
     --nodes $ip \
     --file worker.yaml \
     --config-patch @worker-gpu.patch.yaml \
+    --config-patch "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+  echo "Configuration applied to $ip"
+  echo ""
+done
+
+# GPU workers that are Proxmox VMs with the host's iGPU passed through. Same
+# base config plus worker-gpu-vm.patch.yaml (disks selected by size, plain
+# installer, no swap). See docs/runbook-gpu-node-onboarding.md.
+for entry in "${GPU_VM_WORKER_IP[@]}"; do
+  split_gpu_entry "$entry"
+  echo "=== Applying configuration to GPU VM node $ip (gen $gen) ==="
+  talosctl apply-config --insecure \
+    --nodes $ip \
+    --file worker.yaml \
+    --config-patch @worker-gpu-vm.patch.yaml \
     --config-patch "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
   echo "Configuration applied to $ip"
   echo ""

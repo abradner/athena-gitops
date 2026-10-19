@@ -1,0 +1,44 @@
+# Image Factory schematic for GPU workers that run as a Proxmox VM with the
+# host's Intel iGPU passed through (vfio-pci). POST it to get the id:
+#   curl -sS -X POST --data-binary @worker-gpu-vm.schematic.yaml https://factory.talos.dev/schematics
+# -> a57e3b281f16d59ca6e776e2207a47989e8b969fab23794cb61564f8a984b905
+# A changed file means a new id: update install.image in
+# worker-gpu-vm.patch.yaml.
+#
+# The bare-metal GPU workers use worker-gpu.schematic.yaml instead. The two
+# differ on purpose:
+#   - No Secure Boot. The VM's OVMF has no enrolled keys
+#     (efidisk pre-enrolled-keys=0), so the boot media and installer are the
+#     PLAIN variants (metal-amd64.iso, metal-installer). The -secureboot UKI
+#     would also boot, but nothing would be verifying it.
+#   - No mei. The VM has no Intel ME; AMT belongs to the Proxmox host.
+#   - Serial console on ttyS0, the VM's own serial port (serial0: socket,
+#     read with `qm terminal <vmid>`), not the AMT UART. Once i915 binds the
+#     passed-through iGPU the kernel console moves to its framebuffer, which
+#     has no monitor, and Proxmox's noVNC console goes blank: ttyS0 is then
+#     the only console. Last console= is /dev/console.
+#
+# Extensions: only what the node uses.
+#   - i915: the GPU driver and its DMC/GuC/HuC firmware.
+#   - intel-ucode: inert inside a VM (the hypervisor owns microcode; the
+#     Proxmox host must load it), kept so the GPU classes stay alike. It
+#     ships no service, so it cannot block the boot.
+#   - qemu-guest-agent: clean shutdown from the host, IP reporting. It ships
+#     a SERVICE, which waits for /dev/virtio-ports/org.qemu.guest_agent.0.
+#     That device exists only when the VM sets `agent: enabled=1`. The VM
+#     MUST set it: without it the service never starts, boot's
+#     startAllServices waits for it, and after Talos's BootTimeout (70 min)
+#     the node reboots, over and over (the failure worker-gpu.schematic.yaml
+#     describes). To drop the agent, drop this extension in the same change.
+#
+# NEVER add another extension that ships a service unless this class also
+# gets its config.
+customization:
+  extraKernelArgs:
+    - console=tty0
+    - console=ttyS0,115200n8
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/i915
+      - siderolabs/intel-ucode
+      - siderolabs/qemu-guest-agent

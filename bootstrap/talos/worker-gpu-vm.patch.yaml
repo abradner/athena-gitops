@@ -1,0 +1,72 @@
+# Config patch for GPU workers that run as a Proxmox VM with the host's Intel
+# iGPU passed through (vfio-pci). Applied on top of worker.yaml by
+# apply-worker.sh for every GPU_VM_WORKER_IP, INSTEAD of worker-gpu.patch.yaml
+# (the bare-metal class). Onboarding: docs/runbook-gpu-node-onboarding.md,
+# "GPU worker as a Proxmox VM".
+#
+# Contains no secrets, so it is committed as-is and never hydrated.
+#
+# What this assumes of the VM (the host checklist lives with the private
+# inventory):
+#   - q35, OVMF without enrolled keys (no Secure Boot), cpu: host;
+#   - virtio-scsi-single with two virtual disks, a small install disk
+#     (~20 GB) and a ~100 GB scratch disk, both discard=on, ssd=1;
+#   - agent: enabled=1 (worker-gpu-vm.schematic.yaml carries
+#     qemu-guest-agent; see that file for why the two go together);
+#   - serial0: socket (the kernel console, see the schematic);
+#   - the iGPU as a hostpci device, no swap, balloon 0.
+#
+# Storage, and why:
+#   - Disks are selected by SIZE, never by transport or device name. Both are
+#     virtual disks on the same controller, so transport cannot tell them
+#     apart, and the guest's device order is a detail of the controller.
+#     Keep the install disk at or under 40 GB and the scratch disk at or over
+#     64 GiB, or a selector matches the wrong one (or both).
+#   - Install disk: the Talos install (EFI/META/STATE) only.
+#   - Scratch disk: EPHEMERAL, i.e. all of /var. The transcoder's work dir is
+#     an emptyDir with sizeLimit 20Gi (an original of up to 4 GiB plus its
+#     outputs), plus images and logs.
+#   - No swap. The bare-metal class swaps to its Optane; this VM has no
+#     Optane of its own (the host's carries its ZFS SLOG), and the VM gets a
+#     fixed allocation from the host instead (balloon 0). So the kubelet
+#     keeps its default failSwapOn and needs no swap settings.
+#
+# Scheduling: identical to the bare-metal class, so the transcoder and the
+# GPU device plugin need no change.
+#   - Hard taint spritz.dev/gpu=intel:NoSchedule; label spritz.dev/gpu=intel.
+#   - spritz.dev/gpu-gen comes from the node's GPU_VM_WORKER_IP entry
+#     ("<ip>:<gen>"); a Comet Lake UHD 630 is 9.5, like the Kaby Lake HD 630.
+#   - Talos cannot ADD a taint to a node that has already registered. Taint a
+#     new node once by hand; see the runbook.
+#
+# Talos 1.14 deprecates machine.nodeLabels/nodeTaints/install in favour of
+# separate documents. These fields are correct for 1.13.
+machine:
+    install:
+        # The base template names the arm workers' SD card (/dev/mmcblk0).
+        # Delete it rather than leave it beside the selector: both validate,
+        # and which one wins should not be a question.
+        disk:
+            $patch: delete
+        diskSelector:
+            size: <= 40GB
+        # Image Factory schematic: worker-gpu-vm.schematic.yaml. The plain
+        # (non-Secure-Boot) installer, which is the one to `talosctl upgrade`
+        # with (bump the tag only).
+        image: factory.talos.dev/metal-installer/a57e3b281f16d59ca6e776e2207a47989e8b969fab23794cb61564f8a984b905:v1.13.11
+    nodeLabels:
+        spritz.dev/gpu: intel
+    nodeTaints:
+        spritz.dev/gpu: intel:NoSchedule
+---
+# Override the base template's EPHEMERAL selector (the NVMe) with the large
+# virtual disk. The patch replaces the whole provisioning block (it does not
+# merge into the base one), so minSize/grow are restated here.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.size >= 64u * GiB && !system_disk && !disk.cdrom && !disk.readonly
+    minSize: 10GiB
+    grow: true
