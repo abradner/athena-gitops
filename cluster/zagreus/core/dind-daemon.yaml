@@ -1,0 +1,22 @@
+# dockerd config for the dind sidecars in arc-builders. This caps dockerd's
+# built-in builder only. spritz's workflows build through a buildx builder of
+# the docker-container driver (`name: spritz`, keep-state), whose cache lives
+# in its own volume and is bounded only by that builder's buildkitd config in
+# the workflows. That cap is not set yet (a follow-up, to be tried on a
+# throwaway branch first, since it changes every image build); one home
+# builder's cache grew from ~3 GB to 28 GB in two weeks without it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arc-dind-daemon
+  namespace: arc-builders
+data:
+  daemon.json: |
+    {
+      "builder": {
+        "gc": {
+          "enabled": true,
+          "defaultKeepStorage": "40GB"
+        }
+      }
+    }

@@ -1,0 +1,131 @@
+# zagreus base worker. As-is it fits the arm64 runner nodes: CM5 8 GB Lites
+# with a 128 GB NVMe, Talos 1.14 flashed to the SD card from the CM5 schematic
+# (worker-cm5.schematic.yaml), and all of /var on the NVMe. The other node classes are this file
+# plus a patch, applied by apply-worker.sh:
+#   worker-arm-runner.patch.yaml   NVMe CM5s: always-on light lane + arm64 jobs
+#   worker-arm-builder.patch.yaml  CM5 with a USB SSD: the arm64 dind builder
+#   worker-amd64.patch.yaml        ProDesk/EliteDesk boxes, woken on demand
+#
+# Every pod on a worker here is CI. The node classes are told apart by the
+# zagreus.asn.casa/role label, which the runner scale sets select on
+# (cluster/zagreus/runners/).
+version: v1alpha1
+debug: false
+persist: true
+machine:
+    type: worker
+    token: {{ trustdinfo.token }}
+    ca:
+        crt: {{ certs.os.crt }}
+        key: ""
+    certSANs: []
+    kubelet:
+        image: ghcr.io/siderolabs/kubelet:v1.36.1
+        defaultRuntimeSeccompProfileEnabled: true
+        disableManifestsDirectory: true
+        extraConfig:
+            serverTLSBootstrap: true
+            imageGCHighThresholdPercent: 80
+            imageGCLowThresholdPercent: 65
+            # Act before the kernel OOM killer does. CI pods run with memory
+            # limits above their requests (vitest spikes), so a node can be
+            # overcommitted; the kubelet evicting the lowest-priority pod is
+            # better than the kernel killing an arbitrary process.
+            # An explicit evictionHard replaces the kubelet's whole default
+            # set, so the inode thresholds are restated.
+            evictionHard:
+                memory.available: 500Mi
+                nodefs.available: 10%
+                nodefs.inodesFree: 5%
+                imagefs.available: 10%
+                imagefs.inodesFree: 5%
+            evictionSoft:
+                memory.available: 1Gi
+            evictionSoftGracePeriod:
+                memory.available: 30s
+            # The node waker powers amd64 nodes off with `talosctl shutdown`;
+            # give pods a graceful stop. A CI node is only shut down when it
+            # is empty, so this is a backstop.
+            shutdownGracePeriod: 60s
+            shutdownGracePeriodCriticalPods: 15s
+    install:
+        # SD card on the CM5s; worker-amd64.patch.yaml overrides both lines.
+        # Upgrade CM5s with `-i` set to this ref (see controlplane.template.yaml).
+        disk: /dev/mmcblk0
+        # Image Factory schematic worker-cm5.schematic.yaml at v1.14.4 (the
+        # tag, kept here because the ref below cannot carry it): pinned by
+        # digest ONLY. A Talos 1.14.4 node fails `talosctl upgrade --image
+        # repo:tag@sha256:…` with "installer image … not found in containerd
+        # store" after pulling it; the digest-only form works (measured
+        # 2026-10-19). Flash image: the same schematic's v1.14.4
+        # metal-arm64.raw.xz, sha256
+        # 817dedb3c38f26fa8e6177fea6647ab2b9f166534ecb7c7b50883925aedc28a1.
+        image: factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:120e60cff87cdd0cd50fceff9c115b375675b622eabc6071f11928b8079dd9ca
+        wipe: false
+        grubUseUKICmdline: true
+    registries: {}
+    features:
+        diskQuotaSupport: true
+        kubePrism:
+            enabled: true
+            port: 7445
+        hostDNS:
+            enabled: true
+            forwardKubeDNSToHost: true
+cluster:
+    id: {{ cluster.id }}
+    secret: {{ cluster.secret }}
+    controlPlane:
+        endpoint: {{ controlplane.endpoint }}
+    clusterName: zagreus
+    network:
+        dnsDomain: cluster.local
+        podSubnets:
+            - 10.244.0.0/16
+        serviceSubnets:
+            - 10.96.0.0/12
+        cni:
+            name: none
+    token: {{ secrets.bootstraptoken }}
+    ca:
+        crt: {{ certs.k8s.crt }}
+        key: ""
+    discovery:
+        enabled: true
+        registries:
+            kubernetes:
+                disabled: true
+            service: {}
+    proxy:
+        disabled: true
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: stable
+---
+# /var on the NVMe. worker-arm-builder.patch.yaml and worker-amd64.patch.yaml
+# override this selector (the patch merges over the provisioning block).
+# Wipe a reused NVMe from maintenance mode first
+# (`talosctl wipe disk nvme0n1 --insecure`), or EPHEMERAL cannot be created.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme"
+    minSize: 10GiB
+    grow: true
+---
+# Talos 1.14 applies DHCP-supplied search domains (athena-gitops AGENTS.md Gotcha #3, and PR #146);
+# with ndots:5 a search suffix under a wildcarded zone once blackholed traffic.
+# disableDefault drops the hostname-derived domain (what
+# machine.network.disableSearchDomain did before 1.14; the two conflict at
+# validation, so that field is gone); the explicit empty list drops the DHCP
+# ones. Rendered and patched with a 1.13 talosctl, `domains: []` silently
+# becomes null and DHCP's domains come back: use the 1.14 client this
+# directory's mise.toml pins (the apply scripts check).
+apiVersion: v1alpha1
+kind: ResolverConfig
+searchDomains:
+    disableDefault: true
+    domains: []

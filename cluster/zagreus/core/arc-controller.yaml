@@ -1,0 +1,60 @@
+# actions-runner-controller (ARC), runner scale sets mode. The controller and
+# every scale set's listener run on the control plane: they hold the GitHub
+# App credential, and the control plane is the one place no CI job runs.
+#
+# Release name `arc` in arc-systems makes the controller's service account
+# `arc-gha-rs-controller`; every scale set names it explicitly
+# (controllerServiceAccount), because the scale-set chart otherwise discovers
+# it with Helm `lookup`, which returns nothing under Argo's rendering and
+# fails the template.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-arc-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set-controller
+    targetRevision: 0.15.0 # keep every scale set's chart on the same version
+    helm:
+      releaseName: arc
+      valuesObject:
+        replicaCount: 1
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+        flags:
+          # Argo CD 3 tracks by annotation, so this label is not set today;
+          # kept so that switching Argo to label tracking cannot make it claim
+          # every EphemeralRunner and runner pod.
+          excludeLabelPropagationPrefixes:
+            - argocd.argoproj.io/instance
+          # A finished runner pod is otherwise deleted at once (0). -1 leaves
+          # each pod's own terminationGracePeriodSeconds in charge, so a
+          # builder's dockerd shuts down cleanly on its host-path data root
+          # before the next builder pod's dockerd opens it.
+          terminatedRunnerPodGracePeriodSeconds: -1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-systems
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # The CRDs are 0.6–1.3 MB each, past the 256 KiB last-applied
+      # annotation that client-side apply needs.
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,59 @@
+---
+# zagreus's foundations: namespaces, priority classes, External Secrets,
+# kubelet CSR approval, Argo CD managing itself, and the ARC controller.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-core
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/zagreus/core
+    directory:
+      recurse: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+---
+# The runner scale sets, one Application per repository and runner class.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-runners
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/zagreus/runners
+    directory:
+      recurse: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

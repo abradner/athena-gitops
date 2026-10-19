@@ -1,0 +1,12 @@
+# zagreus runs Talos 1.14. Its configs carry `searchDomains.domains: []`, which a
+# 1.13 talosctl's patcher silently turns into null, bringing DHCP's search
+# domains back. So zagreus pins its own 1.14 client rather than athena's
+# bootstrap/mise.toml (still 1.13 for athena's nodes).
+[tools]
+kubectl = "1.37.0"
+talosctl = "1.14.4"
+
+[env]
+# Same file the zagreus apply scripts source. Copy zagreus.template.zsh to
+# create it.
+_.source = "./zagreus.zsh"

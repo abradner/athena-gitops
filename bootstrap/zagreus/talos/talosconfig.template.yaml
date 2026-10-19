@@ -1,0 +1,11 @@
+context: zagreus
+contexts:
+    zagreus:
+        # The control-plane address comes from zagreus's own 1Password note
+        # (key controlplane.ip1), not athena's. This repo is public, so it is
+        # not written here literally.
+        endpoints:
+            - {{ controlplane.ip1 }}
+        ca: {{ certs.os.crt }}
+        crt: {{ talosconfig.admin.crt }}
+        key: {{ talosconfig.admin.key }}

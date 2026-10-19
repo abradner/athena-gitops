@@ -67,7 +67,10 @@ def add(name, src, idx, namespace):
             continue
         flag = "--set-string" if p.get("forceString") else "--set"
         sets.append(f"{flag}={n}={v}")
-    rows.append("\t".join([name, chart, str(src.get("targetRevision", "")),
+    # Argo uses helm.releaseName when set, else the Application name; charts
+    # that derive resource names from the release render differently otherwise.
+    release = helm.get("releaseName") or name
+    rows.append("\t".join([name, release, chart, str(src.get("targetRevision", "")),
                            str(src.get("repoURL", "")), path,
                            namespace or "default", " ".join(sets)]))
 
@@ -96,21 +99,43 @@ PY
 FAILED=0
 COUNT=0
 
-while IFS=$'\t' read -r name chart version repo valsfile namespace sets; do
+while IFS=$'\t' read -r name release chart version repo valsfile namespace sets; do
   [ -z "$name" ] && continue
   COUNT=$((COUNT + 1))
-  alias="repo-$(printf '%s' "$repo" | $HASH | cut -c1-10)"
-  helm repo add "$alias" "$repo" >/dev/null 2>&1 || true
+  # Argo CD writes an OCI Helm registry as a repoURL with no scheme (e.g.
+  # ghcr.io/actions/actions-runner-controller-charts); helm takes it as an
+  # oci:// chart reference, not as a repo to add.
+  case "$repo" in
+    *://*)
+      alias="repo-$(printf '%s' "$repo" | $HASH | cut -c1-10)"
+      helm repo add "$alias" "$repo" >/dev/null 2>&1 || true
+      ref="$alias/$chart" ;;
+    *)
+      # Pull to disk and render from there: helm 4 prints "Pulled:" and
+      # "Digest:" to stdout when templating straight from an OCI ref, and
+      # those lines would land in the rendered file.
+      chartdir="$TMPVALS/oci/$name"
+      mkdir -p "$chartdir"
+      if helm pull "oci://$repo/$chart" --version "$version" --untar -d "$chartdir" >/dev/null 2>&1; then
+        ref="$chartdir/$chart"
+      else
+        ref="oci://$repo/$chart"  # let the template step report the failure
+      fi ;;
+  esac
 
   # shellcheck disable=SC2086 -- $sets is a pre-built list of --set flags
-  if out=$(helm template "$name" "$alias/$chart" --version "$version" \
-             -f "$valsfile" --namespace "$namespace" $sets 2>&1); then
+  # stdout is the manifest; stderr kept apart. An OCI pull prints "Pulled:" and
+  # "Digest:" lines, which would otherwise land at the top of the rendered file
+  # and fail schema validation as a document with no kind.
+  errfile="$TMPVALS/$name.stderr"
+  if out=$(helm template "$release" "$ref" --version "$version" \
+             -f "$valsfile" --namespace "$namespace" $sets 2>"$errfile"); then
     printf '%s\n' "$out" > "$OUTDIR/$name.yaml"
     lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
     echo "  ✅ $name ($chart $version, ns=$namespace${sets:+, $sets}) — $lines lines"
   else
     echo "  ❌ $name ($chart $version) failed to render:"
-    printf '%s\n' "$out" | sed 's/^/       /' | head -15
+    cat "$errfile" | sed 's/^/       /' | head -15
     FAILED=$((FAILED + 1))
   fi
 done < "$SPECS"

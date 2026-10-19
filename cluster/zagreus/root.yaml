@@ -1,0 +1,40 @@
+---
+# The zagreus app-of-apps root. Applied once by hand on the zagreus cluster
+# (kubectl apply -f cluster/zagreus/root.yaml); after that it manages itself.
+#
+# athena never syncs this directory: its root syncs only the top level of
+# cluster/ (recurse defaults to false), and cluster/zagreus is a subdirectory.
+#
+# Every Application and AppProject in this tree is prefixed `zagreus-`, for
+# the same reason as deimos's prefix: applied to the wrong cluster, an
+# unprefixed root would repoint that cluster's own root here.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-root
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/zagreus
+    # Do NOT add `directory: {recurse: false}`: Go zero value, permanent sync
+    # loop (AGENTS.md, Argo Self-Management Traps 3).
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

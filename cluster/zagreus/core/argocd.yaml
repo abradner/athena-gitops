@@ -1,0 +1,66 @@
+# Argo CD managing its own install on zagreus. bootstrap/zagreus/kubernetes/provision.sh
+# does the first `helm install`; this Application adopts the release.
+# Keep valuesObject in step with bootstrap/zagreus/kubernetes/argocd-values.yaml,
+# and the chart pin in step with athena's cluster/core/argocd/argocd-app.yaml.
+# prune is off for the same reason as on athena: Argo pruning parts of itself
+# mid-upgrade can eat its own tail.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-argocd
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-cd
+    targetRevision: 9.7.1
+    helm:
+      releaseName: argocd
+      valuesObject:
+        global:
+          # Argo's own NetworkPolicies: only Argo talks to repo-server and
+          # redis, which otherwise answer anyone on the pod network.
+          networkPolicy:
+            create: true
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+        configs:
+          params:
+            server.insecure: true
+        dex:
+          enabled: false
+        notifications:
+          enabled: false
+        applicationSet:
+          replicas: 0
+        # The control plane has 4 GB for etcd, the API server and every
+        # credential holder; give the two heavy Argo parts real requests so
+        # the scheduler and the kubelet account for them.
+        controller:
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 768Mi}
+        repoServer:
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

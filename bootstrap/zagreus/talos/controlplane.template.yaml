@@ -1,0 +1,181 @@
+# zagreus control-plane nodes: CM5 4 GB Lite (no eMMC). Talos 1.14 is
+# flashed to the SD card from the Image Factory schematic in
+# worker-cm5.schematic.yaml (official overlay plus the kernel argument
+# sdhci.debug_quirks2=4, which keeps SD at 3.3 V High Speed; without it one
+# carrier loses the card). All of /var (etcd included) goes on the NVMe Optane
+# via the EPHEMERAL VolumeConfig at the end of this file.
+#
+# Hydrated by tools-workflow `render-talos` with zagreus's own 1Password note:
+#   TALOS_TEMPLATE_DIR=<this directory> OP_TALOS_ITEM_ID=<zagreus note id>
+# See bootstrap/zagreus/README.md. The note holds the `talosctl gen secrets`
+# output plus controlplane.ip1, controlplane.endpoint and the talosconfig
+# admin cert/key.
+#
+# Differences from athena's controlplane.template.yaml, and why:
+#   - clusterName zagreus, its own PKI, its own endpoint (from the note).
+#   - SD install + EPHEMERAL on NVMe (athena's control plane is VMs on sda).
+#   - The control plane stays tainted (no allowSchedulingOnControlPlanes): it
+#     holds the GitHub App key and etcd, so no CI job may ever run here. Only
+#     pods that tolerate the control-plane taint (the ARC controller and its
+#     listeners, Argo CD, ESO, the node waker, DaemonSets) land on it.
+version: v1alpha1
+debug: false
+persist: true
+machine:
+    type: controlplane
+    token: {{ trustdinfo.token }}
+    ca:
+        crt: {{ certs.os.crt }}
+        key: {{ certs.os.key }}
+    certSANs:
+        - {{ controlplane.ip1 }}
+    kubelet:
+        image: ghcr.io/siderolabs/kubelet:v1.36.1
+        defaultRuntimeSeccompProfileEnabled: true
+        disableManifestsDirectory: true
+        extraConfig:
+            # EPHEMERAL is a ~14 GB Optane here, shared with etcd: keep image
+            # GC tight, as on athena's Optane workers.
+            imageGCHighThresholdPercent: 75
+            imageGCLowThresholdPercent: 55
+            serverTLSBootstrap: true
+            # 4 GB holds etcd, the API server and every credential holder.
+            # Keep memory back for the system and evict a pod before the
+            # kernel picks something to kill.
+            systemReserved:
+                memory: 512Mi
+            evictionHard:
+                memory.available: 300Mi
+                nodefs.available: 10%
+                nodefs.inodesFree: 5%
+                imagefs.available: 15%
+                imagefs.inodesFree: 5%
+    install:
+        # The SD card. The CM5 Lite image is flashed to it, so install is
+        # skipped at first boot; this installer is first used by an upgrade.
+        # Always upgrade with `-i` set to this ref: a bare `talosctl upgrade`
+        # picks the vanilla installer, which has no Raspberry Pi overlay.
+        disk: /dev/mmcblk0
+        # Image Factory schematic worker-cm5.schematic.yaml at v1.14.4 (the
+        # tag, kept here because the ref below cannot carry it): pinned by
+        # digest ONLY. A Talos 1.14.4 node fails `talosctl upgrade --image
+        # repo:tag@sha256:…` with "installer image … not found in containerd
+        # store" after pulling it; the digest-only form works (measured
+        # 2026-10-19). Flash image: the same schematic's v1.14.4
+        # metal-arm64.raw.xz, sha256
+        # 817dedb3c38f26fa8e6177fea6647ab2b9f166534ecb7c7b50883925aedc28a1.
+        image: factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:120e60cff87cdd0cd50fceff9c115b375675b622eabc6071f11928b8079dd9ca
+        wipe: false
+        grubUseUKICmdline: true
+    registries: {}
+    features:
+        diskQuotaSupport: true
+        kubePrism:
+            enabled: true
+            port: 7445
+        hostDNS:
+            enabled: true
+            forwardKubeDNSToHost: true
+    nodeLabels:
+        node.kubernetes.io/exclude-from-external-load-balancers: ""
+cluster:
+    id: {{ cluster.id }}
+    secret: {{ cluster.secret }}
+    controlPlane:
+        endpoint: {{ controlplane.endpoint }}
+    clusterName: zagreus
+    network:
+        dnsDomain: cluster.local
+        podSubnets:
+            - 10.244.0.0/16
+        serviceSubnets:
+            - 10.96.0.0/12
+        cni:
+            name: none # Cilium, installed by bootstrap/zagreus/kubernetes/provision.sh
+    token: {{ secrets.bootstraptoken }}
+    secretboxEncryptionSecret: {{ secrets.secretboxencryptionsecret }}
+    ca:
+        crt: {{ certs.k8s.crt }}
+        key: {{ certs.k8s.key }}
+    aggregatorCA:
+        crt: {{ certs.k8saggregator.crt }}
+        key: {{ certs.k8saggregator.key }}
+    serviceAccount:
+        key: {{ certs.k8sserviceaccount.key }}
+    apiServer:
+        image: registry.k8s.io/kube-apiserver:v1.36.1
+        certSANs:
+            - {{ controlplane.ip1 }}
+        admissionControl:
+            - name: PodSecurity
+              configuration:
+                apiVersion: pod-security.admission.config.k8s.io/v1alpha1
+                # Same defaults as athena. The runner and builder namespaces
+                # opt into `privileged` by label (cluster/zagreus/core/namespaces.yaml):
+                # host-path caches and dind need it.
+                defaults:
+                    audit: restricted
+                    audit-version: latest
+                    enforce: baseline
+                    enforce-version: latest
+                    warn: restricted
+                    warn-version: latest
+                exemptions:
+                    namespaces:
+                        - kube-system
+                    runtimeClasses: []
+                    usernames: []
+                kind: PodSecurityConfiguration
+        auditPolicy:
+            apiVersion: audit.k8s.io/v1
+            kind: Policy
+            rules:
+                - level: Metadata
+    controllerManager:
+        image: registry.k8s.io/kube-controller-manager:v1.36.1
+    proxy:
+        disabled: true # Cilium replaces kube-proxy
+    scheduler:
+        image: registry.k8s.io/kube-scheduler:v1.36.1
+    discovery:
+        enabled: true
+        registries:
+            kubernetes:
+                disabled: true
+            service: {}
+    etcd:
+        ca:
+            crt: {{ certs.etcd.crt }}
+            key: {{ certs.etcd.key }}
+    extraManifests: []
+    inlineManifests: []
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: stable
+---
+# All of /var on the NVMe (the Optane), never the SD card. No fallback: a
+# control plane whose NVMe is missing should fail loudly rather than run etcd
+# on an SD card.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme"
+    minSize: 10GiB
+    grow: true
+---
+# Talos 1.14 applies DHCP-supplied search domains (athena-gitops AGENTS.md Gotcha #3, and PR #146);
+# with ndots:5 a search suffix under a wildcarded zone once blackholed traffic.
+# disableDefault drops the hostname-derived domain (what
+# machine.network.disableSearchDomain did before 1.14; the two conflict at
+# validation, so that field is gone); the explicit empty list drops the DHCP
+# ones. Rendered and patched with a 1.13 talosctl, `domains: []` silently
+# becomes null and DHCP's domains come back: use the 1.14 client this
+# directory's mise.toml pins (the apply scripts check).
+apiVersion: v1alpha1
+kind: ResolverConfig
+searchDomains:
+    disableDefault: true
+    domains: []

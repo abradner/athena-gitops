@@ -1,0 +1,15 @@
+# Argo CD repository entry for actions-runner-controller's OCI Helm charts.
+# Public charts on ghcr.io: no credentials, so this Secret holds none and is
+# committed as-is. Argo needs it to know the URL is an OCI Helm registry.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-arc-charts
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: actions-runner-controller-charts
+  type: helm
+  url: ghcr.io/actions/actions-runner-controller-charts
+  enableOCI: "true"
