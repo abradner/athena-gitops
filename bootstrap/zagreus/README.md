@@ -16,10 +16,15 @@ Addresses and inventory live in the private infrastructure repo.
 | arm64 builder | CM5 8 GB Lite, SATA SSD over USB 3 | `worker.template.yaml` + `worker-arm-builder.patch.yaml` | always on |
 | amd64 runner | HP ProDesk/EliteDesk, Optane + SATA SSD | `worker.template.yaml` + `worker-amd64.patch.yaml` | woken on demand |
 
-All on Talos v1.13, as athena. The CM5s boot the community v1.13.2 CM5 image
-flashed to SD (upstream cannot boot a CM5 Lite from SD yet; official 1.14
-also loses the SD on one of the carriers). The amd64 boxes install the Secure
-Boot factory image from `worker-amd64.schematic.yaml`.
+All on Talos 1.14, ahead of athena: zagreus is the canary for Talos upgrades.
+The CM5s boot the CM5 Lite image built in abradner/talos-builder (official
+Talos and overlay, plus the kernel argument `sdhci.debug_quirks2=4`, which keeps
+SD at 3.3 V High Speed; without it one carrier loses the card). Flash its
+`metal-arm64-rpi5.raw.xz`; its installer ref is in the templates. The amd64
+boxes install the Secure Boot factory image from `worker-amd64.schematic.yaml`.
+Use the talosctl this directory's `mise.toml` pins (1.14): a 1.13 client's
+patcher drops the ResolverConfig's empty search-domain list, and the apply
+scripts refuse an older client.
 
 ## Order of operations
 
@@ -57,7 +62,7 @@ Boot factory image from `worker-amd64.schematic.yaml`.
 
 ### 2. Control plane
 
-Flash the community CM5 image to the SD card and boot. Wipe the Optane from
+Flash the CM5 Lite image to the SD card and boot. Wipe the Optane from
 maintenance mode if it held anything (`talosctl wipe disk nvme0n1 --insecure`).
 Then:
 
@@ -95,7 +100,7 @@ KUBECONFIG=~/.kube/config-zagreus kubectl apply -f cluster/zagreus/root.yaml
 ### 5. Workers
 
 Boot each worker in maintenance mode, wiping a reused disk first. CM5s:
-flash the community image to SD. ProDesks: boot the Secure Boot ISO for
+flash the CM5 Lite image to SD. ProDesks: boot the Secure Boot ISO for
 `worker-amd64.schematic.yaml`. Then apply:
 
 ```bash

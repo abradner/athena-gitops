@@ -12,6 +12,20 @@ if grep -q '{{' worker.yaml; then
   exit 1
 fi
 
+# Talos 1.14 config needs a 1.14 client: a 1.13 talosctl's patcher turns the
+# ResolverConfig's `domains: []` into null, and the node then takes DHCP's
+# search domains (athena-gitops Gotchas #5; #146 measured it). Refuse an old
+# client, and check the merged config itself before anything is applied.
+client_minor=$(talosctl version --client --short 2>/dev/null | sed -nE 's/.*v1\.([0-9]+)\..*/\1/p' | head -1)
+if [ -z "$client_minor" ] || [ "$client_minor" -lt 14 ]; then
+  echo "talosctl client is $(talosctl version --client --short 2>/dev/null | tail -1); zagreus needs 1.14+ (bootstrap/zagreus/mise.toml)" >&2
+  exit 1
+fi
+command -v yq >/dev/null || { echo "yq is required to check the merged config" >&2; exit 1; }
+domains_are_empty() { # <merged config file>
+  [ "$(yq 'select(.kind == "ResolverConfig") | .searchDomains.domains | tag + ":" + (length | tostring)' "$1")" = "!!seq:0" ]
+}
+
 # Every class array must be declared, even empty: a loop over an unset array
 # runs zero times, and a node class would be skipped without a word.
 for var in ARM_RUNNER_IP ARM_BUILDER_IP AMD64_RUNNER_IP; do
@@ -25,10 +39,20 @@ apply() { # <ip> <patch> <class> [extra patch]
   local extra=()
   if [ -n "${4:-}" ]; then
     [ -f "$4" ] || { echo "extra patch '$4' for $1 not found" >&2; exit 1; }
-    extra=(--config-patch "@$4")
+    extra=(--patch "@$4")
+  fi
+  # Merge locally first, check the result, then apply exactly that file.
+  local merged
+  merged=$(mktemp)
+  talosctl machineconfig patch worker.yaml --patch "@$2" ${extra[@]+"${extra[@]}"} -o "$merged"  # empty-array safe on macOS bash 3.2
+  if ! domains_are_empty "$merged"; then
+    rm -f "$merged"
+    echo "$1: merged config lost ResolverConfig searchDomains.domains: [] (patcher too old?)" >&2
+    exit 1
   fi
   echo "=== Applying $3 configuration to $1${4:+ (+ $4)} ==="
-  talosctl apply-config --insecure --nodes "$1" --file worker.yaml --config-patch "@$2" ${extra[@]+"${extra[@]}"}  # empty-array safe on macOS bash 3.2
+  talosctl apply-config --insecure --nodes "$1" --file "$merged"
+  rm -f "$merged"  # it holds the cluster PKI
   echo ""
 }
 

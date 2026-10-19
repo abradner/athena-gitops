@@ -1,7 +1,9 @@
-# zagreus control plane: a single CM5 4 GB Lite (no eMMC). Talos is flashed
-# to the SD card from the same community v1.13.2 CM5 image the athena workers
-# run, and all of /var (etcd included) goes on the NVMe Optane via the
-# EPHEMERAL VolumeConfig at the end of this file.
+# zagreus control plane: a single CM5 4 GB Lite (no eMMC). Talos 1.14 is
+# flashed to the SD card from the CM5 Lite image built in abradner/talos-builder
+# (official Talos, official sbc-raspberrypi overlay, and the kernel argument
+# sdhci.debug_quirks2=4 that keeps SD at 3.3 V High Speed, without which one
+# carrier loses the card). All of /var (etcd included) goes on the NVMe Optane
+# via the EPHEMERAL VolumeConfig at the end of this file.
 #
 # Hydrated by tools-workflow `render-talos` with zagreus's own 1Password note:
 #   TALOS_TEMPLATE_DIR=<this directory> OP_TALOS_ITEM_ID=<zagreus note id>
@@ -48,17 +50,20 @@ machine:
                 nodefs.inodesFree: 5%
                 imagefs.available: 15%
                 imagefs.inodesFree: 5%
-    network:
-        # VLAN DHCP may hand out a domain; a node search domain plus ndots:5
-        # once blackholed traffic on athena (AGENTS.md Gotchas #3).
-        disableSearchDomain: true
     install:
-        # The SD card. The community CM5 image is flashed to it; install is
-        # skipped when booted from disk.
-        # !! Do not `talosctl upgrade` with this image: same reason as
-        # athena's worker.template.yaml (no CM5 overlay in the stock installer).
+        # The SD card. The CM5 Lite image is flashed to it, so install is
+        # skipped at first boot; this installer is first used by an upgrade.
+        # Always upgrade with `-i` set to this ref: a bare `talosctl upgrade`
+        # picks the vanilla installer, which has no Raspberry Pi overlay.
         disk: /dev/mmcblk0
-        image: ghcr.io/siderolabs/installer:v1.13.4
+        # abradner/talos-builder release v1.14.4-cm5l.1 (the tag, kept here
+        # because the ref below cannot carry it): pinned by digest ONLY. A
+        # Talos 1.14.4 node fails `talosctl upgrade --image repo:tag@sha256:…`
+        # with "installer image … not found in containerd store" after pulling
+        # it; the digest-only form works (measured 2026-10-19). Flash image:
+        # that release's metal-arm64-rpi5.raw.xz, sha256
+        # 9fe94c7fcd867e78ec41382f7d5d67815c25af6cd0ea8482026a4b1cb72d1b30.
+        image: ghcr.io/abradner/talos-builder/installer@sha256:439b622d8c7c8bd4b83eca4367fca0b572c159ebf2de95f256e8c9dd2181e838
         wipe: false
         grubUseUKICmdline: true
     registries: {}
@@ -159,3 +164,17 @@ provisioning:
         match: disk.transport == "nvme"
     minSize: 10GiB
     grow: true
+---
+# Talos 1.14 applies DHCP-supplied search domains (athena-gitops Gotchas #3/#5);
+# with ndots:5 a search suffix under a wildcarded zone once blackholed traffic.
+# disableDefault drops the hostname-derived domain (what
+# machine.network.disableSearchDomain did before 1.14; the two conflict at
+# validation, so that field is gone); the explicit empty list drops the DHCP
+# ones. Rendered and patched with a 1.13 talosctl, `domains: []` silently
+# becomes null and DHCP's domains come back: use the 1.14 client this
+# directory's mise.toml pins (apply-worker.sh checks).
+apiVersion: v1alpha1
+kind: ResolverConfig
+searchDomains:
+    disableDefault: true
+    domains: []
