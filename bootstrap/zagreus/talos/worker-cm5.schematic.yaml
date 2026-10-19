@@ -1,0 +1,25 @@
+# Image Factory schematic for zagreus's CM5 Lite nodes (control plane, arm64
+# runners, arm64 builder). POST it to get the id:
+#   curl -sS -X POST --data-binary @worker-cm5.schematic.yaml https://factory.talos.dev/schematics
+# A changed file means a new id: update install.image in controlplane.template.yaml
+# and worker.template.yaml, and the flash image the README names.
+#
+# The official sbc-raspberrypi rpi_5 overlay and one kernel argument, no
+# extensions. sdhci.debug_quirks2=4 (SDHCI_QUIRK2_NO_1_8_V) keeps the SD card at
+# 3.3 V High Speed. Without it, on one of the CM5 carriers, mainline's sdhci
+# voltage switch to SDR104 fails and the card never appears: bare Factory
+# 1.14.4 looped 799 times on the same board and card, while this schematic ran
+# 7 boots, a power cycle and an upgrade with zero SD errors (2026-10-19). SD is
+# boot-only on these nodes, so the slower bus costs nothing.
+#
+# No extensions on purpose: nothing here uses iSCSI, and an extension whose
+# service is left unconfigured blocks boot and reboots the node on a timer.
+#
+# Pin the installer by digest ONLY (factory.talos.dev/metal-installer/<id>@sha256:…):
+# a Talos 1.14.4 node fails `talosctl upgrade` from a tag@digest ref.
+overlay:
+  image: siderolabs/sbc-raspberrypi
+  name: rpi_5
+customization:
+  extraKernelArgs:
+    - sdhci.debug_quirks2=4

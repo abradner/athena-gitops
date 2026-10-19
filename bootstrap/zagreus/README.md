@@ -17,10 +17,13 @@ Addresses and inventory live in the private infrastructure repo.
 | amd64 runner | HP ProDesk/EliteDesk, Optane + SATA SSD | `worker.template.yaml` + `worker-amd64.patch.yaml` | woken on demand |
 
 All on Talos 1.14, ahead of athena: zagreus is the canary for Talos upgrades.
-The CM5s boot the CM5 Lite image built in abradner/talos-builder (official
-Talos and overlay, plus the kernel argument `sdhci.debug_quirks2=4`, which keeps
-SD at 3.3 V High Speed; without it one carrier loses the card). Flash its
-`metal-arm64-rpi5.raw.xz`; its installer ref is in the templates. The amd64
+The CM5s boot the Image Factory schematic in `talos/worker-cm5.schematic.yaml`:
+the official overlay plus the kernel argument `sdhci.debug_quirks2=4`, which
+keeps SD at 3.3 V High Speed (without it one carrier loses the card; bare
+Factory 1.14.4 boot-looped there). Flash that schematic's v1.14.4
+`metal-arm64.raw.xz`; its installer ref, pinned by digest only, is in the
+templates. A self-built equivalent (abradner/talos-builder v1.14.4-cm5l.1) is
+kept published as a fallback. The amd64
 boxes install the Secure Boot factory image from `worker-amd64.schematic.yaml`.
 Use the talosctl this directory's `mise.toml` pins (1.14): a 1.13 client's
 patcher drops the ResolverConfig's empty search-domain list, and the apply

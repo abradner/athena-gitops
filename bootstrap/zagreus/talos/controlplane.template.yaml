@@ -1,7 +1,7 @@
 # zagreus control plane: a single CM5 4 GB Lite (no eMMC). Talos 1.14 is
-# flashed to the SD card from the CM5 Lite image built in abradner/talos-builder
-# (official Talos, official sbc-raspberrypi overlay, and the kernel argument
-# sdhci.debug_quirks2=4 that keeps SD at 3.3 V High Speed, without which one
+# flashed to the SD card from the Image Factory schematic in
+# worker-cm5.schematic.yaml (official overlay plus the kernel argument
+# sdhci.debug_quirks2=4, which keeps SD at 3.3 V High Speed; without it one
 # carrier loses the card). All of /var (etcd included) goes on the NVMe Optane
 # via the EPHEMERAL VolumeConfig at the end of this file.
 #
@@ -56,14 +56,15 @@ machine:
         # Always upgrade with `-i` set to this ref: a bare `talosctl upgrade`
         # picks the vanilla installer, which has no Raspberry Pi overlay.
         disk: /dev/mmcblk0
-        # abradner/talos-builder release v1.14.4-cm5l.1 (the tag, kept here
-        # because the ref below cannot carry it): pinned by digest ONLY. A
-        # Talos 1.14.4 node fails `talosctl upgrade --image repo:tag@sha256:…`
-        # with "installer image … not found in containerd store" after pulling
-        # it; the digest-only form works (measured 2026-10-19). Flash image:
-        # that release's metal-arm64-rpi5.raw.xz, sha256
-        # 9fe94c7fcd867e78ec41382f7d5d67815c25af6cd0ea8482026a4b1cb72d1b30.
-        image: ghcr.io/abradner/talos-builder/installer@sha256:439b622d8c7c8bd4b83eca4367fca0b572c159ebf2de95f256e8c9dd2181e838
+        # Image Factory schematic worker-cm5.schematic.yaml at v1.14.4 (the
+        # tag, kept here because the ref below cannot carry it): pinned by
+        # digest ONLY. A Talos 1.14.4 node fails `talosctl upgrade --image
+        # repo:tag@sha256:…` with "installer image … not found in containerd
+        # store" after pulling it; the digest-only form works (measured
+        # 2026-10-19). Flash image: the same schematic's v1.14.4
+        # metal-arm64.raw.xz, sha256
+        # 817dedb3c38f26fa8e6177fea6647ab2b9f166534ecb7c7b50883925aedc28a1.
+        image: factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:120e60cff87cdd0cd50fceff9c115b375675b622eabc6071f11928b8079dd9ca
         wipe: false
         grubUseUKICmdline: true
     registries: {}
