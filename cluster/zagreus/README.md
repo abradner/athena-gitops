@@ -90,9 +90,6 @@ off. Each runner image must track actions/runner releases.
   unschedulable, and off after an idle hour. A separate controller, to land in
   `core/` once it exists. Until then the amd64 nodes stay on.
 - **A pull-through registry cache**, so each image crosses the uplink once (P2c).
-- **Image pins.** The runner image is `:latest` until the first build with the
-  ARC-mode entrypoint exists; pin its `sha-` tag in every scale set before this
-  directory merges, because merging is the bring-up (Argo syncs `main`).
 - **An alert for long-Pending runner pods.** ARC has no pod-start timeout, so a
   job whose pod cannot schedule waits silently in GitHub's queue (unassigned
   after 24 h).

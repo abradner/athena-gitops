@@ -50,7 +50,7 @@ spec:
               zagreus.asn.casa/role: arm-runner
             containers:
               - name: runner
-                image: ghcr.io/abradner/spritz-ci-runner:latest # pin at bring-up; see ci.yaml
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
                 imagePullPolicy: IfNotPresent
                 command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
                 resources:

@@ -67,8 +67,8 @@ spec:
                 effect: NoSchedule
             initContainers:
               - name: init-dind-externals
-                # Pinned with the scale sets' runner image; see ci.yaml.
-                image: ghcr.io/abradner/spritz-ci-runner:latest
+                # Same pin as the runner container; see ci.yaml.
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
                 command: ["cp", "-r", "/opt/actions-runner/externals/.", "/tmpDir/"]
                 volumeMounts:
                   - {name: dind-externals, mountPath: /tmpDir}
@@ -95,7 +95,7 @@ spec:
                   - {name: daemon-json, mountPath: /etc/docker/daemon.json, subPath: daemon.json}
             containers:
               - name: runner
-                image: ghcr.io/abradner/spritz-ci-runner:latest
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
                 imagePullPolicy: IfNotPresent
                 command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
                 env:

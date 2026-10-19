@@ -50,10 +50,11 @@ spec:
                           values: [amd64-runner]
             containers:
               - name: runner
-                # Pin to the sha- tag of the first image with the ARC-mode
-                # entrypoint (spritz deploy/ci-runner/README.md) at bring-up,
-                # and move the pin deliberately after that.
-                image: ghcr.io/abradner/spritz-ci-runner:latest
+                # The first image with the ARC-mode entrypoint (spritz#1165).
+                # Pinned by digest: ARC disables runner self-update, so move
+                # this deliberately whenever actions/runner releases (GitHub
+                # stops queueing jobs for a runner 30 days behind).
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
                 imagePullPolicy: IfNotPresent
                 command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
                 env:
