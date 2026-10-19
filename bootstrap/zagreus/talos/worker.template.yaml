@@ -116,14 +116,14 @@ provisioning:
     minSize: 10GiB
     grow: true
 ---
-# Talos 1.14 applies DHCP-supplied search domains (athena-gitops Gotchas #3/#5);
+# Talos 1.14 applies DHCP-supplied search domains (athena-gitops AGENTS.md Gotcha #3, and PR #146);
 # with ndots:5 a search suffix under a wildcarded zone once blackholed traffic.
 # disableDefault drops the hostname-derived domain (what
 # machine.network.disableSearchDomain did before 1.14; the two conflict at
 # validation, so that field is gone); the explicit empty list drops the DHCP
 # ones. Rendered and patched with a 1.13 talosctl, `domains: []` silently
 # becomes null and DHCP's domains come back: use the 1.14 client this
-# directory's mise.toml pins (apply-worker.sh checks).
+# directory's mise.toml pins (the apply scripts check).
 apiVersion: v1alpha1
 kind: ResolverConfig
 searchDomains:

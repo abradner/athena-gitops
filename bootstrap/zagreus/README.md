@@ -62,6 +62,9 @@ scripts refuse an older client.
   done
   rm -f /tmp/w-*.yaml   # they hold the cluster PKI
   ```
+  `validate` does not catch a lost `searchDomains.domains: []` (a 1.13
+  patcher turns it into null and the config still validates); the apply
+  scripts are the gate for that.
 
 ### 2. Control plane
 

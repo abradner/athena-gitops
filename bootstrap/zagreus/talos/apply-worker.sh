@@ -14,8 +14,9 @@ fi
 
 # Talos 1.14 config needs a 1.14 client: a 1.13 talosctl's patcher turns the
 # ResolverConfig's `domains: []` into null, and the node then takes DHCP's
-# search domains (athena-gitops Gotchas #5; #146 measured it). Refuse an old
+# search domains (athena-gitops PR #146 measured it). Refuse an old
 # client, and check the merged config itself before anything is applied.
+command -v talosctl >/dev/null || { echo "talosctl not found (use bootstrap/zagreus/mise.toml)" >&2; exit 1; }
 client_minor=$(talosctl version --client --short 2>/dev/null | sed -nE 's/.*v1\.([0-9]+)\..*/\1/p' | head -1)
 if [ -z "$client_minor" ] || [ "$client_minor" -lt 14 ]; then
   echo "talosctl client is $(talosctl version --client --short 2>/dev/null | tail -1); zagreus needs 1.14+ (bootstrap/zagreus/mise.toml)" >&2
