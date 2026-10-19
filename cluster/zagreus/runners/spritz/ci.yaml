@@ -1,7 +1,6 @@
 # spritz general CI (`runs-on: zagreus-ci`): rspec, vitest, lint, the full
 # browser matrix shards, everything that may run on either architecture.
-# Prefers the amd64 nodes and falls back to arm64 runners when zagreus has any
-# (none yet), so a job could start while the amd64 nodes are still asleep. (Only e2e is pinned to
+# Prefers the amd64 nodes and falls back to any arm64 runner nodes, so a job could start while the amd64 nodes are still asleep. (Only e2e is pinned to
 # amd64; it has its own scale set, ci-x64.yaml.)
 #
 # Sizing from measured peaks (2026-10-19): e2e 5.5 GiB / 3.6 CPU (Rails,

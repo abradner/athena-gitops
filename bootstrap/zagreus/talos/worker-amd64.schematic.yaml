@@ -6,12 +6,12 @@
 # Only what these nodes use. A system extension that ships a service (tailscale,
 # cloudflared, nut-client, zfs) and is left unconfigured never reaches "up",
 # so Talos's boot task startAllServices never finishes and the node reboots
-# when the boot sequence times out. athena's first GPU node rebooted every 71
-# minutes from exactly that (2026-10-19). Add an extension here only together
+# when the boot sequence times out. A node has been seen rebooting every 71
+# minutes from exactly that. Add an extension here only together
 # with its configuration.
 #
 # Secure Boot variant (metal-amd64-secureboot.iso, metal-installer-secureboot):
-# the first ProDesk shipped with Secure Boot on, and the plain installer's
+# ProDesks can ship with Secure Boot on, and the plain installer's
 # unsigned bootloader fell through to PXE. Kernel args live here because the
 # cmdline is baked into the signed UKI.
 #   - console=ttyS4,115200n8 + 8250.nr_uarts=8: the AMT/ISM serial-over-LAN

@@ -62,8 +62,8 @@ apply() { # <ip> <patch> <class> [extra patch]
 for ip in "${ARM_RUNNER_IP[@]}";   do apply "$ip" worker-arm-runner.patch.yaml  arm-runner;   done
 for ip in "${ARM_BUILDER_IP[@]}";  do apply "$ip" worker-arm-builder.patch.yaml arm-builder;  done
 # An amd64 entry is "<ip>" or "<ip>:<path to an extra patch>", for a box whose
-# disks need more than worker-amd64.patch.yaml (the 800 G3 with two SSDs and
-# an HDD). Per-node patches name real disks, so they live in the private
+# disks need more than worker-amd64.patch.yaml (for example two SSDs
+# and an HDD). Per-node patches name real disks, so they live in the private
 # infrastructure repo, not here.
 for entry in "${AMD64_RUNNER_IP[@]}"; do
   ip="${entry%%:*}"; extra=""

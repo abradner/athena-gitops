@@ -6,10 +6,10 @@
 #
 # The official sbc-raspberrypi rpi_5 overlay and one kernel argument, no
 # extensions. sdhci.debug_quirks2=4 (SDHCI_QUIRK2_NO_1_8_V) keeps the SD card at
-# 3.3 V High Speed. Without it, on one of the CM5 carriers, mainline's sdhci
-# voltage switch to SDR104 fails and the card never appears: bare Factory
-# 1.14.4 looped 799 times on the same board and card, while this schematic ran
-# 7 boots, a power cycle and an upgrade with zero SD errors (2026-10-19). SD is
+# 3.3 V High Speed. Without it, on some CM5 carriers, mainline's sdhci voltage
+# switch to SDR104 fails and the card never appears: bare Factory 1.14.4
+# boot-looped on such a board, while this schematic, on the same board and card,
+# survived repeated boots, a power cycle and an upgrade with no SD errors. SD is
 # boot-only on these nodes, so the slower bus costs nothing.
 #
 # No extensions on purpose: nothing here uses iSCSI, and an extension whose

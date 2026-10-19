@@ -6,14 +6,14 @@
 # public. Sourced by bash (talos/apply-*.sh) and zsh, so keep the syntax
 # portable and never index into the arrays (bash is 0-indexed, zsh 1-indexed).
 
-# Control plane (CM5 4 GB, Optane). One node for now; HA adds two more.
+# Control plane (CM5 4 GB, Optane). One node, or three for HA.
 CONTROL_PLANE_IP=(
   "<ip>"
 )
 
 # arm64 runner nodes (CM5 8 GB + 128 GB NVMe), worker-arm-runner.patch.yaml.
 ARM_RUNNER_IP=(
-  # none yet; ARM_RUNNER_IP=() is fine
+  # may be empty: ARM_RUNNER_IP=() is fine
 )
 
 # arm64 image builder (CM5 8 GB + USB SSD), worker-arm-builder.patch.yaml.

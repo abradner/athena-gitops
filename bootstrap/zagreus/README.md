@@ -12,15 +12,15 @@ Addresses and inventory live in the private infrastructure repo.
 | Class | Hardware | Config | Power |
 |---|---|---|---|
 | Control plane | CM5 4 GB Lite, Optane NVMe | `controlplane.template.yaml` | always on |
-| arm64 runner | CM5 8 GB Lite, 128 GB NVMe (none yet: the first two boards went to athena as scratch workers) | `worker.template.yaml` + `worker-arm-runner.patch.yaml` | always on |
+| arm64 runner | CM5 8 GB Lite, 128 GB NVMe | `worker.template.yaml` + `worker-arm-runner.patch.yaml` | always on |
 | arm64 builder | CM5 8 GB Lite, SATA SSD over USB 3 | `worker.template.yaml` + `worker-arm-builder.patch.yaml` | always on |
 | amd64 runner | HP ProDesk/EliteDesk, Optane + SATA SSD | `worker.template.yaml` + `worker-amd64.patch.yaml` | woken on demand |
 
 All on Talos 1.14, ahead of athena: zagreus is the canary for Talos upgrades.
 The CM5s boot the Image Factory schematic in `talos/worker-cm5.schematic.yaml`:
 the official overlay plus the kernel argument `sdhci.debug_quirks2=4`, which
-keeps SD at 3.3 V High Speed (without it one carrier loses the card; bare
-Factory 1.14.4 boot-looped there). Flash that schematic's v1.14.4
+keeps SD at 3.3 V High Speed (without it, mainline's switch to
+1.8 V fails on some carriers and the card never appears). Flash that schematic's v1.14.4
 `metal-arm64.raw.xz`; its installer ref, pinned by digest only, is in the
 templates. A self-built equivalent (abradner/talos-builder v1.14.4-cm5l.1) is
 kept published as a fallback. The amd64
@@ -36,11 +36,17 @@ scripts refuse an older client.
 - Addresses reserved on the CI VLAN for every node (infrastructure repo).
 - `cp zagreus.template.zsh zagreus.zsh` and fill it in (gitignored; keep a copy
   in 1Password beside the secrets note).
-- Secrets: `talosctl gen secrets -o /tmp/zagreus-secrets.yaml`, then store its
-  content as a 1Password Secure Note (`zagreus-bootstrap-secrets`) together
-  with `controlplane.ip1`, `controlplane.endpoint` (`https://<ip>:6443`) and
-  the talosconfig admin cert/key (`talosconfig.admin.crt`/`.key`). Delete the
-  temporary file.
+- Secrets: `talosctl gen secrets` into a private temporary directory (it is
+  the cluster PKI; never shared `/tmp`), then store its content as a
+  1Password Secure Note (`zagreus-bootstrap-secrets`) together with
+  `controlplane.ip1`, `controlplane.endpoint` (`https://<ip>:6443`) and the
+  talosconfig admin cert/key (`talosconfig.admin.crt`/`.key`), and delete the
+  directory:
+  ```bash
+  d=$(mktemp -d) && talosctl gen secrets -o "$d/secrets.yaml"   # mktemp -d is mode 0700
+  # store it in 1Password, then:
+  rm -rf "$d"
+  ```
 - Hydrate with tools-workflow's `render-talos`, pointed at this directory and
   that note. Both settings are plain configuration (`TALOS_TEMPLATE_DIR`,
   `OP_TALOS_ITEM_ID`), so no code change is needed; set them for the run
@@ -55,12 +61,15 @@ scripts refuse an older client.
 - Before applying, validate the rendered configs, each worker class with its
   patch applied:
   ```bash
-  talosctl validate --config controlplane.yaml --mode metal --strict
-  for p in arm-runner arm-builder amd64; do
-    talosctl machineconfig patch worker.yaml -p @worker-$p.patch.yaml -o /tmp/w-$p.yaml
-    talosctl validate --config /tmp/w-$p.yaml --mode metal --strict
-  done
-  rm -f /tmp/w-*.yaml   # they hold the cluster PKI
+  (
+    talosctl validate --config controlplane.yaml --mode metal --strict || exit 1
+    umask 077; d=$(mktemp -d) || exit 1   # merged configs hold the cluster PKI
+    trap 'rm -rf "$d"' EXIT
+    for p in arm-runner arm-builder amd64; do
+      talosctl machineconfig patch worker.yaml -p @worker-$p.patch.yaml -o "$d/w-$p.yaml" &&
+        talosctl validate --config "$d/w-$p.yaml" --mode metal --strict || exit 1
+    done
+  )
   ```
   `validate` does not catch a lost `searchDomains.domains: []` (a 1.13
   patcher turns it into null and the config still validates); the apply
@@ -105,7 +114,10 @@ KUBECONFIG=~/.kube/config-zagreus kubectl apply -f cluster/zagreus/root.yaml
 
 ### 5. Workers
 
-Boot each worker in maintenance mode, wiping a reused disk first. CM5s:
+Boot each worker in maintenance mode, wiping a reused disk first. Until its
+config is applied a node accepts an unauthenticated `apply-config --insecure`
+from anyone who can reach port 50000, so do this only where no untrusted host
+(another CI runner, say) can reach it. CM5s:
 flash the CM5 Lite image to SD. ProDesks: boot the Secure Boot ISO for
 `worker-amd64.schematic.yaml`. Then apply:
 
@@ -114,7 +126,7 @@ cd bootstrap/zagreus/talos
 ./apply-worker.sh
 ```
 
-A box with more disks than the class patch places (the 800 G3: two SSDs and
+A box with more disks than the class patch places (for example two SSDs and
 an HDD) takes an extra per-node patch from the infrastructure repo, named in
 `zagreus.zsh` as `"<ip>:<patch path>"`. Without one, the EPHEMERAL selector
 would match either SSD.
