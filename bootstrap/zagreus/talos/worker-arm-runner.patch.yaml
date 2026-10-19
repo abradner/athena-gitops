@@ -1,0 +1,12 @@
+# zagreus arm64 runner nodes: CM5 8 GB Lites with a 128 GB NVMe (the base
+# worker already puts /var there). Always on. They carry the light lane for
+# every repo (path filters, doc checks, verify jobs) and arm64-tolerant
+# general jobs while the amd64 nodes sleep.
+#
+# No taint: nothing but CI runs on this cluster, and the scale sets choose
+# nodes by the role label.
+#
+# Contains no secrets; committed as-is, never hydrated.
+machine:
+    nodeLabels:
+        zagreus.asn.casa/role: arm-runner

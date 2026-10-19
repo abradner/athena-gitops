@@ -1,0 +1,161 @@
+# zagreus control plane: a single CM5 4 GB Lite (no eMMC). Talos is flashed
+# to the SD card from the same community v1.13.2 CM5 image the athena workers
+# run, and all of /var (etcd included) goes on the NVMe Optane via the
+# EPHEMERAL VolumeConfig at the end of this file.
+#
+# Hydrated by tools-workflow `render-talos` with zagreus's own 1Password note:
+#   TALOS_TEMPLATE_DIR=<this directory> OP_TALOS_ITEM_ID=<zagreus note id>
+# See bootstrap/zagreus/README.md. The note holds the `talosctl gen secrets`
+# output plus controlplane.ip1, controlplane.endpoint and the talosconfig
+# admin cert/key.
+#
+# Differences from athena's controlplane.template.yaml, and why:
+#   - clusterName zagreus, its own PKI, its own endpoint (from the note).
+#   - SD install + EPHEMERAL on NVMe (athena's control plane is VMs on sda).
+#   - The control plane stays tainted (no allowSchedulingOnControlPlanes): it
+#     holds the GitHub App key and etcd, so no CI job may ever run here. Only
+#     pods that tolerate the control-plane taint (the ARC controller and its
+#     listeners, Argo CD, ESO, the node waker, DaemonSets) land on it.
+version: v1alpha1
+debug: false
+persist: true
+machine:
+    type: controlplane
+    token: {{ trustdinfo.token }}
+    ca:
+        crt: {{ certs.os.crt }}
+        key: {{ certs.os.key }}
+    certSANs:
+        - {{ controlplane.ip1 }}
+    kubelet:
+        image: ghcr.io/siderolabs/kubelet:v1.36.1
+        defaultRuntimeSeccompProfileEnabled: true
+        disableManifestsDirectory: true
+        extraConfig:
+            # EPHEMERAL is a ~14 GB Optane here, shared with etcd: keep image
+            # GC tight, as on athena's Optane workers.
+            imageGCHighThresholdPercent: 75
+            imageGCLowThresholdPercent: 55
+            serverTLSBootstrap: true
+            # 4 GB holds etcd, the API server and every credential holder.
+            # Keep memory back for the system and evict a pod before the
+            # kernel picks something to kill.
+            systemReserved:
+                memory: 512Mi
+            evictionHard:
+                memory.available: 300Mi
+                nodefs.available: 10%
+                nodefs.inodesFree: 5%
+                imagefs.available: 15%
+                imagefs.inodesFree: 5%
+    network:
+        # VLAN DHCP may hand out a domain; a node search domain plus ndots:5
+        # once blackholed traffic on athena (AGENTS.md Gotchas #3).
+        disableSearchDomain: true
+    install:
+        # The SD card. The community CM5 image is flashed to it; install is
+        # skipped when booted from disk.
+        # !! Do not `talosctl upgrade` with this image: same reason as
+        # athena's worker.template.yaml (no CM5 overlay in the stock installer).
+        disk: /dev/mmcblk0
+        image: ghcr.io/siderolabs/installer:v1.13.4
+        wipe: false
+        grubUseUKICmdline: true
+    registries: {}
+    features:
+        diskQuotaSupport: true
+        kubePrism:
+            enabled: true
+            port: 7445
+        hostDNS:
+            enabled: true
+            forwardKubeDNSToHost: true
+    nodeLabels:
+        node.kubernetes.io/exclude-from-external-load-balancers: ""
+cluster:
+    id: {{ cluster.id }}
+    secret: {{ cluster.secret }}
+    controlPlane:
+        endpoint: {{ controlplane.endpoint }}
+    clusterName: zagreus
+    network:
+        dnsDomain: cluster.local
+        podSubnets:
+            - 10.244.0.0/16
+        serviceSubnets:
+            - 10.96.0.0/12
+        cni:
+            name: none # Cilium, installed by bootstrap/zagreus/kubernetes/provision.sh
+    token: {{ secrets.bootstraptoken }}
+    secretboxEncryptionSecret: {{ secrets.secretboxencryptionsecret }}
+    ca:
+        crt: {{ certs.k8s.crt }}
+        key: {{ certs.k8s.key }}
+    aggregatorCA:
+        crt: {{ certs.k8saggregator.crt }}
+        key: {{ certs.k8saggregator.key }}
+    serviceAccount:
+        key: {{ certs.k8sserviceaccount.key }}
+    apiServer:
+        image: registry.k8s.io/kube-apiserver:v1.36.1
+        certSANs:
+            - {{ controlplane.ip1 }}
+        admissionControl:
+            - name: PodSecurity
+              configuration:
+                apiVersion: pod-security.admission.config.k8s.io/v1alpha1
+                # Same defaults as athena. The runner and builder namespaces
+                # opt into `privileged` by label (cluster/zagreus/core/namespaces.yaml):
+                # host-path caches and dind need it.
+                defaults:
+                    audit: restricted
+                    audit-version: latest
+                    enforce: baseline
+                    enforce-version: latest
+                    warn: restricted
+                    warn-version: latest
+                exemptions:
+                    namespaces:
+                        - kube-system
+                    runtimeClasses: []
+                    usernames: []
+                kind: PodSecurityConfiguration
+        auditPolicy:
+            apiVersion: audit.k8s.io/v1
+            kind: Policy
+            rules:
+                - level: Metadata
+    controllerManager:
+        image: registry.k8s.io/kube-controller-manager:v1.36.1
+    proxy:
+        disabled: true # Cilium replaces kube-proxy
+    scheduler:
+        image: registry.k8s.io/kube-scheduler:v1.36.1
+    discovery:
+        enabled: true
+        registries:
+            kubernetes:
+                disabled: true
+            service: {}
+    etcd:
+        ca:
+            crt: {{ certs.etcd.crt }}
+            key: {{ certs.etcd.key }}
+    extraManifests: []
+    inlineManifests: []
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: stable
+---
+# All of /var on the NVMe (the Optane), never the SD card. No fallback: a
+# control plane whose NVMe is missing should fail loudly rather than run etcd
+# on an SD card.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme"
+    minSize: 10GiB
+    grow: true

@@ -1,0 +1,27 @@
+# Image Factory schematic for zagreus's amd64 nodes (HP ProDesk/EliteDesk
+# desktops). POST it to get the id:
+#   curl -sS -X POST --data-binary @worker-amd64.schematic.yaml https://factory.talos.dev/schematics
+# A changed file means a new id: update install.image in worker-amd64.patch.yaml.
+#
+# Only what these nodes use. A system extension that ships a service (tailscale,
+# cloudflared, nut-client, zfs) and is left unconfigured never reaches "up",
+# so Talos's boot task startAllServices never finishes and the node reboots
+# when the boot sequence times out. athena's first GPU node rebooted every 71
+# minutes from exactly that (2026-10-19). Add an extension here only together
+# with its configuration.
+#
+# Secure Boot variant (metal-amd64-secureboot.iso, metal-installer-secureboot):
+# the first ProDesk shipped with Secure Boot on, and the plain installer's
+# unsigned bootloader fell through to PXE. Kernel args live here because the
+# cmdline is baked into the signed UKI.
+#   - console=ttyS4,115200n8 + 8250.nr_uarts=8: the AMT/ISM serial-over-LAN
+#     UART on the Q-chipset ProDesks (no KVM on those, so SOL is the only remote
+#     console). On a box whose SOL UART sits elsewhere this is harmless.
+customization:
+  extraKernelArgs:
+    - console=tty0
+    - console=ttyS4,115200n8
+    - 8250.nr_uarts=8
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/intel-ucode

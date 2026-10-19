@@ -1,0 +1,33 @@
+# What a CI job may reach from inside zagreus: the internet and cluster DNS,
+# nothing else. Without this, a job could talk to Argo CD's repo-server and
+# redis, the External Secrets webhook, and the kubelet, Talos and etcd ports on
+# the nodes. The VLAN keeps the rest of the estate out of reach; this keeps the
+# cluster's own control surfaces out of reach of the jobs it runs.
+#
+# Cilium's `world` entity is everything outside the cluster; nodes are `host`
+# and `remote-node`, so they are excluded. Ingress: only the node itself
+# (kubelet probes); nothing else ever needs to connect to a runner.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: ci-runner-isolation
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: In
+        values: [arc-runners, arc-builders]
+  ingress:
+    - fromEntities: [host]
+  egress:
+    - toEntities: [world]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}

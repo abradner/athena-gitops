@@ -1,0 +1,38 @@
+# zagreus arm64 image builder: a CM5 8 GB Lite whose /var lives on a SATA SSD
+# in a USB 3 (UASP) enclosure, until an NVMe HAT replaces it. Always on, so
+# arm64 image builds no longer wait for a Mac to be awake. It runs only the
+# docker-arm64 dind scale set.
+#
+# Why a USB SSD and not a USB flash stick: dind and containerd do heavy small
+# random writes, and a builder's cache grows to tens of GB (28 GB after two
+# weeks on one of the Mac builders). Flash sticks are slow at that and wear
+# out. If the enclosure drops off the bus, the node loses /var and goes down;
+# it is the only workload here, so that is the whole blast radius.
+#
+# Contains no secrets; committed as-is, never hydrated.
+machine:
+    nodeLabels:
+        zagreus.asn.casa/role: arm-builder
+    kubelet:
+        extraConfig:
+            # Applied when the Node object is created. Talos's own nodeTaints
+            # cannot add a taint after registration (NodeRestriction), and
+            # that refusal also blocks its labels (athena-gitops
+            # docs/runbook-gpu-node-onboarding.md). Only builder pods, which
+            # tolerate this, run here.
+            registerWithTaints:
+                - key: zagreus.asn.casa/role
+                  value: arm-builder
+                  effect: NoSchedule
+---
+# Replace the base selector (the NVMe, which this board has none of).
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        # Transport only: many USB-SATA bridges report an SSD as rotational,
+        # so `!disk.rotational` could match nothing and leave /var unprovisioned.
+        match: disk.transport == "usb"
+    minSize: 32GiB
+    grow: true

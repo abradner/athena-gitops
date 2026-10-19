@@ -30,3 +30,6 @@ bootstrap/athena.zsh
 # rule that makes that true.
 bootstrap/talos/*-generated-*.yaml
 bootstrap/talos/*-generated.yaml
+
+# zagreus (the CI build cluster): same rule as athena.zsh above.
+bootstrap/zagreus/zagreus.zsh

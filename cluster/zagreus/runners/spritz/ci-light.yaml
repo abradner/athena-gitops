@@ -1,0 +1,79 @@
+# spritz light lane (`runs-on: zagreus-ci-light`): the short gating jobs that
+# every run waits on: `changes` (the path filter everything else needs),
+# `agents_md`, `e2e_full_matrix_verify`, docker-ci's `changes`. Always on, on
+# the arm64 runner nodes, with one runner kept warm, so a burst of pushed PRs
+# never queues its path filters behind 13-minute e2e jobs (measured: that
+# head-of-line wait was most of the p90 queue time).
+#
+# These jobs need git, jq and the runner's bundled node, so no caches. The
+# image still starts its Postgres, hence the memory.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-spritz-ci-light
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: spritz-ci-light
+      valuesObject:
+        runnerScaleSetName: zagreus-ci-light
+        githubConfigUrl: https://github.com/abradner/spritz
+        githubConfigSecret: arc-github-app
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 1
+        maxRunners: 4
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 30
+            priorityClassName: ci-light
+            nodeSelector:
+              zagreus.asn.casa/role: arm-runner
+            containers:
+              - name: runner
+                image: ghcr.io/abradner/spritz-ci-runner:latest # pin at bring-up; see ci.yaml
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                resources:
+                  requests: {cpu: 250m, memory: 768Mi, ephemeral-storage: 2Gi}
+                  limits: {cpu: "2", memory: 1536Mi, ephemeral-storage: 10Gi}
+                volumeMounts:
+                  - {name: pg, mountPath: /var/lib/postgresql}
+            volumes:
+              - {name: pg, emptyDir: {}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    # The first syncs race zagreus-core (CRDs, namespaces, the repo secret):
+    # automated sync does not retry a failed revision on its own.
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

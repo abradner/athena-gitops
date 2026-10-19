@@ -1,0 +1,34 @@
+# Priority inside zagreus. Everything here is CI, so these order CI work
+# against itself: when a node is full, the scheduler preempts the lowest class
+# first. Pods with no class run at 0, the general CI tier.
+#
+# preemptionPolicy Never on the low classes: a light or dev pod waits for room
+# rather than evicting anyone. Release builds may preempt, because they hold
+# the GHCR push and a release waiting behind a PR's lint job is the wrong way
+# round.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ci-release
+value: 100
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: Image builds that publish (docker.yml release legs).
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ci-light
+value: -100
+preemptionPolicy: Never
+globalDefault: false
+description: Short gating jobs (path filters, doc checks). Waits rather than preempts.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ci-dev
+value: -200
+preemptionPolicy: Never
+globalDefault: false
+description: Throwaway experiments. First to go.

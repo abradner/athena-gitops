@@ -1,0 +1,44 @@
+---
+# AppProject for zagreus. Argo projects are per cluster, so this does not
+# mirror athena's; it lists exactly what zagreus syncs.
+#
+# Wave -1: must exist before any Application referencing it syncs.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: zagreus-core-project
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: zagreus, the CI build cluster
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+    - 'https://charts.external-secrets.io'
+    - 'https://argoproj.github.io/argo-helm'
+    - 'https://postfinance.github.io/kubelet-csr-approver'
+    # actions-runner-controller's charts are published only as OCI. Argo CD
+    # takes an OCI Helm repoURL without the oci:// prefix; see
+    # core/arc-chart-repository.yaml.
+    - 'ghcr.io/actions/actions-runner-controller-charts'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: argocd
+    - server: 'https://kubernetes.default.svc'
+      namespace: kube-system
+    - server: 'https://kubernetes.default.svc'
+      namespace: external-secrets
+    - server: 'https://kubernetes.default.svc'
+      namespace: default
+    - server: 'https://kubernetes.default.svc'
+      namespace: arc-systems
+    - server: 'https://kubernetes.default.svc'
+      namespace: arc-runners
+    - server: 'https://kubernetes.default.svc'
+      namespace: arc-builders
+  # This cluster runs only what this repo puts on it: cluster-scoped kinds
+  # (Namespaces, PriorityClasses, CRDs, ClusterRoles, the ClusterSecretStore)
+  # are allowed.
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

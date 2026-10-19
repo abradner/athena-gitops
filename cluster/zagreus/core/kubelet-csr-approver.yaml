@@ -1,0 +1,41 @@
+# Approves kubelet serving-certificate CSRs. Needed as a pair with
+# serverTLSBootstrap: true in bootstrap/zagreus/talos; without it `kubectl
+# logs` and metrics against a node fail TLS verification. Same chart and pin
+# as athena and deimos.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-kubelet-csr-approver
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: https://postfinance.github.io/kubelet-csr-approver
+    chart: kubelet-csr-approver
+    targetRevision: 1.2.15
+    helm:
+      valuesObject:
+        providerRegex: '.*'
+        # Node hostnames do not resolve on the CI VLAN.
+        bypassDnsResolution: true
+        # It can approve certificates, so it lives with the other
+        # credential holders on the control plane, away from CI jobs.
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,47 @@
+# Cilium values for zagreus, the CI build cluster. Based on athena's
+# bootstrap/kubernetes/cilium-values.yaml, minus what a CI-only cluster has no
+# use for: no Gateway API, no L2 announcements, no Hubble UI. Nothing here is
+# served to anyone; runners only dial out.
+ipam:
+  mode: kubernetes
+kubeProxyReplacement: true
+securityContext:
+  capabilities:
+    ciliumAgent:
+      - CHOWN
+      - KILL
+      - NET_ADMIN
+      - NET_RAW
+      - IPC_LOCK
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    cleanCiliumState:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+cgroup:
+  autoMount:
+    enabled: false
+  hostRoot: /sys/fs/cgroup
+# Talos KubePrism endpoint
+k8sServiceHost: localhost
+k8sServicePort: 7445
+operator:
+  # The operator can read every Secret in the cluster, so it lives with the
+  # other credential holders on the control plane, never on a node that runs
+  # CI jobs. Its chart tolerations already cover the control-plane taint.
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  # One control-plane node to begin with. The chart's default of two replicas
+  # with anti-affinity leaves the second Pending, and the install then looks
+  # failed after a timeout while it actually succeeded (seen on deimos).
+  replicas: 1
+hubble:
+  relay:
+    enabled: false
+  ui:
+    enabled: false

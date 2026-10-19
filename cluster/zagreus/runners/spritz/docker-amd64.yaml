@@ -1,0 +1,119 @@
+# spritz amd64 image builds (`runs-on: zagreus-docker-amd64`, through
+# RUNNER_DOCKER_AMD64): docker.yml's amd64 release legs and its registry jobs
+# (plan, publish, retag, promote), and transcoder.yml's test and publish. Runs
+# on the amd64 nodes, woken on demand, and ends the estate having a single
+# amd64 builder.
+#
+# priorityClassName ci-release: these jobs hold the GHCR push, so on a full
+# node a release may preempt general CI rather than wait behind it.
+#
+# Same pod shape as docker-arm64.yaml (see there for why the dind sidecar is
+# written out, and the traps in it); keep the two in step. maxRunners 1: one
+# dockerd per host-path data root.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-spritz-docker-amd64
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: spritz-docker-amd64
+      valuesObject:
+        runnerScaleSetName: zagreus-docker-amd64
+        githubConfigUrl: https://github.com/abradner/spritz
+        githubConfigSecret: arc-github-app
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 0
+        maxRunners: 1
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 120
+            priorityClassName: ci-release
+            nodeSelector:
+              zagreus.asn.casa/role: amd64-runner
+            initContainers:
+              - name: init-dind-externals
+                # Pinned with the scale sets' runner image; see ci.yaml.
+                image: ghcr.io/abradner/spritz-ci-runner:latest
+                command: ["cp", "-r", "/opt/actions-runner/externals/.", "/tmpDir/"]
+                volumeMounts:
+                  - {name: dind-externals, mountPath: /tmpDir}
+              - name: dind
+                image: docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
+                restartPolicy: Always # native sidecar
+                args: ["dockerd", "--host=unix:///var/run/dind/docker.sock", "--group=$(DOCKER_GROUP_GID)", "--config-file=/etc/docker/daemon.json"]
+                env:
+                  - {name: DOCKER_GROUP_GID, value: "1000"}
+                securityContext:
+                  privileged: true
+                startupProbe:
+                  exec: {command: ["docker", "-H", "unix:///var/run/dind/docker.sock", "info"]}
+                  periodSeconds: 5
+                  failureThreshold: 24
+                resources:
+                  requests: {cpu: "1", memory: 3Gi}
+                  limits: {memory: 6Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: dind-externals, mountPath: /opt/actions-runner/externals}
+                  - {name: docker-data, mountPath: /var/lib/docker}
+                  - {name: daemon-json, mountPath: /etc/docker/daemon.json, subPath: daemon.json}
+            containers:
+              - name: runner
+                image: ghcr.io/abradner/spritz-ci-runner:latest
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                env:
+                  - {name: DOCKER_HOST, value: unix:///var/run/dind/docker.sock}
+                resources:
+                  requests: {cpu: 250m, memory: 768Mi}
+                  limits: {memory: 2Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: pg, mountPath: /var/lib/postgresql}
+            volumes:
+              - {name: work, emptyDir: {}}
+              - {name: dind-sock, emptyDir: {}}
+              - {name: dind-externals, emptyDir: {}}
+              - {name: pg, emptyDir: {}}
+              - {name: docker-data, hostPath: {path: /var/lib/arc-docker, type: DirectoryOrCreate}}
+              - {name: daemon-json, configMap: {name: arc-dind-daemon}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-builders
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    # The first syncs race zagreus-core (CRDs, namespaces, the repo secret):
+    # automated sync does not retry a failed revision on its own.
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

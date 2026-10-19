@@ -1,0 +1,46 @@
+# zagreus amd64 runner nodes: HP ProDesk/EliteDesk desktops, powered on only
+# while CI needs them (the node waker; see cluster/zagreus/README.md). They
+# carry the heavy jobs (e2e must run on X64) and the amd64 image builds.
+#
+# Hardware this assumes (same family as athena's GPU node):
+#   - a 16 GB Intel Optane in the M.2 slot: the Talos install,
+#   - a SATA SSD (~120 GB): EPHEMERAL, i.e. all of /var, which holds the
+#     per-node CI caches (compiled Ruby, gem and bun caches, browsers,
+#     BuildKit state) that let a freshly woken node run warm jobs.
+# A box with more SATA disks (the 800 G3) gets a per-node patch on top, with
+# UserVolumeConfigs for the builder cache and the registry cache (P2c).
+#
+# No swap, unlike the GPU node: a CI job that would swap is better evicted
+# and retried than left to crawl.
+#
+# Contains no secrets; committed as-is, never hydrated.
+machine:
+    install:
+        disk: /dev/nvme0n1
+        # Image Factory schematic: worker-amd64.schematic.yaml (intel-ucode and
+        # the SOL console only). Secure Boot variant; see that file. This IS
+        # the installer to `talosctl upgrade` amd64 nodes with (bump the tag).
+        image: factory.talos.dev/metal-installer-secureboot/8a18ae1a0023dc585c9a286f689c53a90af120dbb1f91b22b9a9c34647561cdd:v1.13.11
+    nodeLabels:
+        zagreus.asn.casa/role: amd64-runner
+---
+# Arm the chipset's hardware watchdog (iTCO on these Intel desktops). These
+# nodes run unattended and are powered by a controller, and one of the boxes
+# has frozen twice with no panic and no trace (2026-10-08, 2026-10-19): a hung
+# kernel never fires its own lockup panic in that state, but a hardware
+# watchdog still resets the machine. Talos feeds it while the node is alive.
+apiVersion: v1alpha1
+kind: WatchdogTimerConfig
+device: /dev/watchdog0
+timeout: 2m0s
+---
+# Override the base selector (the NVMe, which here is the small Optane
+# holding the install) with the SATA SSD.
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "sata" && !disk.rotational
+    minSize: 32GiB
+    grow: true

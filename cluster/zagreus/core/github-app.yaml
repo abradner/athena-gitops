@@ -1,0 +1,57 @@
+# The GitHub App credential ARC registers runners with, synced from the
+# CI-only 1Password vault into each namespace that holds scale sets (the
+# chart requires the secret in the scale set's own namespace). Runner pods
+# never mount it: only the controller and the listeners (control plane) read
+# it, and a worker's kubelet can read only the secrets of pods scheduled on
+# that worker.
+#
+# App permissions for repository-scope runners: Repository → Administration:
+# read and write, Metadata: read. Installed on the selected private
+# repositories only. Public repositories stay on GitHub-hosted runners.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: arc-github-app
+  namespace: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  refreshInterval: 24h # 1Password rate limits (AGENTS.md, Snapshot Learnings 1)
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-ci
+  target:
+    name: arc-github-app
+    creationPolicy: Owner
+  data:
+    - secretKey: github_app_id
+      remoteRef: {key: zagreus-arc-github-app/github_app_id}
+    - secretKey: github_app_installation_id
+      remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
+    - secretKey: github_app_private_key
+      remoteRef: {key: zagreus-arc-github-app/github_app_private_key}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: arc-github-app
+  namespace: arc-builders
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-ci
+  target:
+    name: arc-github-app
+    creationPolicy: Owner
+  data:
+    - secretKey: github_app_id
+      remoteRef: {key: zagreus-arc-github-app/github_app_id}
+    - secretKey: github_app_installation_id
+      remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
+    - secretKey: github_app_private_key
+      remoteRef: {key: zagreus-arc-github-app/github_app_private_key}

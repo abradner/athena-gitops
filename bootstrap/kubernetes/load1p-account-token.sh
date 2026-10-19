@@ -15,6 +15,17 @@ if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
   exit 1
 fi
 
+# With more than one cluster in this repo, the wrong KUBECONFIG would overwrite
+# another cluster's token. Set EXPECT_CONTEXT (e.g. zagreus) to refuse any
+# kube context whose name does not contain it.
+if [ -n "${EXPECT_CONTEXT:-}" ]; then
+  context="$(kubectl config current-context)"
+  case "$context" in
+    *"$EXPECT_CONTEXT"*) ;;
+    *) echo "❌ Current kube context is '$context', not $EXPECT_CONTEXT. Refusing."; exit 1 ;;
+  esac
+fi
+
 # Idempotent: safe to re-run during disaster recovery
 kubectl create namespace external-secrets --dry-run=client -o yaml | kubectl apply -f -
 kubectl create secret generic op-token -n external-secrets \

@@ -1,0 +1,126 @@
+# spritz e2e (`runs-on: zagreus-ci-x64`): the Chromium suite that captures the
+# Chromatic archives, which must never rasterise on arm64. amd64 nodes only,
+# so a job here is what wakes an amd64 node when they are all asleep.
+# Same pod as ci.yaml apart from placement; keep the two in step.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-spritz-ci-x64
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: spritz-ci-x64
+      valuesObject:
+        runnerScaleSetName: zagreus-ci-x64
+        githubConfigUrl: https://github.com/abradner/spritz
+        githubConfigSecret: arc-github-app
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 0
+        maxRunners: 6
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 60
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [amd64-runner]
+            containers:
+              - name: runner
+                # Pin to the sha- tag of the first image with the ARC-mode
+                # entrypoint (spritz deploy/ci-runner/README.md) at bring-up,
+                # and move the pin deliberately after that.
+                image: ghcr.io/abradner/spritz-ci-runner:latest
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                env:
+                  - name: RUNNER_CACHE_DIRS
+                    value: /home/runner/.local/share/mise:/home/runner/.cache/ms-playwright:/home/runner/.bun/install/cache:/home/runner/.cache/bundle
+                  # Gems: the shared per-node cache holds the downloaded .gem
+                  # files; each pod installs into its own path. Installing
+                  # straight into the shared Ruby would let two concurrent jobs
+                  # write the same gem directory.
+                  - name: BUNDLE_USER_CACHE
+                    value: /home/runner/.cache/bundle
+                  - name: BUNDLE_GLOBAL_GEM_CACHE
+                    value: "true"
+                  - name: BUNDLE_PATH
+                    value: /home/runner/.bundle-local
+                  # Playwright's install removes every browser its own version
+                  # does not list. Every pod here shares one cache and one
+                  # checkout path, so a Playwright-bump PR would delete the
+                  # browsers a concurrent main job is using. Old revisions
+                  # are pruned on the node instead.
+                  - name: PLAYWRIGHT_SKIP_BROWSER_GC
+                    value: "1"
+                  # mise records an unfinished install in its cache dir. Keep
+                  # that marker with the shared data, or a pod evicted mid
+                  # Ruby compile leaves a half-built Ruby that later pods
+                  # take for installed.
+                  - name: MISE_CACHE_DIR
+                    value: /home/runner/.local/share/mise/.cache
+                  - name: CI_CPUS
+                    valueFrom:
+                      resourceFieldRef:
+                        containerName: runner
+                        resource: limits.cpu
+                resources:
+                  requests: {cpu: 1500m, memory: 6Gi, ephemeral-storage: 10Gi}
+                  limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 40Gi}
+                volumeMounts:
+                  - {name: mise, mountPath: /home/runner/.local/share/mise}
+                  - {name: playwright, mountPath: /home/runner/.cache/ms-playwright}
+                  - {name: bun, mountPath: /home/runner/.bun/install/cache}
+                  - {name: bundle, mountPath: /home/runner/.cache/bundle}
+                  - {name: pg, mountPath: /var/lib/postgresql}
+                  - {name: shm, mountPath: /dev/shm}
+            volumes:
+              # Per-node caches on the node's EPHEMERAL disk. They outlive the
+              # pod and a power-off, which is what makes an ephemeral runner
+              # on a freshly woken node start warm.
+              - {name: mise, hostPath: {path: /var/lib/ci-cache/mise, type: DirectoryOrCreate}}
+              - {name: playwright, hostPath: {path: /var/lib/ci-cache/ms-playwright, type: DirectoryOrCreate}}
+              - {name: bun, hostPath: {path: /var/lib/ci-cache/bun, type: DirectoryOrCreate}}
+              - {name: bundle, hostPath: {path: /var/lib/ci-cache/bundle, type: DirectoryOrCreate}}
+              - {name: pg, emptyDir: {}}
+              - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    # The first syncs race zagreus-core (CRDs, namespaces, the repo secret):
+    # automated sync does not retry a failed revision on its own.
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

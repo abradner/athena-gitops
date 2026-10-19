@@ -1,0 +1,38 @@
+# Argo CD values for zagreus, the CI build cluster. Smaller than athena's,
+# like deimos's: no ApplicationSets, no SSO, no notifications, no UI exposed
+# (manage it with `argocd --core` or kubectl over the admin network).
+#
+# Everything runs on the control plane. That is a security property, not
+# tidiness: Argo's application controller holds cluster-admin, and the only
+# nodes guaranteed never to run CI job code are the control-plane nodes. A job
+# that escaped its container onto a worker must not find a cluster-admin token
+# there. The same rule places ESO and the ARC controller and listeners.
+#
+# Keep the shared settings in step with athena's argocd-values.yaml.
+global:
+  networkPolicy:
+    create: true
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+configs:
+  params:
+    server.insecure: true
+dex:
+  enabled: false
+notifications:
+  enabled: false
+# No applicationSet.enabled key in this chart; zero replicas switches it off.
+applicationSet:
+  replicas: 0
+controller:
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 768Mi}
+repoServer:
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
