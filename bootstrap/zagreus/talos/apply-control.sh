@@ -28,6 +28,13 @@ domains_are_empty() { # <merged config file>
   [ "$(yq 'select(.kind == "ResolverConfig") | .searchDomains.domains | tag + ":" + (length | tostring)' "$1")" = "!!seq:0" ]
 }
 
+# Without -u a missing or misspelled CONTROL_PLANE_IP would loop zero times
+# and exit 0, reading as success.
+if ! declare -p CONTROL_PLANE_IP >/dev/null 2>&1 || [ "${#CONTROL_PLANE_IP[@]}" -eq 0 ]; then
+  echo "CONTROL_PLANE_IP is missing or empty in zagreus.zsh" >&2
+  exit 1
+fi
+
 if ! domains_are_empty controlplane.yaml; then
   echo "controlplane.yaml: ResolverConfig searchDomains.domains is not an empty list" >&2
   exit 1

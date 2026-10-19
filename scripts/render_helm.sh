@@ -111,18 +111,31 @@ while IFS=$'\t' read -r name release chart version repo valsfile namespace sets;
       helm repo add "$alias" "$repo" >/dev/null 2>&1 || true
       ref="$alias/$chart" ;;
     *)
-      ref="oci://$repo/$chart" ;;
+      # Pull to disk and render from there: helm 4 prints "Pulled:" and
+      # "Digest:" to stdout when templating straight from an OCI ref, and
+      # those lines would land in the rendered file.
+      chartdir="$TMPVALS/oci/$name"
+      mkdir -p "$chartdir"
+      if helm pull "oci://$repo/$chart" --version "$version" --untar -d "$chartdir" >/dev/null 2>&1; then
+        ref="$chartdir/$chart"
+      else
+        ref="oci://$repo/$chart"  # let the template step report the failure
+      fi ;;
   esac
 
   # shellcheck disable=SC2086 -- $sets is a pre-built list of --set flags
+  # stdout is the manifest; stderr kept apart. An OCI pull prints "Pulled:" and
+  # "Digest:" lines, which would otherwise land at the top of the rendered file
+  # and fail schema validation as a document with no kind.
+  errfile="$TMPVALS/$name.stderr"
   if out=$(helm template "$release" "$ref" --version "$version" \
-             -f "$valsfile" --namespace "$namespace" $sets 2>&1); then
+             -f "$valsfile" --namespace "$namespace" $sets 2>"$errfile"); then
     printf '%s\n' "$out" > "$OUTDIR/$name.yaml"
     lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
     echo "  ✅ $name ($chart $version, ns=$namespace${sets:+, $sets}) — $lines lines"
   else
     echo "  ❌ $name ($chart $version) failed to render:"
-    printf '%s\n' "$out" | sed 's/^/       /' | head -15
+    cat "$errfile" | sed 's/^/       /' | head -15
     FAILED=$((FAILED + 1))
   fi
 done < "$SPECS"
