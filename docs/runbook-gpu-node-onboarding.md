@@ -156,9 +156,28 @@ Talos then applies the labels by itself.
   `gpu.intel.com/i915: 4` (`-shared-dev-num=4`). A Ready plugin DaemonSet is not proof on its own.
 - **The transcoder's preflight is the real proof.** Each boot does a real
   0.1 s HEVC and H.264 encode, and exits 78 (crash-loops visibly) if the
-  node cannot encode. On a new generation, especially Skylake, run a transcoder
-  pod pinned to the node (`nodeSelector: spritz.dev/gpu-gen: <gen>`) and read
-  its log for `transcoder up (encoder=vaapi`.
+  node cannot encode. On a new node, run a transcoder pod pinned to it **by
+  name**, and read its log for `transcoder up (encoder=vaapi`. Never pin by
+  `spritz.dev/gpu-gen`: two nodes can share a generation (Kaby Lake and Comet
+  Lake are both 9.5), and the pod may then prove the old node instead. The
+  pod is a copy of staging's transcoder with `nodeName` set and its labels
+  replaced, so the Deployment's ReplicaSet does not adopt it:
+
+  ```bash
+  kubectl -n spritz-staging get deploy spritz-transcoder -o json \
+    | jq --arg node <name> '{apiVersion: "v1", kind: "Pod",
+        metadata: {name: "transcoder-preflight", namespace: "spritz-staging",
+                   labels: {app: "transcoder-preflight"}},
+        spec: (.spec.template.spec + {nodeName: $node, restartPolicy: "Never"})}' \
+    | kubectl apply -f -
+  kubectl -n spritz-staging logs -f transcoder-preflight   # transcoder up (encoder=vaapi
+  kubectl -n spritz-staging get pod transcoder-preflight -o jsonpath='{.spec.nodeName}'
+  kubectl -n spritz-staging delete pod transcoder-preflight
+  ```
+
+  It is a real staging transcoder while it runs and may take a staging job;
+  that is acceptable on staging, and deleting it hands the job back after
+  its grace period.
 
 ## GPU worker as a Proxmox VM
 
@@ -239,9 +258,12 @@ transcoding unless the new node joins first. Order:
 1. Pick a window with the spritz promoter: no promotion in flight, and the
    transcode queue empty.
 2. Onboard the new node and verify it fully (section 7, including the
-   75-minute no-reboot check) while the old node still serves. The
-   transcoders do not select a node, so nothing moves yet. Device-plugin
-   slots on the new node are free, so a rollout can land there.
+   75-minute no-reboot check and the preflight pod pinned to the new node by
+   name) while the old node still serves. The transcoders do not select a
+   node, so nothing moves yet. Device-plugin slots on the new node are free,
+   so a rollout can land there. **Do not drain the old node until the pinned
+   preflight has passed on the new one**: an encode that only ran on the old
+   node proves nothing about the passthrough.
 3. Cordon the old node, then drain it. The transcoders finish their current
    job (long `terminationGracePeriodSeconds`) and their replacements schedule
    on the new node:
@@ -252,22 +274,30 @@ transcoding unless the new node joins first. Order:
    ```
 
    Check every transcoder logs `transcoder up (encoder=vaapi` on the new node.
-4. Remove the old node. Shut it down first, so its kubelet cannot register
-   it again, then delete the Node object:
+4. Shut the old node down, and **keep its Node object** (cordoned, tainted,
+   NotReady) and its DHCP reservation:
 
    ```bash
    talosctl -n <old ip> -e <old ip> shutdown
+   ```
+
+   Until the soak (step 5) has passed, powering it back on and uncordoning
+   it is the rollback. Do not delete the Node yet: a deleted Node comes back
+   as a new registration without the cordon and **without the GPU taint**
+   (section 6: Talos cannot add a taint after registration), so ordinary
+   workloads would land on it.
+5. Soak: the transcoders stay healthy on the new node for at least three
+   hours, with no restarts, no Failed pods and no self-reboot.
+6. After the soak, remove the old node for good:
+
+   ```bash
    kubectl delete node <old>
    ```
 
    Remove its entry from `athena.zsh` and from the 1Password backup, and
-   release its DHCP reservation. Until the soak (step 5) has passed,
-   powering it back on is the rollback, so leave its disks alone. After
-   that, wipe them before the hardware goes anywhere else: they hold this
-   cluster's machine config, which includes cluster secrets
-   (`talosctl wipe disk` in maintenance mode).
-5. Soak: the transcoders stay healthy on the new node for at least three
-   hours, with no restarts and no Failed pods.
+   release its DHCP reservation. Its disks hold this cluster's machine
+   config, which includes cluster secrets: wipe them before the hardware
+   goes anywhere else (`talosctl wipe disk` in maintenance mode).
 
 ## Changing the schematic or Talos version on a running node
 

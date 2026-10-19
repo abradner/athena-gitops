@@ -10,7 +10,12 @@
 # inventory):
 #   - q35, OVMF without enrolled keys (no Secure Boot), cpu: host;
 #   - virtio-scsi-single with two virtual disks, a small install disk
-#     (~20 GB) and a ~100 GB scratch disk, both discard=on, ssd=1;
+#     (~20 GB) and a ~100 GB scratch disk, both discard=on, ssd=1. Talos's
+#     Proxmox guide warns against VirtIO SCSI single (bootstrap hangs);
+#     another Talos VM on the same host model runs it without trouble, so it
+#     stays, with a gate: if maintenance mode hangs or does not list both
+#     disks, switch the controller to plain virtio-scsi (iothread then has
+#     no effect) and record it;
 #   - agent: enabled=1 (worker-gpu-vm.schematic.yaml carries
 #     qemu-guest-agent; see that file for why the two go together);
 #   - serial0: socket (the kernel console, see the schematic);
