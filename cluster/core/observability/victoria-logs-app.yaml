@@ -46,7 +46,52 @@ spec:
           # With server.enabled=false the chart emits no in-cluster sink, so
           # this is now Vector's only destination.
           customConfig:
+            sources:
+              # A per-node heartbeat: one event a minute from every Vector pod,
+              # shipped through the SAME vlogs sink (same disk buffer, same
+              # endpoint, same network path) as the container logs. It exists
+              # because "this node shipped no logs" cannot tell a quiet node
+              # from a broken pipeline: a freshly joined worker running two
+              # pods legitimately writes nothing for an hour, and the alert
+              # built on log volume flapped on exactly that (2026-10-19). A
+              # heartbeat that stops arriving means the path from this node to
+              # the store is broken, whatever the node's workload is doing.
+              # The node-level alert that reads it lives with the out-of-cluster
+              # rules, not here: it has to fire when this cluster cannot.
+              #
+              # What it does NOT prove: that the kubernetes_logs source is
+              # still reading /var/log/pods. A source that stalls while the
+              # sink is healthy keeps the heartbeat green.
+              heartbeat:
+                type: demo_logs
+                format: shuffle
+                lines: ["log pipeline heartbeat"]
+                interval: 60
             transforms:
+              # Rebuild the demo event so it reads like a log line from this
+              # node: the node name rides in the same field the container logs
+              # carry it in, so the store-side query groups both alike. Its own
+              # stream (the sink's VL-Stream-Fields) keeps heartbeats out of
+              # every real pod's stream. Timestamped at emission, not delivery:
+              # heartbeats held in the disk buffer during an outage land in the
+              # past when they drain, so they cannot make a broken window look
+              # healthy after the fact.
+              heartbeat_tag:
+                type: remap
+                inputs: [heartbeat]
+                source: |
+                  . = {
+                    "timestamp": now(),
+                    "message": "log pipeline heartbeat",
+                    "stream": "heartbeat",
+                    "heartbeat": "log-pipeline",
+                    "kubernetes": {
+                      "pod_node_name": get_env_var!("VECTOR_SELF_NODE_NAME"),
+                      "pod_name": get_env_var!("VECTOR_SELF_POD_NAME"),
+                      "pod_namespace": get_env_var!("VECTOR_SELF_POD_NAMESPACE"),
+                      "container_name": "vector-heartbeat"
+                    }
+                  }
               # Replaces the chart's default parser. Three jobs, in order:
               #
               # 1. Structure what we can. Apps here emit three shapes: JSON
@@ -171,6 +216,9 @@ spec:
               # one complete sink. Verified by rendering the chart locally and
               # inspecting the ConfigMap before merging.
               vlogs:
+                # Replaces the chart's inputs list (Helm replaces lists whole):
+                # the parsed container logs plus the node heartbeat above.
+                inputs: [parser, heartbeat_tag]
                 endpoints:
                   # TRAILING DOT — load-bearing. Control-plane VMs put
                   # k8s.asn.casa in the pod search path; with ndots:5 the
