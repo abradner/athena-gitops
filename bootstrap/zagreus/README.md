@@ -90,7 +90,7 @@ The control plane goes `Ready` once Cilium runs.
 
 ### 4. Secrets, then GitOps
 
-zagreus reads a 1Password vault that holds only CI items (`Tooling - CI`),
+zagreus reads a 1Password vault that holds only CI items (`Tooling - Github Runners`),
 through a service account scoped to that vault alone. Never reuse athena's
 token here.
 
