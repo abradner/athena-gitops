@@ -13,8 +13,7 @@ CONTROL_PLANE_IP=(
 
 # arm64 runner nodes (CM5 8 GB + 128 GB NVMe), worker-arm-runner.patch.yaml.
 ARM_RUNNER_IP=(
-  "<ip>"
-  "<ip>"
+  # none yet; ARM_RUNNER_IP=() is fine
 )
 
 # arm64 image builder (CM5 8 GB + USB SSD), worker-arm-builder.patch.yaml.

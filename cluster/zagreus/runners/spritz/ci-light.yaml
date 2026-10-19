@@ -1,7 +1,10 @@
 # spritz light lane (`runs-on: zagreus-ci-light`): the short gating jobs that
 # every run waits on: `changes` (the path filter everything else needs),
 # `agents_md`, `e2e_full_matrix_verify`, docker-ci's `changes`. Always on, on
-# the arm64 runner nodes, with one runner kept warm, so a burst of pushed PRs
+# the always-on arm64 nodes (arm runners when there are any, and the arm64
+# builder, whose taint it tolerates: that node already runs PR code in its
+# build checks, and these jobs are unprivileged), with one runner kept warm,
+# so a burst of pushed PRs
 # never queues its path filters behind 13-minute e2e jobs (measured: that
 # head-of-line wait was most of the p90 queue time).
 #
@@ -46,8 +49,26 @@ spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 30
             priorityClassName: ci-light
-            nodeSelector:
-              zagreus.asn.casa/role: arm-runner
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [arm-runner, arm-builder]
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    preference:
+                      matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [arm-runner]
+            tolerations:
+              - key: zagreus.asn.casa/role
+                operator: Equal
+                value: arm-builder
+                effect: NoSchedule
             containers:
               - name: runner
                 image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b

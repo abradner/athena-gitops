@@ -12,7 +12,7 @@ Addresses and inventory live in the private infrastructure repo.
 | Class | Hardware | Config | Power |
 |---|---|---|---|
 | Control plane | CM5 4 GB Lite, Optane NVMe | `controlplane.template.yaml` | always on |
-| arm64 runner | CM5 8 GB Lite, 128 GB NVMe | `worker.template.yaml` + `worker-arm-runner.patch.yaml` | always on |
+| arm64 runner | CM5 8 GB Lite, 128 GB NVMe (none yet: the first two boards went to athena as scratch workers) | `worker.template.yaml` + `worker-arm-runner.patch.yaml` | always on |
 | arm64 builder | CM5 8 GB Lite, SATA SSD over USB 3 | `worker.template.yaml` + `worker-arm-builder.patch.yaml` | always on |
 | amd64 runner | HP ProDesk/EliteDesk, Optane + SATA SSD | `worker.template.yaml` + `worker-amd64.patch.yaml` | woken on demand |
 
