@@ -1,6 +1,6 @@
 # Image Factory schematic for the GPU workers. POST it to get the id:
 #   curl -sS -X POST --data-binary @worker-gpu.schematic.yaml https://factory.talos.dev/schematics
-# -> 2e212ac69bdcc3bfcee2b21e462e9b748d96614d05adf3bab5fb6ef01d1ff744
+# -> 4286f1ed0899cc6efd70d14f4fc29cb9cccf7de3acb01a386d2b54adf49ca67f
 # A changed file means a new id: update install.image in worker-gpu.patch.yaml.
 #
 # The nodes run Secure Boot, so boot media and installer must both be the
@@ -16,7 +16,18 @@
 #   - 8250.nr_uarts=8: the kernel registers only 4 8250 ports by default, and
 #     the KT UART comes after ttyS0-3, so without this it gets no tty at all.
 #
-# Required for the GPU: i915, intel-ucode. The rest is harmless unconfigured.
+# Extensions: only what the GPU node uses. i915 (GPU driver and DMC/GuC
+# firmware), intel-ucode (CPU microcode), mei (the Intel ME interface AMT
+# sits behind).
+#
+# NEVER add an extension that ships a service unless this class also gets
+# its config. An unconfigured extension service never comes up
+# ("Waiting for extension service config", or for zfs "Waiting for file
+# /dev/zfs"), boot's startAllServices waits for every service, and after
+# Talos's BootTimeout (70 min) the boot fails and the node reboots. The first
+# version of this file was copied from another schematic with cloudflared,
+# nut-client, tailscale and zfs in it, and the first node rebooted every
+# ~71 min from 2026-10-17 until this was fixed.
 customization:
   extraKernelArgs:
     - console=tty0
@@ -24,13 +35,6 @@ customization:
     - 8250.nr_uarts=8
   systemExtensions:
     officialExtensions:
-      - siderolabs/binfmt-misc
-      - siderolabs/cloudflared
       - siderolabs/i915
-      - siderolabs/intel-ice-firmware
       - siderolabs/intel-ucode
       - siderolabs/mei
-      - siderolabs/nut-client
-      - siderolabs/nvme-cli
-      - siderolabs/tailscale
-      - siderolabs/zfs
