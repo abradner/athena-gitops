@@ -6,7 +6,7 @@ all run outside the cluster, on dedicated LXC containers on the hypervisor tier.
 | in-cluster | where it sends |
 |---|---|
 | `vmagent` | `http://obs-metrics.infra.asn.casa:8428/api/v1/write` |
-| `vector` (DaemonSet, all 7 nodes) | `http://obs-logs.infra.asn.casa:9428/insert/elasticsearch` |
+| `vector` (DaemonSet, every node, control plane included; also a once-a-minute heartbeat per node that the out-of-cluster per-node alert watches) | `http://obs-logs.infra.asn.casa:9428/insert/elasticsearch` |
 | `kube-state-metrics`, `node-exporter` | scraped by vmagent |
 | VictoriaMetrics operator | reconciles the `VMAgent` CR |
 
