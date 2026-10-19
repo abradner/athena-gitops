@@ -220,8 +220,9 @@ Onboarding, by section:
    talosctl validate --mode metal --strict -c /tmp/gpu-vm.yaml
    ```
 
-   Then detach the ISO, or move the virtual disk ahead of it in the boot
-   order, before the install reboots.
+   Boot order: the install disk first, then the ISO. On the first boot the
+   empty disk falls through to the ISO; after the install the disk boots, and
+   the ISO would halt anyway if it found an installed system.
 6. **Taint:** as for bare metal.
 7. **Verify:** as for bare metal, except: EPHEMERAL is on the large virtual
    disk and the install on the small one; there is no swap; `ttyS4` and AMT
@@ -260,10 +261,11 @@ transcoding unless the new node joins first. Order:
    ```
 
    Remove its entry from `athena.zsh` and from the 1Password backup, and
-   release its DHCP reservation. Its disks still hold this cluster's machine
-   config, which includes cluster secrets: wipe them before the hardware
-   goes anywhere else (a fresh Talos install with `wipe disk` in maintenance
-   mode does it).
+   release its DHCP reservation. Until the soak (step 5) has passed,
+   powering it back on is the rollback, so leave its disks alone. After
+   that, wipe them before the hardware goes anywhere else: they hold this
+   cluster's machine config, which includes cluster secrets
+   (`talosctl wipe disk` in maintenance mode).
 5. Soak: the transcoders stay healthy on the new node for at least three
    hours, with no restarts and no Failed pods.
 
