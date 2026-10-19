@@ -6,7 +6,7 @@
 # public. Sourced by bash (talos/apply-*.sh) and zsh, so keep the syntax
 # portable and never index into the arrays (bash is 0-indexed, zsh 1-indexed).
 
-# Control plane (CM5 4 GB, Optane). One node, or three for HA.
+# Control-plane nodes (CM5 4 GB, Optane), one entry each.
 CONTROL_PLANE_IP=(
   "<ip>"
 )

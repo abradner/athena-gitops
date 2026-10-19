@@ -31,7 +31,7 @@ spec:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 1
-        # Capped at 2 while the light lane shares the 8 GB arm64 builder: two
+        # Capped at 2 while the light lane shares an 8 GB arm64 builder: two
         # light pods plus a build's requests fit together, so a build never
         # has to preempt a running light job.
         maxRunners: 2

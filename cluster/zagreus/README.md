@@ -46,7 +46,7 @@ what makes "proved by a real job" mean something.
 
 | Scale set | Nodes | Scale | For |
 |---|---|---|---|
-| `zagreus-ci-light` | always-on arm64: prefers arm runners, may use the arm64 builder | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
+| `zagreus-ci-light` | always-on arm64: prefers arm runners, may use arm64 builder nodes | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
 | `zagreus-ci` | prefers amd64, falls back to arm64 | 0–6 | general CI |
 | `zagreus-ci-x64` | amd64 only | 0–6 | e2e (must not rasterise on arm64) |
 | `zagreus-docker-arm64` | arm64 builder (always on) | 0–1 | PR build checks, arm64 release leg |

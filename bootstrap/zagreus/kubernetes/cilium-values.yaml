@@ -36,9 +36,11 @@ operator:
   # CI jobs. Its chart tolerations already cover the control-plane taint.
   nodeSelector:
     node-role.kubernetes.io/control-plane: ""
-  # One control-plane node to begin with. The chart's default of two replicas
-  # with anti-affinity leaves the second Pending, and the install then looks
-  # failed after a timeout while it actually succeeded (seen on deimos).
+  # Keep replicas at or below the number of control-plane nodes: the pods
+  # spread one per node by anti-affinity, so a replica with no free
+  # control-plane node stays Pending, and the install then looks failed after
+  # a timeout while it actually succeeded (seen on deimos). Raise it as
+  # control-plane nodes are added.
   replicas: 1
 hubble:
   relay:

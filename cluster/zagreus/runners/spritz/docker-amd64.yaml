@@ -1,8 +1,7 @@
 # spritz amd64 image builds (`runs-on: zagreus-docker-amd64`, through
 # RUNNER_DOCKER_AMD64): docker.yml's amd64 release legs and its registry jobs
 # (plan, publish, retag, promote), and transcoder.yml's test and publish. Runs
-# on the amd64 nodes, woken on demand, and ends the estate having a single
-# amd64 builder.
+# on the amd64 nodes, woken on demand.
 #
 # priorityClassName ci-release: these jobs hold the GHCR push, so on a full
 # node a release may preempt general CI rather than wait behind it.

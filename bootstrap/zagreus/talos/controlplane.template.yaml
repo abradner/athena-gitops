@@ -1,4 +1,4 @@
-# zagreus control plane: a single CM5 4 GB Lite (no eMMC). Talos 1.14 is
+# zagreus control-plane nodes: CM5 4 GB Lite (no eMMC). Talos 1.14 is
 # flashed to the SD card from the Image Factory schematic in
 # worker-cm5.schematic.yaml (official overlay plus the kernel argument
 # sdhci.debug_quirks2=4, which keeps SD at 3.3 V High Speed; without it one

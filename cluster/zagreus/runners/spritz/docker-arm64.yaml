@@ -1,6 +1,6 @@
 # spritz arm64 image builds (`runs-on: zagreus-docker-arm64`): docker-ci.yml's
 # PR build checks and the arm64 leg of docker.yml's release builds. Runs on
-# the always-on CM5 builder (USB SSD), so arm64 builds stop depending on a Mac
+# always-on CM5 builder nodes (USB SSD), so arm64 builds stop depending on a Mac
 # being awake. Workflows select it through RUNNER_DOCKER_ARM64 (the bare
 # string "zagreus-docker-arm64"), switched over only after this set has run a
 # real build.
@@ -17,9 +17,10 @@
 #     the entrypoint drops to that user with gosu, which resets supplementary
 #     groups, so a pod-level supplementalGroups would not survive.
 #   - The build runs inside dind's cgroup, so the requests sit on dind.
-#   - One dockerd per data root: maxRunners 1, a single builder node, and the
-#     controller leaves finished pods their termination grace period
-#     (arc-controller.yaml) so dockerd stops cleanly before the next starts.
+#   - One dockerd per data root: maxRunners 1, so at most one dind pod uses
+#     the data root at a time, and the controller leaves finished pods their
+#     termination grace period (arc-controller.yaml) so dockerd stops cleanly
+#     before the next starts.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
