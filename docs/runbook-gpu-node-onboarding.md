@@ -56,6 +56,17 @@ the same id):
 curl -sS -X POST --data-binary @bootstrap/talos/worker-gpu.schematic.yaml https://factory.talos.dev/schematics
 ```
 
+**Never copy another node class's schematic, and never add an extension
+"because it is harmless".** An extension that ships a service (cloudflared,
+tailscale, nut-client, zfs, and others) waits for its own config, or for zfs
+for `/dev/zfs`, and never comes up without it. Boot's `startAllServices` task
+waits for every service, so the machine stays in stage `booting`, and after
+Talos's `BootTimeout` (70 min) the boot fails and the node reboots. The first
+GPU schematic was copied from another one with those four in it, and the first
+node rebooted every ~71 minutes for two days, evicting the transcoders each
+time, while the kubelet looked Ready throughout. The schematic lists only
+`i915`, `intel-ucode` and `mei`; add one only with the config it needs.
+
 Write `https://factory.talos.dev/image/<id>/<talos version>/metal-amd64-secureboot.iso`
 to a USB stick and boot it. If the schematic or the Talos version changes,
 update `install.image` in `worker-gpu.patch.yaml` to match.
@@ -121,6 +132,12 @@ Talos then applies the labels by itself.
 
 ## 7. Verify the outcome
 
+- **The boot finished:** `talosctl -n <ip> get machinestatus -o yaml` shows
+  `stage: running`, not `booting`, and `talosctl -n <ip> services` lists no
+  service stuck in `Waiting`. A Ready kubelet is not proof: the node is Ready
+  long before the boot sequence gives up and reboots it (see section 2). Check
+  again after 75 minutes that it has not rebooted (`talosctl -n <ip> get
+  machinestatus` keeps its `created` time).
 - `kubectl get node <name> -o wide` shows Ready, amd64, and the taint, plus the labels
   `spritz.dev/gpu=intel` and `spritz.dev/gpu-gen=<gen>`.
 - `talosctl -n <ip> get volumestatus`: EPHEMERAL is on the SSD, `s-swap` on the
@@ -135,6 +152,31 @@ Talos then applies the labels by itself.
   pod pinned to the node (`nodeSelector: spritz.dev/gpu-gen: <gen>`) and read
   its log for `transcoder up (encoder=vaapi`.
 
+## Changing the schematic or Talos version on a running node
+
+The installer in `worker-gpu.patch.yaml` is the one to upgrade with. Upgrade
+one GPU node at a time: while there is only one, the transcoders are down from
+the drain until the node is back and the device plugin has registered (a few
+minutes), so pick a quiet moment and tell whoever is promoting spritz.
+
+```bash
+talosctl -n <ip> -e <ip> upgrade \
+  --image factory.talos.dev/metal-installer-secureboot/<schematic id>:<talos version>
+```
+
+Use a plain upgrade, not `--stage`: a plain upgrade may take over a boot
+sequence that is still running (for example one stuck as in section 2), a
+staged one may not. Then bring the node's own config in line, so it does not
+keep naming the old installer (no reboot):
+
+```bash
+talosctl -n <ip> -e <ip> patch mc --patch \
+  '[{"op":"replace","path":"/machine/install/image","value":"<the same image>"}]'
+```
+
+Check `talosctl -n <ip> get extensionstatuses` lists the new schematic id, then
+verify as in section 7.
+
 ## After a reboot: Failed transcoder pods are expected
 
 When a GPU node reboots, the kubelet re-admits the pods it had before the
@@ -144,7 +186,11 @@ unhealthy devices gpu.intel.com/i915`. The Deployment immediately makes a
 replacement, which schedules once the plugin is up. Kubernetes does not
 garbage-collect Failed pods until there are thousands of them, so the rejected
 ones stay listed (`Unknown`/`Failed`). They are harmless; delete them by name.
-Seen twice on the first node on 2026-10-17.
+
+If they keep coming back, the node is rebooting by itself: check that its stage
+is `running` (section 7). On the first node, from 2026-10-17 to 2026-10-19,
+they were the trace of the 70-minute boot-timeout reboots described in
+section 2, not of one-off reboots.
 
 ## Why VA-API and not QSV
 
