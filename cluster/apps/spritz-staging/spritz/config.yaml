@@ -45,6 +45,23 @@ data:
   # the job runs, and the job has no schedule yet. Leave "false" until a dry
   # run against a production snapshot has been read.
   ASSET_PURGE_ENABLED: "false"
+  # Personal notes (abradner/spritz stack #1161): the daily job that hard-deletes
+  # the superseded keystroke history of notes delivered 30+ days ago
+  # (PersonalNotes::PruneHistoryJob). It deletes only on exactly "true";
+  # anything else counts and logs. Read when the job runs (bare ENV.fetch: a
+  # missing key raises KeyError daily). REQUIRED before the image that brings
+  # the job. Turning it on is a runbook (spritz .agents/personal_notes.md,
+  # "Turning the history prune on") and Alex's call; this lands it "false".
+  PERSONAL_NOTES_PRUNE_ENABLED: "false"
+  # Personal notes (abradner/spritz stack #1161): where personal-note email may
+  # go outside production (PersonalNotes::MailGuard). Staging sends REAL email
+  # and, after a refresh from production, holds real guests' addresses, so
+  # this is an allowlist: comma-separated addresses, "@domain", or "*". ""
+  # sends none. Read when an email is built; a missing key makes every
+  # personal-notes send on staging raise. REQUIRED before the image.
+  # DECISION FOR ALEX: "" (no note email on staging) or his own test
+  # addresses, e.g. "alex@bradner.net".
+  PERSONAL_NOTES_MAIL_ALLOWLIST: ""
   # The Host the video transcoder's in-cluster calls arrive on (it calls the
   # web Service by name, http://spritz-web/). abradner/spritz #1093 exempts
   # /api/transcoder/* on exactly this host from the canonical-host redirect

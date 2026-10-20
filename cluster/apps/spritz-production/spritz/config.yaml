@@ -50,6 +50,14 @@ data:
   # the job runs, and the job has no schedule yet. Leave "false" until a dry
   # run against a production snapshot has been read.
   ASSET_PURGE_ENABLED: "false"
+  # Personal notes (abradner/spritz stack #1161): the daily job that hard-deletes
+  # the superseded keystroke history of notes delivered 30+ days ago
+  # (PersonalNotes::PruneHistoryJob). It deletes only on exactly "true";
+  # anything else counts and logs. Read when the job runs (bare ENV.fetch: a
+  # missing key raises KeyError daily). REQUIRED before the image that brings
+  # the job. Turning it on is a runbook (spritz .agents/personal_notes.md,
+  # "Turning the history prune on") and Alex's call; this lands it "false".
+  PERSONAL_NOTES_PRUNE_ENABLED: "false"
   # The Host the video transcoder's in-cluster calls arrive on (it calls the
   # web Service by name, http://spritz-web/). abradner/spritz #1093 exempts
   # /api/transcoder/* on exactly this host from the canonical-host redirect
