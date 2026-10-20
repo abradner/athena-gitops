@@ -15,10 +15,14 @@
 # downloaded .pem ATTACHED as a file. Not a field: a 1Password password field
 # drops the PEM's newlines, which leaves an invalid key. How the key is read,
 # per ESO v2.9.0 (chart 2.9.0):
-#   - dataFrom.extract with `property: file/` returns every file on the item,
-#     keyed by file name (providers/v1/onepasswordsdk/client.go, getObjType
-#     and getFiles); the rewrite gives the .pem a fixed key, so the file's
-#     name does not matter. Attach exactly one .pem.
+#   - The .pem is read by secret reference (`<item>/<file name>`), which the
+#     provider hands to the SDK's Secrets().Resolve; that resolves an
+#     attachment by its name. So the remoteRef below names the file: when the
+#     key is rotated, update it to the new file's name in the same change.
+#     Not dataFrom.extract with `property: file/`: in ESO v2.9.0 (and still in
+#     v2.13.0) fetchFile passes the file's field ID where the SDK's
+#     Files().Read expects the item ID (client.go, fetchFile), so every file
+#     read fails with "item couldn't be found".
 #   - The template is the whole Secret: with template.data and the default
 #     mergePolicy Replace, no other key from data or dataFrom is written
 #     (pkg/controllers/externalsecret/externalsecret_controller_template.go,
@@ -27,8 +31,9 @@
 #     KEY") and errors on text that is not PEM, such as a key whose newlines
 #     were stripped. It returns an empty string for a PEM of another type
 #     (PKCS#8 "PRIVATE KEY", a certificate), hence the explicit fail. With
-#     missingkey=error, a missing attachment fails too. Any of these stops the
-#     sync instead of handing ARC a bad credential.
+#     missingkey=error and the provider erroring on an unknown name, a missing
+#     attachment fails too. Any of these stops the sync instead of handing
+#     ARC a bad credential.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -56,12 +61,8 @@ spec:
       remoteRef: {key: zagreus-arc-github-app/github_app_id}
     - secretKey: github_app_installation_id
       remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
-  dataFrom:
-    - extract:
-        key: zagreus-arc-github-app
-        property: file/
-      rewrite:
-        - regexp: {source: '^.*\.pem$', target: github_app_private_key_pem}
+    - secretKey: github_app_private_key_pem
+      remoteRef: {key: zagreus-arc-github-app/zagreus-arc.2026-10-19.private-key.pem}
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -90,9 +91,5 @@ spec:
       remoteRef: {key: zagreus-arc-github-app/github_app_id}
     - secretKey: github_app_installation_id
       remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
-  dataFrom:
-    - extract:
-        key: zagreus-arc-github-app
-        property: file/
-      rewrite:
-        - regexp: {source: '^.*\.pem$', target: github_app_private_key_pem}
+    - secretKey: github_app_private_key_pem
+      remoteRef: {key: zagreus-arc-github-app/zagreus-arc.2026-10-19.private-key.pem}
