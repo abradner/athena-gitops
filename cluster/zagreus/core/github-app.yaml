@@ -8,6 +8,27 @@
 # App permissions for repository-scope runners: Repository → Administration:
 # read and write, Metadata: read. Installed on the selected private
 # repositories only. Public repositories stay on GitHub-hosted runners.
+#
+# The 1Password item (any category; the onepasswordSDK provider resolves
+# fields by reference and never looks at it) holds github_app_id and
+# github_app_installation_id as fields, and the private key as the App's
+# downloaded .pem ATTACHED as a file. Not a field: a 1Password password field
+# drops the PEM's newlines, which leaves an invalid key. How the key is read,
+# per ESO v2.9.0 (chart 2.9.0):
+#   - dataFrom.extract with `property: file/` returns every file on the item,
+#     keyed by file name (providers/v1/onepasswordsdk/client.go, getObjType
+#     and getFiles); the rewrite gives the .pem a fixed key, so the file's
+#     name does not matter. Attach exactly one .pem.
+#   - The template is the whole Secret: with template.data and the default
+#     mergePolicy Replace, no other key from data or dataFrom is written
+#     (pkg/controllers/externalsecret/externalsecret_controller_template.go,
+#     ApplyTemplate).
+#   - filterPEM re-encodes the RSA key (GitHub issues PKCS#1, "RSA PRIVATE
+#     KEY") and errors on text that is not PEM, such as a key whose newlines
+#     were stripped. It returns an empty string for a PEM of another type
+#     (PKCS#8 "PRIVATE KEY", a certificate), hence the explicit fail. With
+#     missingkey=error, a missing attachment fails too. Any of these stops the
+#     sync instead of handing ARC a bad credential.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -24,13 +45,23 @@ spec:
   target:
     name: arc-github-app
     creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        github_app_id: '{{ .github_app_id }}'
+        github_app_installation_id: '{{ .github_app_installation_id }}'
+        github_app_private_key: '{{ $k := .github_app_private_key_pem | filterPEM "RSA PRIVATE KEY" }}{{ if not $k }}{{ fail "the .pem attached to zagreus-arc-github-app holds no RSA PRIVATE KEY block" }}{{ end }}{{ $k }}'
   data:
     - secretKey: github_app_id
       remoteRef: {key: zagreus-arc-github-app/github_app_id}
     - secretKey: github_app_installation_id
       remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
-    - secretKey: github_app_private_key
-      remoteRef: {key: zagreus-arc-github-app/github_app_private_key}
+  dataFrom:
+    - extract:
+        key: zagreus-arc-github-app
+        property: file/
+      rewrite:
+        - regexp: {source: '^.*\.pem$', target: github_app_private_key_pem}
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -48,10 +79,20 @@ spec:
   target:
     name: arc-github-app
     creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        github_app_id: '{{ .github_app_id }}'
+        github_app_installation_id: '{{ .github_app_installation_id }}'
+        github_app_private_key: '{{ $k := .github_app_private_key_pem | filterPEM "RSA PRIVATE KEY" }}{{ if not $k }}{{ fail "the .pem attached to zagreus-arc-github-app holds no RSA PRIVATE KEY block" }}{{ end }}{{ $k }}'
   data:
     - secretKey: github_app_id
       remoteRef: {key: zagreus-arc-github-app/github_app_id}
     - secretKey: github_app_installation_id
       remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
-    - secretKey: github_app_private_key
-      remoteRef: {key: zagreus-arc-github-app/github_app_private_key}
+  dataFrom:
+    - extract:
+        key: zagreus-arc-github-app
+        property: file/
+      rewrite:
+        - regexp: {source: '^.*\.pem$', target: github_app_private_key_pem}
