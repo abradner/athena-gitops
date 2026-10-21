@@ -46,7 +46,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz-marketing:v202609140413@sha256:c395308614ff133366f105f4555e3e959e5426020247d9ad992f09596a7e08a4
+          image: ghcr.io/abradner/spritz-marketing:v202610200730@sha256:b398cd02aaa11aa0b786c26ab4d906fce37bd3dc885d13aa836ab051e6502dac
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
