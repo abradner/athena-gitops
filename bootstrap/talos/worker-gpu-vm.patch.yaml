@@ -32,9 +32,11 @@
 #     an emptyDir with sizeLimit 20Gi (an original of up to 4 GiB plus its
 #     outputs), plus images and logs.
 #   - No swap. The bare-metal class swaps to its Optane; this VM has no
-#     Optane of its own (the host's carries its ZFS SLOG), and the VM gets a
-#     fixed allocation from the host instead (balloon 0). So the kubelet
-#     keeps its default failSwapOn and needs no swap settings.
+#     disk set aside for swap, and gets a fixed memory allocation from the
+#     host instead (balloon 0). So the kubelet keeps its default failSwapOn
+#     and needs no swap settings. A third virtual disk for swap would also
+#     need the install-disk selector tightened: it matches any disk of
+#     40 GB or less.
 #
 # Scheduling: identical to the bare-metal class, so the transcoder and the
 # GPU device plugin need no change.
