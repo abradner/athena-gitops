@@ -32,8 +32,10 @@
 # Scheduling:
 #   - Hard taint spritz.dev/gpu=intel:NoSchedule. The spritz app image is
 #     multi-arch, so without it web and queue pods would land here. Only
-#     pods that tolerate it (the transcoder, the GPU device plugin, the
-#     cluster DaemonSets that tolerate everything) run on these nodes.
+#     pods that tolerate it (the transcoder, production's variant renderers
+#     in cluster/apps/spritz-production/spritz/solid-queue.yaml, the GPU
+#     device plugin, the cluster DaemonSets that tolerate everything) run on
+#     these nodes.
 #   - spritz.dev/gpu-gen is informational (9 Skylake, 9.5 Kaby/Comet Lake,
 #     11 Ice Lake), for debugging and for pinning a generation that
 #     misbehaves. The transcoder does not select on it by default. It is

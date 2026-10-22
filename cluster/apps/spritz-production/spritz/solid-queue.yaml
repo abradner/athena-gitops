@@ -106,6 +106,17 @@ spec:
 #
 # NEEDS an image that contains config/queue_variants.yml (abradner/spritz
 # #942); on an older image this container exits at boot.
+#
+# Allowed onto the GPU workers, and preferred there. A GPU worker's amd64 cores
+# render far faster than a Pi's, and between encodes its CPU sits idle. The
+# transcoder still comes first, and that is what the CPU limit below is for:
+# on these machines the cores and the iGPU share one package power budget (65 W
+# on the G7), so a render running every core can pull the iGPU's clock down
+# mid-encode. CFS weight cannot prevent that (the transcoder's larger request
+# only wins it CPU time), and nor can a PriorityClass, which acts at
+# scheduling and preemption only. The limit does: it bounds how much of the
+# package a render can draw. On the 4-core arm workers the same limit is a
+# no-op.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -124,6 +135,24 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      tolerations:
+        - key: spritz.dev/gpu
+          operator: Equal
+          value: intel
+          effect: NoSchedule
+      # Preferred, never required: with the GPU worker down these render on
+      # the arm workers as before. The spread constraint below still counts,
+      # so the second replica is pulled away from a node that already has
+      # one; it is a score, though, not a rule, and both can land here.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: spritz.dev/gpu
+                    operator: In
+                    values: [intel]
       # One renderer per node, counting the supervisor pod. Soft: a renderer
       # doubling up on a node is slower, not wrong, and beats one left Pending
       # when a node is down.
@@ -144,6 +173,11 @@ spec:
               value: config/queue_variants.yml
             - name: SOLID_QUEUE_SKIP_RECURRING
               value: "true"
+            # libvips sizes its thread pool from the CPUs it can see, which is
+            # the node's count (10 on the G7), not the CPU limit. Match the
+            # limit, so a render runs 4 threads rather than 10 being throttled.
+            - name: VIPS_CONCURRENCY
+              value: "4"
           envFrom:
             - configMapRef:
                 name: spritz-config
@@ -159,6 +193,10 @@ spec:
               cpu: 100m
               memory: 384Mi
             limits:
+              # Keep in step with VIPS_CONCURRENCY. See the header for why
+              # this exists: it keeps a render from starving the transcoder's
+              # iGPU of package power on a GPU worker.
+              cpu: "4"
               # One render per container (the app's lock), up to about 670 MB
               # for a 52MP photo, on a worker-only process that idles well
               # under the supervisor's 700Mi.
