@@ -31,10 +31,13 @@ spec:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 1
-        # Capped at 2 while the light lane shares an 8 GB arm64 builder: two
-        # light pods plus a build's requests fit together, so a build never
-        # has to preempt a running light job.
-        maxRunners: 2
+        # Capped at 2 per node class while the light lane shares an 8 GB arm64
+        # builder: two light pods plus a build's requests fit together, so a
+        # build never has to preempt a running light job. 4 in all because the
+        # amd64 workers are now a fallback (below): with the arm builder down,
+        # its two runners stay wedged in Terminating and hold their slots until
+        # the node comes back, so the fallback needs slots of its own (23 Oct).
+        maxRunners: 4
         listenerTemplate:
           spec:
             nodeSelector:
@@ -59,7 +62,11 @@ spec:
                     - matchExpressions:
                         - key: zagreus.asn.casa/role
                           operator: In
-                          values: [arm-runner, arm-builder]
+                          # amd64-runner is the fallback, least preferred: on
+                          # 23 Oct the arm builder's container runtime died
+                          # (I/O errors) and, with arm-only placement, every
+                          # spritz run queued behind the light lane.
+                          values: [arm-runner, arm-builder, amd64-runner]
                 preferredDuringSchedulingIgnoredDuringExecution:
                   - weight: 100
                     preference:
@@ -67,6 +74,12 @@ spec:
                         - key: zagreus.asn.casa/role
                           operator: In
                           values: [arm-runner]
+                  - weight: 50
+                    preference:
+                      matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [arm-builder]
             tolerations:
               - key: zagreus.asn.casa/role
                 operator: Equal
