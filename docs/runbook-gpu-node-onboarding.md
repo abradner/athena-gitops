@@ -394,10 +394,26 @@ transcoding unless the new node joins first. Order:
    boot back into this cluster**: its disks still hold this cluster's
    machine config, so if it starts (a VM's autostart, a BIOS set to power on
    after AC loss, someone moving it and switching it on) it re-registers as
-   a NEW node, without the cordon and without the GPU taint. Wipe it first:
-   boot the Talos ISO (pick USB from the boot menu; a GPU node's disk boots
-   first) and `talosctl wipe disk` in maintenance mode, or for a VM `qm set
-   <vmid> --onboot 0` and destroy its disks. Only then:
+   a NEW node, without the cordon and without the GPU taint. Wipe it first,
+   and fully: the disks hold this cluster's credentials, so a fast wipe
+   (Talos's default, the first and last 1 MiB) is not enough.
+   - **VM:** `qm set <vmid> --onboot 0`, then `qm destroy <vmid>
+     --destroy-unreferenced-disks 1 --purge 1` (the zvols go with it).
+   - **Bare metal:** the Talos ISO will not help: it halts when it finds an
+     installed system (`talos.halt_if_installed=1`). Boot a Linux live USB
+     instead (pick USB from the boot menu: a GPU node's disk boots first),
+     with the network unplugged, and for EACH disk (`lsblk` to list them):
+
+     ```bash
+     blkdiscard -z -f /dev/<disk>   # write zeroes over the whole device
+     cmp /dev/<disk> /dev/zero      # "EOF on /dev/<disk>" means all zero
+     blkdiscard -f /dev/<disk>      # then hand the blocks back to the SSD
+     ```
+
+     If `blkdiscard -z` is refused, `dd if=/dev/zero of=/dev/<disk> bs=16M
+     oflag=direct status=progress` does the same.
+
+   Only then:
 
    ```bash
    kubectl delete node <old>
