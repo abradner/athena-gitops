@@ -66,9 +66,9 @@ spec:
               # Copies this node's pre-installed gem tree (bundle-cache.yaml)
               # into the pod's own BUNDLE_PATH. The trees are mounted
               # read-only, and the job installs anything missing into its own
-              # copy. No tree yet (a fresh node, an arm64 node, a new OS
-              # release in the image) or a failed copy: an empty BUNDLE_PATH,
-              # and the job installs everything, as before.
+              # copy. No tree yet (a fresh node, an arm64 node, a runner image
+              # the fill has not built for) or a failed copy: an empty
+              # BUNDLE_PATH, and the job installs everything, as before.
               - name: bundle-seed
                 image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
                 imagePullPolicy: IfNotPresent
@@ -79,7 +79,10 @@ spec:
                   - |
                     . /etc/os-release
                     shopt -s dotglob nullglob
-                    src=/cache/$ID-$VERSION_ID-$(uname -m)/current dst=/home/runner/.bundle-local
+                    # The fill's key for this image: OS release, architecture
+                    # and installed packages (bundle-cache.yaml, fill.sh).
+                    src=/cache/$ID-$VERSION_ID-$(uname -m)-$(sha256sum /var/lib/dpkg/status | cut -c1-12)/current
+                    dst=/home/runner/.bundle-local
                     # The tree's entries, not "$t/.": the emptyDir itself is
                     # root's, and cp -a cannot set its times.
                     entries=()

@@ -27,8 +27,9 @@
 #     a seed copies for about a second.
 #
 # Where the lockfile comes from: the Secret spritz-bundle-source, holding main's
-# Gemfile.lock and mise.toml (bundle-source.yaml, fetched by External Secrets
-# on the control plane). The fill mounts it optional: until it exists the fill
+# Gemfile.lock and mise.toml (fetched by External Secrets on the control plane;
+# added by a follow-up, athena-gitops#218, once the zagreus-arc App holds
+# Contents: read). The fill mounts it optional: until it exists the fill
 # waits, every seed finds no tree, and runners install as before. Only main's
 # lockfile ever reaches it, so no PR branch or runner pod chooses what is
 # built into a tree that later jobs load.
@@ -45,16 +46,19 @@ metadata:
 data:
   fill.sh: |
     #!/bin/bash
-    # Builds /cache/<os>-<arch>/<digest> from /source/Gemfile.lock with the
-    # Ruby /source/mise.toml pins, then points /cache/<os>-<arch>/current at
-    # it. The seed init container in ci.yaml and ci-x64.yaml derives the same
-    # <os>-<arch> from the same image, so a runner on another OS release or
-    # architecture finds no tree and installs as before.
+    # Builds /cache/<image>/<digest> from /source/Gemfile.lock with the Ruby
+    # /source/mise.toml pins, then points /cache/<image>/current at it.
+    # <image> is the OS release, the architecture and a hash of the image's
+    # installed packages: the native extensions in a tree link against those
+    # libraries. The seed init container in ci.yaml and ci-x64.yaml derives
+    # <image> the same way from its own image, so a runner whose image differs
+    # from this one in any package finds no tree and installs as before.
+    # <digest> covers the lockfile, the Ruby binary and these scripts.
     set -euo pipefail
     root=/cache
     rubies=/home/runner/.local/share/mise/installs/ruby
     . /etc/os-release
-    dir="$root/$ID-$VERSION_ID-$(uname -m)"
+    dir="$root/$ID-$VERSION_ID-$(uname -m)-$(sha256sum /var/lib/dpkg/status | cut -c1-12)"
     log() { echo "$(date -Is) $*"; }
     mkdir -p "$HOME"
 
@@ -88,7 +92,7 @@ data:
         mv -T "$t" "$dir/.trash-${t##*/}" && rm -f "$m" \
           && rm -rf "$dir/.trash-${t##*/}" && log "pruned ${t##*/}"
       done
-      # Trees for an OS release or architecture the image no longer has.
+      # Trees for an image no longer in use (unchanged for a week).
       local k
       for k in "$root"/*/; do
         k=${k%/}
@@ -120,7 +124,10 @@ data:
         log "Ruby ${ruby##*/} is incomplete or broken in this node's mise cache; waiting"
         rm -rf "$work"; return 0
       fi
-      digest=$({ cat "$work/Gemfile.lock"; echo "ruby ${ruby##*/}"; } | sha256sum | cut -c1-16)
+      # Everything that decides what lands in the tree: the lockfile, the Ruby
+      # binary, the Bundler it runs (BUNDLED WITH is in the lockfile; this is
+      # the default it falls back to) and these scripts. The image is in $dir.
+      digest=$({ cat "$work/Gemfile.lock"; sha256sum "$ruby/bin/ruby"; "$ruby/bin/bundle" --version; echo "$scripts"; } | sha256sum | cut -c1-16)
       if [ -d "$dir/$digest" ]; then flip "$digest"; rm -rf "$work"; return 0; fi
       # A failed build is retried after 30 minutes, not every minute.
       if [ "$failed" = "$digest" ] && [ -z "$(find "$dir/.failed" -mmin +30 2>/dev/null)" ]; then
