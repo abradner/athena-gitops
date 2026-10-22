@@ -140,11 +140,9 @@ spec:
           operator: Equal
           value: intel
           effect: NoSchedule
-      # Preferred, never required: with the GPU worker down these render on
-      # the arm workers as before. The spread constraint below still counts,
-      # so the second replica is pulled away from a node that already has
-      # one; it is a score, though, not a rule, and both can land here.
       affinity:
+        # Preferred, never required: with the GPU worker down these render on
+        # the arm workers as before.
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
@@ -153,9 +151,23 @@ spec:
                   - key: spritz.dev/gpu
                     operator: In
                     values: [intel]
+        # Never two of these on one node. The CPU limit below is per pod, so
+        # two renderers on the GPU worker would be 8 of its 10 vCPUs and undo
+        # what the limit is for. Required, unlike the spread below: these may
+        # use any arm worker as well as the GPU worker, and a rollout needs
+        # only three nodes (two replicas and a surge), so a Pending renderer
+        # takes most of the cluster being down, and costs rendering speed and
+        # nothing else.
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: spritz-variant-worker
       # One renderer per node, counting the supervisor pod. Soft: a renderer
-      # doubling up on a node is slower, not wrong, and beats one left Pending
-      # when a node is down.
+      # sharing the supervisor's node is slower, not wrong, and beats one left
+      # Pending when a node is down. (Two of the pods above never share one:
+      # see the anti-affinity.)
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
