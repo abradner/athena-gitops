@@ -59,7 +59,7 @@ machine:
         # store" after pulling it; the digest-only form works (measured
         # 2026-10-19). Flash image: the same schematic's v1.14.4
         # metal-arm64.raw.xz, sha256
-        # 817dedb3c38f26fa8e6177fea6647ab2b9f166534ecb7c7b50883925aedc28a1.
+        # 84678389160b01718577f973029206e254c53f79df79e1ae68af71e1ff882b47.
         image: factory.talos.dev/metal-installer/cf195d249085b51c1f5cb617d9264e529ac2ad54914b23bde31707a5a7224584@sha256:bfe2325268caf725497b45e9e7abe1077a1d7b13bc3573abc382497808130759
         wipe: false
         grubUseUKICmdline: true
