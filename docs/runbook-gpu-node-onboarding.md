@@ -228,9 +228,11 @@ Onboarding, by section:
    storage and attach it to the VM.
 3. **Address:** as for bare metal, but add the entry to `GPU_VM_WORKER_IP`.
    The VM's NIC carries the address, on the workers' VLAN.
-4. **Maintenance mode:** as for bare metal. `get disks` must show exactly two
-   disks besides the CD-ROM: one of 40 GB or less, one of 64 GiB or more.
-   A fresh virtual disk needs no wipe.
+4. **Maintenance mode:** as for bare metal, except that `securitystate`
+   shows `secureBoot: false` (expected: OVMF has no enrolled keys). `get
+   disks` must show exactly two disks besides the CD-ROM and the read-only
+   loop devices: one of 40 GB or less, one of 64 GiB or more. A fresh
+   virtual disk needs no wipe.
 5. **Apply:** with `--config-patch @worker-gpu-vm.patch.yaml` in place of
    `worker-gpu.patch.yaml`. Before applying, render the result and check
    that `machine.install` has a `diskSelector` and no `disk`:
@@ -298,14 +300,25 @@ transcoding unless the new node joins first. Order:
    kubectl delete node <old>
    ```
 
-   Remove its entry from `athena.zsh` and from the 1Password backup, and
-   release its DHCP reservation. Its disks hold this cluster's machine
+   Remove its entry from `athena.zsh` (an emptied list stays declared, as
+   `GPU_WORKER_IP=()` or `GPU_VM_WORKER_IP=()`: `apply-worker.sh` exits on
+   an undeclared one) and from the 1Password backup, and release its DHCP
+   reservation. Its disks hold this cluster's machine
    config, which includes cluster secrets: wipe them before the hardware
    goes anywhere else (`talosctl wipe disk` in maintenance mode).
 
 ## Changing the schematic or Talos version on a running node
 
-The installer in `worker-gpu.patch.yaml` is the one to upgrade with. Upgrade
+Each class upgrades with its OWN installer, never the other's:
+
+| Class | Installer to upgrade with | Reboot |
+|---|---|---|
+| Bare metal | `install.image` in `worker-gpu.patch.yaml` (`metal-installer-secureboot/...`) | `--mode powercycle`, so the firmware boots the new signed UKI |
+| VM | `install.image` in `worker-gpu-vm.patch.yaml` (`metal-installer/...`, no Secure Boot) | a plain `talosctl reboot` |
+
+Taking the bare-metal installer onto a VM brings back `console=tty0` and the
+boot stall in AGENTS.md gotcha #5; the commands below show the bare-metal
+case, so swap the image (and the reboot mode) for a VM. Upgrade
 one GPU node at a time: while there is only one, the transcoders are down from
 the drain until the node is back and the device plugin has registered (a few
 minutes), so pick a quiet moment and tell whoever is promoting spritz.

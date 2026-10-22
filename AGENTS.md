@@ -414,6 +414,7 @@ general rule.** Argo-specific traps have their own section above.
      node.
    - A PR that says it changes no functional value still gets its diff read. The description
      is a claim.
+
 5. **A framebuffer console on a passed-through GPU stalled the whole kernel.** A Talos VM
    with the host's Intel iGPU passed through booted, but took 97 s to reach maintenance
    mode and logged RCU stalls every ~20 s. Root cause: once i915 registered a framebuffer
@@ -422,7 +423,9 @@ general rule.** Argo-specific traps have their own section above.
    wait for that write. The trace showed `fbcon_redraw` under `devkmsg_write`. Fix: the
    VM's schematic removes `console=tty0` (`-console`), keeps `console=ttyS0` and disables
    the dashboard (`worker-gpu-vm.schematic.yaml`); boot then took 18 s with no stalls.
-   General rule: a headless node whose GPU drives no display gets a serial console only.
+   General rule: a node whose GPU is passed through to it and drives no display gets a
+   serial console only. (The bare-metal GPU workers keep `console=tty0` without trouble:
+   their framebuffer is the firmware's, not one i915 creates for a headless passthrough.)
    Read the resulting command line from the Image Factory before booting
    (`/image/<id>/<version>/cmdline-metal-amd64`), and time the boot: "it boots" hid this.
 

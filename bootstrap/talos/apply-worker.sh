@@ -30,6 +30,12 @@ split_gpu_entry() {
   fi
 }
 
+# Check every GPU entry before applying anything, so a malformed one cannot
+# leave the cluster half-applied.
+for entry in "${GPU_WORKER_IP[@]}" "${GPU_VM_WORKER_IP[@]}"; do
+  split_gpu_entry "$entry"
+done
+
 for ip in "${WORKER_IP[@]}"; do
   echo "=== Applying configuration to node $ip ==="
   talosctl apply-config --insecure \
