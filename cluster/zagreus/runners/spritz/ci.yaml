@@ -70,7 +70,9 @@ spec:
               # the fill has not built for) or a failed copy: an empty
               # BUNDLE_PATH, and the job installs everything, as before.
               - name: bundle-seed
-                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                # The runner's own image (aliased below), so the seed keys
+                # trees by the libraries the job will load them with.
+                image: &runner-image ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
                 imagePullPolicy: IfNotPresent
                 securityContext: {runAsUser: 1000, runAsGroup: 1000}
                 command:
@@ -107,8 +109,11 @@ spec:
                 # The first image with the ARC-mode entrypoint (spritz#1165).
                 # Pinned by digest: ARC disables runner self-update, so move
                 # this deliberately whenever actions/runner releases (GitHub
-                # stops queueing jobs for a runner 30 days behind).
-                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                # stops queueing jobs for a runner 30 days behind). The pin
+                # sits on bundle-seed above (&runner-image), which must run
+                # the same image; keep spritz-bundle-fill (bundle-cache.yaml)
+                # on it too, or the pods find no gem tree.
+                image: *runner-image
                 imagePullPolicy: IfNotPresent
                 command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
                 env:

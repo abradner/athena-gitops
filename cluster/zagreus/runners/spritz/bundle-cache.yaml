@@ -86,6 +86,7 @@ data:
       for m in "$dir"/.retired-*; do
         [ -n "$(find "$m" -mmin +120 2>/dev/null)" ] || continue
         t="$dir/${m##*/.retired-}"
+        [ -e "$t" ] || { rm -f "$m"; continue; }
         [ "$(readlink "$dir/current" || true)" = "${t##*/}" ] && { rm -f "$m"; continue; }
         # Rename first, so a fill stopped half way through the delete never
         # leaves a partial tree under a digest a later build would reuse.
@@ -104,12 +105,14 @@ data:
 
     failed=""
     fill_once() {
-      if [ ! -s /source/Gemfile.lock ] || [ ! -s /source/mise.toml ]; then
+      # The kubelet swaps a Secret volume's ..data symlink atomically; read
+      # both files through one resolution of it, so they are one version.
+      local src; src=$(readlink -e /source/..data 2>/dev/null) || src=/source
+      if [ ! -s "$src/Gemfile.lock" ] || [ ! -s "$src/mise.toml" ]; then
         log "no source yet (Secret spritz-bundle-source)"; return 0
       fi
       local work; work=$(mktemp -d)
-      # Copy both files first, so one build sees one version of each.
-      cp /source/Gemfile.lock /source/mise.toml "$work/"
+      cp "$src/Gemfile.lock" "$src/mise.toml" "$work/"
       local want ruby digest stage
       want=$(sed -nE 's/^ruby *= *"([^"]+)".*/\1/p' "$work/mise.toml" | head -1)
       ruby=$(readlink -f "$rubies/$want" 2>/dev/null || true)
@@ -125,9 +128,9 @@ data:
         rm -rf "$work"; return 0
       fi
       # Everything that decides what lands in the tree: the lockfile, the Ruby
-      # binary, the Bundler it runs (BUNDLED WITH is in the lockfile; this is
+      # binary and library, the Bundler it runs (BUNDLED WITH is in the lockfile; this is
       # the default it falls back to) and these scripts. The image is in $dir.
-      digest=$({ cat "$work/Gemfile.lock"; sha256sum "$ruby/bin/ruby"; "$ruby/bin/bundle" --version; echo "$scripts"; } | sha256sum | cut -c1-16)
+      digest=$({ cat "$work/Gemfile.lock"; sha256sum "$ruby"/bin/ruby "$ruby"/lib/libruby.so* 2>/dev/null; "$ruby/bin/bundle" --version; echo "$scripts"; } | sha256sum | cut -c1-16)
       if [ -d "$dir/$digest" ]; then flip "$digest"; rm -rf "$work"; return 0; fi
       # A failed build is retried after 30 minutes, not every minute.
       if [ "$failed" = "$digest" ] && [ -z "$(find "$dir/.failed" -mmin +30 2>/dev/null)" ]; then
@@ -160,6 +163,9 @@ data:
       fi
     }
 
+    # PID 1 ignores SIGTERM unless it traps it; a staging dir left behind is
+    # cleared on the next start.
+    trap 'exit 0' TERM
     while :; do
       # A ConfigMap edit reaches the mounted scripts without a pod restart;
       # exit so the DaemonSet restarts this pod on the new pair.
@@ -168,7 +174,7 @@ data:
       fi
       fill_once || log "fill pass failed"
       prune || log "prune failed"
-      sleep 60
+      sleep 60 & wait $!
     done
   synth.rb: |
     # Usage: ruby synth.rb <source Gemfile.lock> <out dir>
