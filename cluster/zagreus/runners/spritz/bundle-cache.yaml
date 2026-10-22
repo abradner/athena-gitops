@@ -1,0 +1,268 @@
+# A pre-installed gem tree for spritz CI, built once per Gemfile.lock on each
+# amd64 node and copied read-only into every zagreus-ci and zagreus-ci-x64 pod.
+#
+# Why a tree, not a download cache. Measured on zag-amd64-01 in the runner
+# image, `bundle install --jobs 4` of spritz main (2026-10-23):
+#   no cache                                    84.7 s
+#   .gem files cached                           80.3 s  (18 native extensions compile)
+#   .gem files + Bundler's extension cache      10.0 s
+#   this tree: seed 509 MB, then bundle install  1.7 s + 0.6 s, 0 gems installed
+#     (four pods seeding and installing at once on one node)
+#
+# Why it cannot race. #214 removed a shared, writable download cache: jobs
+# starting together on a cold node fetched the same .gem into it at once, and
+# Bundler read a half-written file (spritz run 39776737369; reproduced 4 of 4
+# on the first try). Here:
+#   - Only spritz-bundle-fill writes /var/lib/ci-cache/bundle-trees, one pod
+#     per node (a DaemonSet, under a flock), never a CI job.
+#   - It builds into a staging directory no job reads, publishes it with one
+#     rename, then repoints `current` with another (rename over a symlink).
+#   - A runner pod's bundle-seed init container mounts the trees READ-ONLY and
+#     copies `current` into the pod's own emptyDir at BUNDLE_PATH, so the job
+#     installs anything the tree lacks (a PR that bumps a gem) into its own
+#     copy. No running job can write the trees. (The fill runs the Ruby in
+#     the shared mise cache, which jobs can write; the trees are only as
+#     trustworthy as that cache, the same trade every job already makes.)
+#   - A tree that stops being `current` is kept two hours before it is pruned:
+#     a seed copies for about a second.
+#
+# Where the lockfile comes from: the Secret spritz-bundle-source, holding main's
+# Gemfile.lock and mise.toml (bundle-source.yaml, fetched by External Secrets
+# on the control plane). The fill mounts it optional: until it exists the fill
+# waits, every seed finds no tree, and runners install as before. Only main's
+# lockfile ever reaches it, so no PR branch or runner pod chooses what is
+# built into a tree that later jobs load.
+#
+# The fill builds from the lockfile alone: synth.rb pins every rubygems.org
+# gem it resolves, with their CHECKSUMS, and leaves out the path gems
+# (spritz's engines), which need the repository and install nothing.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spritz-bundle-fill
+  namespace: arc-runners
+data:
+  fill.sh: |
+    #!/bin/bash
+    # Builds /cache/<os>-<arch>/<digest> from /source/Gemfile.lock with the
+    # Ruby /source/mise.toml pins, then points /cache/<os>-<arch>/current at
+    # it. The seed init container in ci.yaml and ci-x64.yaml derives the same
+    # <os>-<arch> from the same image, so a runner on another OS release or
+    # architecture finds no tree and installs as before.
+    set -euo pipefail
+    root=/cache
+    rubies=/home/runner/.local/share/mise/installs/ruby
+    . /etc/os-release
+    dir="$root/$ID-$VERSION_ID-$(uname -m)"
+    log() { echo "$(date -Is) $*"; }
+    mkdir -p "$HOME"
+
+    # One writer per node. A DaemonSet runs one pod per node, and its rolling
+    # update stops the old pod before starting the new one; the lock covers
+    # anything else.
+    exec 9>"$root/.fill.lock"
+    flock -n 9 || { log "another fill holds $root/.fill.lock"; exit 1; }
+    mkdir -p "$dir"
+    rm -rf "$dir"/.staging-* "$dir"/.trash-* "$root"/.trash-*
+    scripts=$(cat /scripts/fill.sh /scripts/synth.rb | sha256sum)
+
+    flip() {
+      local cur; cur=$(readlink "$dir/current" || true)
+      [ "$cur" = "$1" ] && return 0
+      ln -sfn "$1" "$dir/.current.new" && mv -T "$dir/.current.new" "$dir/current" \
+        || { log "could not point current at $1"; return 1; }
+      rm -f "$dir/.retired-$1"
+      if [ -n "$cur" ]; then touch "$dir/.retired-$cur"; fi
+      log "current -> $1 (was ${cur:-none})"
+    }
+
+    prune() {
+      local m t
+      for m in "$dir"/.retired-*; do
+        [ -n "$(find "$m" -mmin +120 2>/dev/null)" ] || continue
+        t="$dir/${m##*/.retired-}"
+        [ "$(readlink "$dir/current" || true)" = "${t##*/}" ] && { rm -f "$m"; continue; }
+        # Rename first, so a fill stopped half way through the delete never
+        # leaves a partial tree under a digest a later build would reuse.
+        mv -T "$t" "$dir/.trash-${t##*/}" && rm -f "$m" \
+          && rm -rf "$dir/.trash-${t##*/}" && log "pruned ${t##*/}"
+      done
+      # Trees for an OS release or architecture the image no longer has.
+      local k
+      for k in "$root"/*/; do
+        k=${k%/}
+        [ "$k" = "$dir" ] && continue
+        [ -n "$(find "$k" -maxdepth 0 -mtime +7 2>/dev/null)" ] || continue
+        mv -T "$k" "$root/.trash-${k##*/}" && rm -rf "$root/.trash-${k##*/}" && log "pruned ${k##*/}"
+      done
+    }
+
+    failed=""
+    fill_once() {
+      if [ ! -s /source/Gemfile.lock ] || [ ! -s /source/mise.toml ]; then
+        log "no source yet (Secret spritz-bundle-source)"; return 0
+      fi
+      local work; work=$(mktemp -d)
+      # Copy both files first, so one build sees one version of each.
+      cp /source/Gemfile.lock /source/mise.toml "$work/"
+      local want ruby digest stage
+      want=$(sed -nE 's/^ruby *= *"([^"]+)".*/\1/p' "$work/mise.toml" | head -1)
+      ruby=$(readlink -f "$rubies/$want" 2>/dev/null || true)
+      if [ -z "$want" ] || [ ! -x "$ruby/bin/ruby" ]; then
+        log "Ruby '${want}' is not in this node's mise cache yet; the first CI job installs it"
+        rm -rf "$work"; return 0
+      fi
+      # mise marks an install it has not finished (a CI job may be building
+      # this Ruby right now, or was evicted doing so).
+      if [ -e "/home/runner/.local/share/mise/.cache/ruby/${ruby##*/}/incomplete" ] \
+        || ! "$ruby/bin/ruby" -ropenssl -rpsych -rzlib -e 1 2>/dev/null; then
+        log "Ruby ${ruby##*/} is incomplete or broken in this node's mise cache; waiting"
+        rm -rf "$work"; return 0
+      fi
+      digest=$({ cat "$work/Gemfile.lock"; echo "ruby ${ruby##*/}"; } | sha256sum | cut -c1-16)
+      if [ -d "$dir/$digest" ]; then flip "$digest"; rm -rf "$work"; return 0; fi
+      # A failed build is retried after 30 minutes, not every minute.
+      if [ "$failed" = "$digest" ] && [ -z "$(find "$dir/.failed" -mmin +30 2>/dev/null)" ]; then
+        rm -rf "$work"; return 0
+      fi
+      stage="$dir/.staging-$digest"
+      rm -rf "$stage"; mkdir -p "$stage/app"
+      log "building $digest (Ruby ${ruby##*/})"
+      export PATH="$ruby/bin:$PATH"
+      # Everything Bundler writes stays inside the staging directory: no
+      # download or extension cache outlives a build, so a fill killed half
+      # way (it may be preempted) leaves nothing a later build could reuse.
+      # Not frozen: the synthesized lockfile may need Bundler's touch (a
+      # `bundler` checksum line, say), and a tree is only a seed. Jobs install
+      # frozen against the real lockfile, and fetch anything the seed lacks.
+      if ruby /scripts/synth.rb "$work/Gemfile.lock" "$stage/app" \
+        && (cd "$stage/app" && BUNDLE_FROZEN=false BUNDLE_PATH="$stage/tree" \
+              BUNDLE_USER_CACHE="$stage/user-cache" \
+              nice -n 19 bundle install --jobs 2 --quiet) \
+        && rm -rf "$stage"/tree/ruby/*/cache \
+        && mv -T "$stage/tree" "$dir/$digest"; then
+        rm -rf "$stage" "$work" "$dir/.failed"
+        failed=""
+        flip "$digest"
+        log "built $digest: $(du -sh "$dir/$digest" | cut -f1)"
+      else
+        rm -rf "$stage" "$work"
+        failed=$digest; touch "$dir/.failed"
+        log "build of $digest failed; retrying in 30 minutes"
+      fi
+    }
+
+    while :; do
+      # A ConfigMap edit reaches the mounted scripts without a pod restart;
+      # exit so the DaemonSet restarts this pod on the new pair.
+      if [ "$(cat /scripts/fill.sh /scripts/synth.rb | sha256sum)" != "$scripts" ]; then
+        log "scripts changed; restarting"; exit 0
+      fi
+      fill_once || log "fill pass failed"
+      prune || log "prune failed"
+      sleep 60
+    done
+  synth.rb: |
+    # Usage: ruby synth.rb <source Gemfile.lock> <out dir>
+    # Writes <out dir>/Gemfile and <out dir>/Gemfile.lock: every rubygems.org
+    # gem the source lockfile resolves, pinned exactly, with the path gems
+    # (spritz's engines, which need the repository itself) left out. The kept
+    # gems' CHECKSUMS are carried over, so Bundler still verifies each .gem.
+    src, out = ARGV
+    sections = File.read(src).split(/\n(?=[A-Z][A-Z ]*\n)/).map { |s| [s[/\A[A-Z][A-Z ]*/], s] }
+    path_names = []
+    gems = {}
+    sections.each do |name, body|
+      case name
+      when "PATH"
+        body.scan(/^    ([^\s(]+) \(/) { path_names << $1 }
+      when "GEM"
+        remote = body[/^  remote: (\S+)$/, 1]
+        abort "refusing GEM remote #{remote.inspect}" unless remote == "https://rubygems.org/"
+        body.scan(/^    ([^\s(]+) \(([^)]+)\)$/) do |n, v|
+          version, platform = v.split("-", 2)
+          (gems[n] ||= []) << [Gem::Version.new(version), platform]
+        end
+      end
+    end
+    abort "no GEM specs in #{src}" if gems.empty?
+    # A gem locked only for platforms this node cannot use (a darwin-only
+    # binary, say) is left out: the jobs here never install it either.
+    gems.select! { |_, vs| vs.any? { |_, p| p.nil? || Gem::Platform.new(p) === Gem::Platform.local } }
+    gems.transform_values! { |vs| vs.map(&:first) }
+    gems.each { |n, vs| abort "#{n}: several versions #{vs.uniq.map(&:to_s)}" if vs.uniq.size > 1 }
+    kept = sections.reject { |n, _| n == "PATH" }.map do |n, body|
+      case n
+      when "DEPENDENCIES"
+        "DEPENDENCIES\n" + gems.sort.map { |g, vs| "  #{g} (= #{vs.first})\n" }.join
+      when "CHECKSUMS"
+        body.lines.reject { |l| path_names.include?(l[/^  ([^\s(]+) \(/, 1]) }.join
+      else
+        body
+      end
+    end
+    File.write(File.join(out, "Gemfile.lock"), kept.map { |b| b.end_with?("\n") ? b : "#{b}\n" }.join("\n"))
+    File.write(File.join(out, "Gemfile"),
+      "source \"https://rubygems.org\"\n" +
+      gems.sort.map { |g, vs| "gem #{g.dump}, \"= #{vs.first}\", require: false\n" }.join)
+    puts "#{gems.size} gems pinned, #{path_names.size} path gems left out"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spritz-bundle-fill
+  namespace: arc-runners
+spec:
+  selector:
+    matchLabels: {app: spritz-bundle-fill}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1, maxSurge: 0}
+  template:
+    metadata:
+      labels: {app: spritz-bundle-fill}
+    spec:
+      automountServiceAccountToken: false
+      # Waits rather than preempts; a CI pod may preempt it, and a restarted
+      # fill discards its staging directory and starts again.
+      priorityClassName: ci-dev
+      nodeSelector:
+        zagreus.asn.casa/role: amd64-runner
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        # hostPath DirectoryOrCreate makes the directory root's.
+        - name: own
+          image: &image ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+          command: ["chown", "1000:1000", "/cache"]
+          securityContext: {runAsUser: 0, runAsGroup: 0}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+          volumeMounts:
+            - {name: trees, mountPath: /cache}
+      containers:
+        - name: fill
+          # The runner image, so the tree is built against the libraries the
+          # jobs load it with. Keep in step with ci.yaml and ci-x64.yaml.
+          image: *image
+          command: ["/bin/bash", "/scripts/fill.sh"]
+          env:
+            - {name: HOME, value: /tmp/home}
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {cpu: "2", memory: 3Gi}
+          volumeMounts:
+            - {name: trees, mountPath: /cache}
+            - {name: mise, mountPath: /home/runner/.local/share/mise, readOnly: true}
+            - {name: source, mountPath: /source, readOnly: true}
+            - {name: scripts, mountPath: /scripts, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: trees, hostPath: {path: /var/lib/ci-cache/bundle-trees, type: DirectoryOrCreate}}
+        - {name: mise, hostPath: {path: /var/lib/ci-cache/mise, type: DirectoryOrCreate}}
+        - name: source
+          secret: {secretName: spritz-bundle-source, optional: true}
+        - {name: scripts, configMap: {name: spritz-bundle-fill}}
+        - {name: tmp, emptyDir: {}}
