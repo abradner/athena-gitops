@@ -111,8 +111,9 @@ spec:
 # render far faster than a Pi's, and between encodes its CPU sits idle. The
 # transcoder still comes first, and that is what the CPU limit below is for:
 # on these machines the cores and the iGPU share one package power budget (65 W
-# on the G7), so a render running every core can pull the iGPU's clock down
-# mid-encode. CFS weight cannot prevent that (the transcoder's larger request
+# on the current GPU worker's host), so a render running every core can pull
+# the iGPU's clock down mid-encode (expected from the shared budget, not yet
+# measured here). CFS weight cannot prevent that (the transcoder's larger request
 # only wins it CPU time), and nor can a PriorityClass, which acts at
 # scheduling and preemption only. The limit does: it bounds how much of the
 # package a render can draw. On the 4-core arm workers the same limit is a
@@ -186,8 +187,9 @@ spec:
             - name: SOLID_QUEUE_SKIP_RECURRING
               value: "true"
             # libvips sizes its thread pool from the CPUs it can see, which is
-            # the node's count (10 on the G7), not the CPU limit. Match the
-            # limit, so a render runs 4 threads rather than 10 being throttled.
+            # the node's count (10 on the current GPU worker), not the CPU
+            # limit. Match the limit, so a render runs 4 threads rather than 10
+            # being throttled.
             - name: VIPS_CONCURRENCY
               value: "4"
           envFrom:
