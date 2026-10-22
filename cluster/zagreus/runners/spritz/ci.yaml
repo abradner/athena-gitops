@@ -62,22 +62,70 @@ spec:
                         - key: zagreus.asn.casa/role
                           operator: In
                           values: [amd64-runner]
+            initContainers:
+              # Copies this node's pre-installed gem tree (bundle-cache.yaml)
+              # into the pod's own BUNDLE_PATH. The trees are mounted
+              # read-only, and the job installs anything missing into its own
+              # copy. No tree yet (a fresh node, an arm64 node, a runner image
+              # the fill has not built for) or a failed copy: an empty
+              # BUNDLE_PATH, and the job installs everything, as before.
+              - name: bundle-seed
+                # The runner's own image (aliased below), so the seed keys
+                # trees by the libraries the job will load them with.
+                image: &runner-image ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                imagePullPolicy: IfNotPresent
+                securityContext: {runAsUser: 1000, runAsGroup: 1000}
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    . /etc/os-release
+                    shopt -s dotglob nullglob
+                    # The fill's key for this image: OS release, architecture
+                    # and installed packages (bundle-cache.yaml, fill.sh).
+                    src=/cache/$ID-$VERSION_ID-$(uname -m)-$(sha256sum /var/lib/dpkg/status | cut -c1-12)/current
+                    dst=/home/runner/.bundle-local
+                    # The tree's entries, not "$t/.": the emptyDir itself is
+                    # root's, and cp -a cannot set its times.
+                    entries=()
+                    if t=$(readlink -e "$src") && [ -d "$t" ]; then entries=("$t"/*); fi
+                    if [ ${#entries[@]} -eq 0 ]; then
+                      echo "no gem tree at $src"
+                    elif start=$EPOCHREALTIME && cp -a --reflink=auto -- "${entries[@]}" "$dst/"; then
+                      echo "seeded $dst from ${t##*/} in $(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN { printf "%.1f", e - s }') s"
+                    else
+                      echo "seed from ${t##*/} failed; starting empty"
+                      chmod -R u+w -- "$dst" 2>/dev/null; rm -rf -- "${dst:?}"/* || true
+                    fi
+                    # Never fail the pod: an empty BUNDLE_PATH is today's behaviour.
+                    exit 0
+                resources:
+                  requests: {cpu: 100m, memory: 64Mi}
+                volumeMounts:
+                  - {name: bundle-trees, mountPath: /cache, readOnly: true}
+                  - {name: bundle, mountPath: /home/runner/.bundle-local}
             containers:
               - name: runner
                 # The first image with the ARC-mode entrypoint (spritz#1165).
                 # Pinned by digest: ARC disables runner self-update, so move
                 # this deliberately whenever actions/runner releases (GitHub
-                # stops queueing jobs for a runner 30 days behind).
-                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                # stops queueing jobs for a runner 30 days behind). The pin
+                # sits on bundle-seed above (&runner-image), which must run
+                # the same image; keep spritz-bundle-fill (bundle-cache.yaml)
+                # on it too, or the pods find no gem tree.
+                image: *runner-image
                 imagePullPolicy: IfNotPresent
                 command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
                 env:
                   - name: RUNNER_CACHE_DIRS
                     value: /home/runner/.local/share/mise:/home/runner/.cache/ms-playwright:/home/runner/.bun/install/cache
-                  # Gems: each pod downloads and installs into its own path. A shared
-                  # per-node download cache (BUNDLE_GLOBAL_GEM_CACHE) raced: jobs starting
-                  # together on one node fetched the same .gem into it at once and Bundler
-                  # aborted with ENOENT on a half-written file (spritz run 39776737369).
+                  # Gems: each pod installs into its own path, an emptyDir the
+                  # bundle-seed init container fills from the node's read-only
+                  # gem tree. A shared, writable per-node download cache
+                  # (BUNDLE_GLOBAL_GEM_CACHE) raced: jobs starting together on
+                  # one node fetched the same .gem into it at once and Bundler
+                  # aborted with ENOENT on a half-written file (spritz run
+                  # 39776737369). See bundle-cache.yaml.
                   - name: BUNDLE_PATH
                     value: /home/runner/.bundle-local
                   # Playwright's install removes every browser its own version
@@ -105,6 +153,7 @@ spec:
                   - {name: mise, mountPath: /home/runner/.local/share/mise}
                   - {name: playwright, mountPath: /home/runner/.cache/ms-playwright}
                   - {name: bun, mountPath: /home/runner/.bun/install/cache}
+                  - {name: bundle, mountPath: /home/runner/.bundle-local}
                   - {name: pg, mountPath: /var/lib/postgresql}
                   - {name: shm, mountPath: /dev/shm}
             volumes:
@@ -114,6 +163,9 @@ spec:
               - {name: mise, hostPath: {path: /var/lib/ci-cache/mise, type: DirectoryOrCreate}}
               - {name: playwright, hostPath: {path: /var/lib/ci-cache/ms-playwright, type: DirectoryOrCreate}}
               - {name: bun, hostPath: {path: /var/lib/ci-cache/bun, type: DirectoryOrCreate}}
+              # Written only by spritz-bundle-fill; read-only here.
+              - {name: bundle-trees, hostPath: {path: /var/lib/ci-cache/bundle-trees, type: DirectoryOrCreate}}
+              - {name: bundle, emptyDir: {}}
               - {name: pg, emptyDir: {}}
               - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
   destination:

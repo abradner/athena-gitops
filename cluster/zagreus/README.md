@@ -63,12 +63,14 @@ register. Revisit it the day a second collaborator gets push access.
 
 **Warm without being persistent.** Every runner pod lives for one job, but the
 expensive state lives in per-node host-path caches under `/var/lib/ci-cache/`
-(compiled Ruby via mise, the bun and gem caches, Playwright browsers) and
-`/var/lib/arc-docker/` (each builder's dockerd data root and layer cache).
-Those survive the pod and a power-off. The runner image's entrypoint hands the
-mount points to the runner user (`RUNNER_CACHE_DIRS`). Gems are installed per
-pod from the shared download cache, never into the shared Ruby, so concurrent
-jobs never write the same gem directory.
+(compiled Ruby via mise, the bun cache, Playwright browsers, a pre-installed
+gem tree) and `/var/lib/arc-docker/` (each builder's dockerd data root and
+layer cache). Those survive the pod and a power-off. The runner image's
+entrypoint hands the mount points to the runner user (`RUNNER_CACHE_DIRS`).
+Gems are never installed into the shared Ruby or a shared writable cache:
+`runners/spritz/bundle-cache.yaml` builds one gem tree per node from main's
+`Gemfile.lock`, and each pod copies it read-only into a `BUNDLE_PATH` of its
+own, so concurrent jobs never write the same gem directory.
 
 **Priority.** `ci-release` (100) for the release builders, general CI at 0,
 `ci-light` (−100) and `ci-dev` (−200) waiting rather than preempting.
