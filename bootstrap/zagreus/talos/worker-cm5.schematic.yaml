@@ -20,7 +20,7 @@
 # never spins (siderolabs/pkgs#1499, siderolabs/sbc-raspberrypi#90). GPIO45
 # drives the CM5's open-collector Fan_PWM line; holding it low through a
 # gpio-hog lets the fan's own pull-up run it at full speed. Seen working on
-# the arm64 builder's Waveshare CM5 PoE carrier, 2026-10-22. No temperature
+# the arm64 builder's carrier, 2026-10-22. No temperature
 # control until the RP1 PWM driver is mainlined; then drop this line for
 # `dtparam=cooling_fan=on`. The overlay installer writes config.txt only on
 # install and upgrade, so a node takes a change here through `talosctl
