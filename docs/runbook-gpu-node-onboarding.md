@@ -4,14 +4,22 @@ GPU workers are amd64 desktops with an Intel iGPU, joined as tainted workers so
 that only the spritz transcoder (and cluster DaemonSets) run on them. The first
 was an HP ProDesk 600 G3 SFF (i7-7700, HD 630, Gen 9.5), onboarded 2026-10-17.
 Expected next: Skylake (Gen 9), Comet Lake (Gen 9.5) and Ice Lake (Gen 11).
-Every one of them uses the same schematic, the same patch, and a per-node
-generation label.
+A node is one of two classes, each with its own schematic and patch, and every
+node has a per-node generation label:
+
+- **Bare metal:** Talos installed on the desktop itself. Sections 1 to 7.
+- **VM:** Talos in a Proxmox VM on the desktop, with the iGPU passed through.
+  Read "GPU worker as a Proxmox VM" below first; it says which sections
+  change.
+
+Both classes carry the same taint and labels, so the transcoder and the device
+plugin cannot tell them apart.
 
 | Piece | Where |
 |---|---|
-| Image Factory schematic | `bootstrap/talos/worker-gpu.schematic.yaml` |
-| Machine-config patch (storage, swap, taint, installer) | `bootstrap/talos/worker-gpu.patch.yaml` |
-| Node list, `<ip>:<gen>` | `GPU_WORKER_IP` in `bootstrap/athena.zsh` (gitignored; template in `athena.template.zsh`) |
+| Image Factory schematic | `bootstrap/talos/worker-gpu.schematic.yaml` (bare metal), `worker-gpu-vm.schematic.yaml` (VM) |
+| Machine-config patch (storage, swap, taint, installer) | `bootstrap/talos/worker-gpu.patch.yaml` (bare metal), `worker-gpu-vm.patch.yaml` (VM) |
+| Node list, `<ip>:<gen>` | `GPU_WORKER_IP` (bare metal) and `GPU_VM_WORKER_IP` (VM) in `bootstrap/athena.zsh` (gitignored; template in `athena.template.zsh`) |
 | Device plugin | `cluster/core/intel-gpu-plugin/` |
 | Transcoder | `cluster/apps/spritz-{staging,production}/spritz/transcoder.yaml` |
 
@@ -148,13 +156,287 @@ Talos then applies the labels by itself.
   `gpu.intel.com/i915: 4` (`-shared-dev-num=4`). A Ready plugin DaemonSet is not proof on its own.
 - **The transcoder's preflight is the real proof.** Each boot does a real
   0.1 s HEVC and H.264 encode, and exits 78 (crash-loops visibly) if the
-  node cannot encode. On a new generation, especially Skylake, run a transcoder
-  pod pinned to the node (`nodeSelector: spritz.dev/gpu-gen: <gen>`) and read
-  its log for `transcoder up (encoder=vaapi`.
+  node cannot encode. On a new node, run a transcoder pod pinned to it **by
+  name**, and read its log for `transcoder up (encoder=vaapi`. Never pin by
+  `spritz.dev/gpu-gen`: two nodes can share a generation (Kaby Lake and Comet
+  Lake are both 9.5), and the pod may then prove the old node instead. The
+  pod is a copy of staging's transcoder with `nodeName` set and its labels
+  replaced, so the Deployment's ReplicaSet does not adopt it:
+
+  ```bash
+  kubectl -n spritz-staging get deploy spritz-transcoder -o json \
+    | jq --arg node <name> '{apiVersion: "v1", kind: "Pod",
+        metadata: {name: "transcoder-preflight", namespace: "spritz-staging",
+                   labels: {app: "transcoder-preflight"}},
+        spec: (.spec.template.spec + {nodeName: $node, restartPolicy: "Never"})}' \
+    | kubectl apply -f -
+  kubectl -n spritz-staging logs -f transcoder-preflight   # transcoder up (encoder=vaapi
+  kubectl -n spritz-staging get pod transcoder-preflight -o jsonpath='{.spec.nodeName}'
+  kubectl -n spritz-staging delete pod transcoder-preflight
+  ```
+
+  It is a real staging transcoder while it runs and may take a staging job;
+  that is acceptable on staging, and deleting it hands the job back after
+  its grace period.
+
+## GPU worker as a Proxmox VM
+
+Some GPU desktops already run Proxmox, or will. Then Talos runs in a VM and
+the host hands it the iGPU whole (vfio-pci). The host's procedure is below
+("The Proxmox host"); which host, its addresses and what each build found
+live with the private inventory. What changes on the Talos side:
+
+| | Bare metal | VM |
+|---|---|---|
+| Schematic | `worker-gpu.schematic.yaml` | `worker-gpu-vm.schematic.yaml` |
+| Patch | `worker-gpu.patch.yaml` | `worker-gpu-vm.patch.yaml` |
+| Node list | `GPU_WORKER_IP` | `GPU_VM_WORKER_IP` |
+| Secure Boot | on; `-secureboot` ISO and installer | off (OVMF, no enrolled keys); plain ISO and installer |
+| Extensions | `i915`, `intel-ucode`, `mei` | `i915`, `intel-ucode`, `qemu-guest-agent` |
+| Console | AMT serial-over-LAN, `ttyS4` | the VM's serial port, `ttyS0` (`qm terminal <vmid>`); no `tty0`, no dashboard |
+| Install disk | the Optane, by device | the virtual disk of 40 GB or less, by size |
+| EPHEMERAL | the SATA SSD, by transport | the virtual disk of 64 GiB or more, by size |
+| Swap | rest of the Optane, with zswap | none |
+
+Four rules that come from those differences:
+
+- **`qemu-guest-agent` and `agent: enabled=1` go together.** The extension's
+  service waits for the agent's virtio port, which exists only when the VM
+  enables the agent. Without it the boot never finishes and the node reboots
+  every ~71 minutes (section 2). Never enable one without the other.
+- **Disks are chosen by size.** Both are virtual disks on the same controller,
+  so transport cannot tell them apart. Give the VM a ~20 GB install disk and a
+  ~100 GB scratch disk, and nothing in between: a disk between 40 GB and
+  64 GiB matches neither selector, and resizing one across a threshold
+  changes which selector matches it.
+- **Firmware steps (section 1) are the host's**, not the VM's. Secure Boot,
+  boot order and AMT are about the Proxmox host. The VM's only firmware
+  setting is OVMF without enrolled keys.
+- **The serial console is the only console.** The schematic removes
+  `console=tty0` and disables the Talos dashboard, so noVNC shows only the
+  early boot (a row of Tux logos). This is deliberate: with a framebuffer
+  console on the passed-through iGPU (no monitor attached), every kernel
+  message took about a second to draw, the kernel logged RCU stalls every
+  ~20 s, and maintenance mode took 97 s instead of 18 s. Read the node with
+  `qm terminal <vmid>` or `talosctl dmesg`.
+
+### The Proxmox host
+
+Proxmox VE 9 on an Intel desktop with an iGPU, standalone (never joined to
+another Proxmox cluster). In order; each step has its check.
+
+1. **Firmware.** VT-x and VT-d on. Secure Boot on for the host (the VM does
+   not use it). After Power Loss: Power On if the BIOS allows it. If the box
+   has AMT, enable serial-over-LAN (MEBx, Ctrl-P at POST).
+2. **Disks.** Every disk the firmware could try first must carry a signed
+   boot partition: some business desktops rebuild their UEFI boot order after
+   a power loss, and an unsigned disk first in line stops the boot at a Secure
+   Boot prompt. The installer's ZFS mirror puts a signed grub ESP on each
+   member. An added NVMe needs an ESP partition (~1 GB, type EF00), then
+   `proxmox-boot-tool format <part>` and `proxmox-boot-tool init <part> grub`
+   (the `grub` argument matters: the default, systemd-boot, is unsigned).
+   Check `proxmox-boot-tool status`.
+3. **Memory.** With a passed-through device QEMU pins ALL of the guest's
+   memory at start, so the VM and the host cannot overcommit: size the VM to
+   fit beside the host and the ZFS ARC, and cap the ARC
+   (`options zfs zfs_arc_max=<bytes>` in `/etc/modprobe.d/zfs.conf`, then
+   `update-initramfs -u -k all`). On a 32 GB box (31.1 GiB usable) a 26 GiB
+   VM was OOM-killed on its first start; 24 GiB with a 2 GiB ARC left the
+   host ~4 GiB.
+4. **Serial console.** On HP desktops with AMT, the "KT Redirection" UART
+   (`00:16.3`) is `ttyS4` (the PVE kernel registers enough 8250 ports for
+   it; if `ttyS4` is missing, add `8250.nr_uarts=8`, as the bare-metal Talos
+   schematic does). `GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0
+   console=ttyS4,115200n8"` in `/etc/default/grub`, `proxmox-boot-tool
+   refresh` (it runs `update-grub`), `systemctl enable --now
+   serial-getty@ttyS4.service`. Once the iGPU belongs to the VM, this is the
+   host's only console.
+5. **iGPU to vfio-pci.** `lspci -nn -s 00:02.0` gives the id (a Comet Lake
+   UHD 630 is `8086:9bc8`); `ls /sys/kernel/iommu_groups/*/devices` must show
+   it alone in its group (no ACS override needed then; the PVE kernel enables
+   the IOMMU by default). Then:
+
+   ```bash
+   printf 'vfio\nvfio_iommu_type1\nvfio_pci\n' > /etc/modules-load.d/vfio.conf
+   printf 'options vfio-pci ids=<vendor:device>\nsoftdep i915 pre: vfio-pci\n' > /etc/modprobe.d/vfio.conf
+   update-initramfs -u -k all && reboot
+   ```
+
+   Check: `lspci -nnk -s 00:02.0` shows `Kernel driver in use: vfio-pci`.
+6. **Governor.** The PVE kernel defaults to `performance`; under
+   `intel_pstate` with HWP, `powersave` is the dynamic governor, not a fixed
+   low clock. Set it from a oneshot systemd unit (`RemainAfterExit=yes`) that
+   writes every `cpufreq/scaling_governor`.
+7. **NIC.** An onboard I219 (`e1000e`) can log "Hardware Unit Hang" under
+   load; watch `journalctl -k`, and if it appears add `post-up ethtool -K
+   <nic> tso off gso off` to the interface.
+8. **The VM.** If the host sits on the workers' VLAN itself, `vmbr0` stays a
+   plain bridge and the VM's NIC carries no tag; otherwise make `vmbr0`
+   VLAN-aware and tag the VM's NIC. Upload the VM schematic's
+   `metal-amd64.iso` to `local`, then:
+
+   ```bash
+   qm create <vmid> --name <name> --ostype l26 --machine q35 --bios ovmf \
+     --efidisk0 local-zfs:1,efitype=4m,pre-enrolled-keys=0 \
+     --cpu host --sockets 1 --cores <n> --memory <MiB> --balloon 0 \
+     --scsihw virtio-scsi-single \
+     --scsi0 local-zfs:20,iothread=1,discard=on,ssd=1 \
+     --scsi1 local-zfs:100,iothread=1,discard=on,ssd=1 \
+     --net0 virtio=<mac>,bridge=vmbr0 \
+     --hostpci0 0000:00:02.0,pcie=1 \
+     --serial0 socket --agent enabled=1 \
+     --ide2 local:iso/<talos iso>,media=cdrom --boot 'order=scsi0;ide2' \
+     --onboot 1
+   ```
+
+   Set the MAC yourself so the DHCP reservation can exist before the first
+   boot. Talos's Proxmox guide warns against VirtIO SCSI single (bootstrap
+   hangs); the first VM of this class ran on it without trouble. If
+   maintenance mode hangs or lists fewer disks, switch to
+   `--scsihw virtio-scsi-pci` first.
+9. **Gates, in maintenance mode, before any cluster step:**
+   - `talosctl get disks --insecure`: the two disks (step 4 below).
+   - The iGPU is in the guest, **found by id, not address**: with `pcie=1`
+     it sits behind a q35 root port, not at `00:02.0`. The default table
+     shows names, so ask for YAML: `talosctl get pcidevices --insecure -o
+     yaml` lists `vendor_id: "0x8086"`, `product_id: "0x9bc8"` and `driver:
+     i915`. `talosctl dmesg --insecure | grep i915` shows it initialised
+     (checked with a 1.14 talosctl against a 1.13 node; with an older client,
+     read the serial console instead). "Failed to find VBIOS
+     tables (VBT)" is expected and harmless: QEMU 11 already copies the
+     host OpRegion (`x-igd-opregion` defaults on), OVMF does not install
+     it, and i915 copes.
+   - `qm agent <vmid> ping` answers.
+   - `qm stop` then `qm start`: i915 initialises the iGPU again (a device
+     that does not reset cleanly fails the second start).
+   - Boot time: maintenance mode within ~20 s, and no `rcu` stall in
+     `dmesg` (gotcha #5).
+
+   The serial socket only streams new output; to capture a whole boot,
+   attach first (`socat - UNIX-CONNECT:/var/run/qemu-server/<vmid>.serial0`)
+   and then `qm reset` (a `qm stop` closes the socket).
+
+Onboarding, by section:
+
+1. **Firmware:** the host's (above).
+2. **Boot media:** the schematic is `worker-gpu-vm.schematic.yaml`, and the
+   image is `metal-amd64.iso` (not `-secureboot`). Upload it to the host's ISO
+   storage and attach it to the VM.
+3. **Address:** as for bare metal, but add the entry to `GPU_VM_WORKER_IP`.
+   The VM's NIC carries the address, on the workers' VLAN.
+4. **Maintenance mode:** as for bare metal, except that `securitystate`
+   shows `secureBoot: false` (expected: OVMF has no enrolled keys). `get
+   disks` must show exactly two disks besides the CD-ROM and the read-only
+   loop devices: one of 40 GB or less, one of 64 GiB or more. A fresh
+   virtual disk needs no wipe.
+5. **Apply:** with `--config-patch @worker-gpu-vm.patch.yaml` in place of
+   `worker-gpu.patch.yaml`. Before applying, render the result and check
+   that `machine.install` has a `diskSelector` and no `disk`:
+
+   ```bash
+   talosctl machineconfig patch worker.yaml \
+     --patch @worker-gpu-vm.patch.yaml \
+     --patch '{"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"<gen>"}}}' \
+     -o /tmp/gpu-vm.yaml
+   talosctl validate --mode metal --strict -c /tmp/gpu-vm.yaml
+   ```
+
+   Boot order: the install disk first, then the ISO. On the first boot the
+   empty disk falls through to the ISO; after the install the disk boots, and
+   the ISO would halt anyway if it found an installed system.
+6. **Taint:** as for bare metal.
+7. **Verify:** as for bare metal, except: EPHEMERAL is on the large virtual
+   disk and the install on the small one; there is no swap; `ttyS4` and AMT
+   do not apply; and `talosctl -n <ip> services` shows `ext-qemu-guest-agent`
+   Running. `talosctl -n <ip> dmesg | grep -i i915` must show i915 binding
+   the iGPU. A "VBT" or "OpRegion" warning is expected in a VM and harmless
+   for encoding; the transcoder's preflight is still the proof.
+
+## Replacing a GPU node
+
+While the cluster has a single GPU node, replacing it is an outage of video
+transcoding unless the new node joins first. Order:
+
+1. Pick a window with the spritz promoter: no promotion in flight, and the
+   transcode queue empty.
+2. Onboard the new node and verify it fully (section 7, including the
+   75-minute no-reboot check and the preflight pod pinned to the new node by
+   name) while the old node still serves. The transcoders do not select a
+   node, so nothing moves yet. Device-plugin slots on the new node are free,
+   so a rollout can land there. **Do not drain the old node until the pinned
+   preflight has passed on the new one**: an encode that only ran on the old
+   node proves nothing about the passthrough.
+3. Cordon the old node, then drain it. The transcoders finish their current
+   job (long `terminationGracePeriodSeconds`) and their replacements schedule
+   on the new node:
+
+   ```bash
+   kubectl cordon <old>
+   kubectl drain <old> --ignore-daemonsets --delete-emptydir-data --timeout=20m
+   ```
+
+   Check every transcoder logs `transcoder up (encoder=vaapi` on the new node.
+4. Shut the old node down, and **keep its Node object** (cordoned, tainted,
+   NotReady) and its DHCP reservation:
+
+   ```bash
+   talosctl -n <old ip> -e <old ip> shutdown
+   ```
+
+   Until the soak (step 5) has passed, powering it back on and uncordoning
+   it is the rollback. Do not delete the Node yet: a deleted Node comes back
+   as a new registration without the cordon and **without the GPU taint**
+   (section 6: Talos cannot add a taint after registration), so ordinary
+   workloads would land on it.
+5. Soak: the transcoders stay healthy on the new node for at least three
+   hours, with no restarts, no Failed pods and no self-reboot.
+6. After the soak, remove the old node for good. **First make sure it cannot
+   boot back into this cluster**: its disks still hold this cluster's
+   machine config, so if it starts (a VM's autostart, a BIOS set to power on
+   after AC loss, someone moving it and switching it on) it re-registers as
+   a NEW node, without the cordon and without the GPU taint. Wipe it first,
+   and fully: the disks hold this cluster's credentials, so a fast wipe
+   (Talos's default, the first and last 1 MiB) is not enough.
+   - **VM:** `qm set <vmid> --onboot 0`, then `qm destroy <vmid>
+     --destroy-unreferenced-disks 1 --purge 1` (the zvols go with it).
+   - **Bare metal:** the Talos ISO will not help: it halts when it finds an
+     installed system (`talos.halt_if_installed=1`). Boot a Linux live USB
+     instead (pick USB from the boot menu: a GPU node's disk boots first),
+     with the network unplugged, and for EACH disk (`lsblk` to list them):
+
+     ```bash
+     blkdiscard -z -f /dev/<disk>   # write zeroes over the whole device
+     cmp /dev/<disk> /dev/zero      # "EOF on /dev/<disk>" means all zero
+     blkdiscard -f /dev/<disk>      # then hand the blocks back to the SSD
+     ```
+
+     If `blkdiscard -z` is refused, `dd if=/dev/zero of=/dev/<disk> bs=16M
+     oflag=direct status=progress` does the same.
+
+   Only then:
+
+   ```bash
+   kubectl delete node <old>
+   ```
+
+   Remove its entry from `athena.zsh` (an emptied list stays declared, as
+   `GPU_WORKER_IP=()` or `GPU_VM_WORKER_IP=()`: `apply-worker.sh` exits on
+   an undeclared one) and from the 1Password backup, and release its DHCP
+   reservation. The wipe above also removes this cluster's secrets from
+   the hardware before it goes anywhere else.
 
 ## Changing the schematic or Talos version on a running node
 
-The installer in `worker-gpu.patch.yaml` is the one to upgrade with. Upgrade
+Each class upgrades with its OWN installer, never the other's:
+
+| Class | Installer to upgrade with | Reboot |
+|---|---|---|
+| Bare metal | `install.image` in `worker-gpu.patch.yaml` (`metal-installer-secureboot/...`) | `--mode powercycle`, so the firmware boots the new signed UKI |
+| VM | `install.image` in `worker-gpu-vm.patch.yaml` (`metal-installer/...`, no Secure Boot) | a plain `talosctl reboot` |
+
+Taking the bare-metal installer onto a VM brings back `console=tty0` and the
+boot stall in AGENTS.md gotcha #5; the commands below show the bare-metal
+case, so swap the image (and the reboot mode) for a VM. Upgrade
 one GPU node at a time: while there is only one, the transcoders are down from
 the drain until the node is back and the device plugin has registered (a few
 minutes), so pick a quiet moment and tell whoever is promoting spritz.

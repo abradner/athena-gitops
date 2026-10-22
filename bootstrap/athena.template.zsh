@@ -44,6 +44,14 @@ GPU_WORKER_IP=(
   "10.10.80.x:9.5"   # <ip>:<iGPU generation> (9, 9.5, 11): the spritz.dev/gpu-gen label
 )
 
+# GPU workers that are Proxmox VMs with the host's iGPU passed through,
+# applied by apply-worker.sh with worker-gpu-vm.patch.yaml (NOT
+# worker-gpu.patch.yaml: the disks and the installer differ). Same entry
+# format, address-range rule and "must be declared" rule as GPU_WORKER_IP.
+GPU_VM_WORKER_IP=(
+  "10.10.80.x:9.5"
+)
+
 # The control plane node used for `talosctl bootstrap` and kubeconfig
 # retrieval. Set explicitly (see indexing note above).
 BOOTSTRAP_NODE="10.10.80.x"
