@@ -182,9 +182,9 @@ Talos then applies the labels by itself.
 ## GPU worker as a Proxmox VM
 
 Some GPU desktops already run Proxmox, or will. Then Talos runs in a VM and
-the host hands it the iGPU whole (vfio-pci). The host's own checklist (bridge,
-VLAN, IOMMU, vfio binding, the VM's settings) lives with the private
-inventory, not here. What changes on the Talos side:
+the host hands it the iGPU whole (vfio-pci). The host's procedure is below
+("The Proxmox host"); which host, its addresses and what each build found
+live with the private inventory. What changes on the Talos side:
 
 | | Bare metal | VM |
 |---|---|---|
@@ -220,9 +220,99 @@ Four rules that come from those differences:
   ~20 s, and maintenance mode took 97 s instead of 18 s. Read the node with
   `qm terminal <vmid>` or `talosctl dmesg`.
 
+### The Proxmox host
+
+Proxmox VE 9 on an Intel desktop with an iGPU, standalone (never joined to
+another Proxmox cluster). In order; each step has its check.
+
+1. **Firmware.** VT-x and VT-d on. Secure Boot on for the host (the VM does
+   not use it). After Power Loss: Power On if the BIOS allows it. If the box
+   has AMT, enable serial-over-LAN (MEBx, Ctrl-P at POST).
+2. **Disks.** Every disk the firmware could try first must carry a signed
+   boot partition: some business desktops rebuild their UEFI boot order after
+   a power loss, and an unsigned disk first in line stops the boot at a Secure
+   Boot prompt. The installer's ZFS mirror puts a signed grub ESP on each
+   member; an added NVMe needs `proxmox-boot-tool init <part> grub` (the
+   `grub` argument matters: the default, systemd-boot, is unsigned). Check
+   `proxmox-boot-tool status`.
+3. **Memory.** With a passed-through device QEMU pins ALL of the guest's
+   memory at start, so the VM and the host cannot overcommit: size the VM to
+   fit beside the host and the ZFS ARC, and cap the ARC
+   (`options zfs zfs_arc_max=<bytes>` in `/etc/modprobe.d/zfs.conf`, then
+   `update-initramfs -u -k all`). On a 32 GB box (31.1 GiB usable) a 26 GiB
+   VM was OOM-killed on its first start; 24 GiB with a 2 GiB ARC left the
+   host ~4 GiB.
+4. **Serial console.** On HP desktops with AMT, the "KT Redirection" UART
+   (`00:16.3`) is `ttyS4`. `GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0
+   console=ttyS4,115200n8"` in `/etc/default/grub`, `update-grub &&
+   proxmox-boot-tool refresh`, `systemctl enable --now
+   serial-getty@ttyS4.service`. Once the iGPU belongs to the VM, this is the
+   host's only console.
+5. **iGPU to vfio-pci.** `lspci -nn -s 00:02.0` gives the id (a Comet Lake
+   UHD 630 is `8086:9bc8`); `ls /sys/kernel/iommu_groups/*/devices` must show
+   it alone in its group (no ACS override needed then; the PVE kernel enables
+   the IOMMU by default). Then:
+
+   ```bash
+   printf 'vfio\nvfio_iommu_type1\nvfio_pci\n' > /etc/modules-load.d/vfio.conf
+   printf 'options vfio-pci ids=<vendor:device>\nsoftdep i915 pre: vfio-pci\n' > /etc/modprobe.d/vfio.conf
+   update-initramfs -u -k all && reboot
+   ```
+
+   Check: `lspci -nnk -s 00:02.0` shows `Kernel driver in use: vfio-pci`.
+6. **Governor.** The PVE kernel defaults to `performance`; under
+   `intel_pstate` with HWP, `powersave` is the dynamic governor, not a fixed
+   low clock. Set it from a oneshot systemd unit (`RemainAfterExit=yes`) that
+   writes every `cpufreq/scaling_governor`.
+7. **NIC.** An onboard I219 (`e1000e`) can log "Hardware Unit Hang" under
+   load; watch `journalctl -k`, and if it appears add `post-up ethtool -K
+   <nic> tso off gso off` to the interface.
+8. **The VM.** If the host sits on the workers' VLAN itself, `vmbr0` stays a
+   plain bridge and the VM's NIC carries no tag; otherwise make `vmbr0`
+   VLAN-aware and tag the VM's NIC. Upload the VM schematic's
+   `metal-amd64.iso` to `local`, then:
+
+   ```bash
+   qm create <vmid> --name <name> --ostype l26 --machine q35 --bios ovmf \
+     --efidisk0 local-zfs:1,efitype=4m,pre-enrolled-keys=0 \
+     --cpu host --sockets 1 --cores <n> --memory <MiB> --balloon 0 \
+     --scsihw virtio-scsi-single \
+     --scsi0 local-zfs:20,iothread=1,discard=on,ssd=1 \
+     --scsi1 local-zfs:100,iothread=1,discard=on,ssd=1 \
+     --net0 virtio=<mac>,bridge=vmbr0 \
+     --hostpci0 0000:00:02.0,pcie=1 \
+     --serial0 socket --agent enabled=1 \
+     --ide2 local:iso/<talos iso>,media=cdrom --boot 'order=scsi0;ide2' \
+     --onboot 1
+   ```
+
+   Set the MAC yourself so the DHCP reservation can exist before the first
+   boot. Talos's Proxmox guide warns against VirtIO SCSI single (bootstrap
+   hangs); the first VM of this class ran on it without trouble. If
+   maintenance mode hangs or lists fewer disks, switch to
+   `--scsihw virtio-scsi-pci` first.
+9. **Gates, in maintenance mode, before any cluster step:**
+   - `talosctl get disks --insecure`: the two disks (step 4 below).
+   - The iGPU is in the guest, **found by id, not address**: with `pcie=1`
+     it sits behind a q35 root port, not at `00:02.0`. `talosctl get
+     pcidevices --insecure` lists it with `driver: i915`; `talosctl dmesg
+     --insecure | grep i915` shows it initialised. "Failed to find VBIOS
+     tables (VBT)" is expected and harmless: QEMU 11 already copies the
+     host OpRegion (`x-igd-opregion` defaults on), OVMF does not install
+     it, and i915 copes.
+   - `qm agent <vmid> ping` answers.
+   - `qm stop` then `qm start`: i915 initialises the iGPU again (a device
+     that does not reset cleanly fails the second start).
+   - Boot time: maintenance mode within ~20 s, and no `rcu` stall in
+     `dmesg` (gotcha #5).
+
+   The serial socket only streams new output; to capture a whole boot,
+   attach first (`socat - UNIX-CONNECT:/var/run/qemu-server/<vmid>.serial0`)
+   and then `qm reset` (a `qm stop` closes the socket).
+
 Onboarding, by section:
 
-1. **Firmware:** skip (host's checklist).
+1. **Firmware:** the host's (above).
 2. **Boot media:** the schematic is `worker-gpu-vm.schematic.yaml`, and the
    image is `metal-amd64.iso` (not `-secureboot`). Upload it to the host's ISO
    storage and attach it to the VM.
