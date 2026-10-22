@@ -232,9 +232,10 @@ another Proxmox cluster). In order; each step has its check.
    boot partition: some business desktops rebuild their UEFI boot order after
    a power loss, and an unsigned disk first in line stops the boot at a Secure
    Boot prompt. The installer's ZFS mirror puts a signed grub ESP on each
-   member; an added NVMe needs `proxmox-boot-tool init <part> grub` (the
-   `grub` argument matters: the default, systemd-boot, is unsigned). Check
-   `proxmox-boot-tool status`.
+   member. An added NVMe needs an ESP partition (~1 GB, type EF00), then
+   `proxmox-boot-tool format <part>` and `proxmox-boot-tool init <part> grub`
+   (the `grub` argument matters: the default, systemd-boot, is unsigned).
+   Check `proxmox-boot-tool status`.
 3. **Memory.** With a passed-through device QEMU pins ALL of the guest's
    memory at start, so the VM and the host cannot overcommit: size the VM to
    fit beside the host and the ZFS ARC, and cap the ARC
@@ -243,9 +244,11 @@ another Proxmox cluster). In order; each step has its check.
    VM was OOM-killed on its first start; 24 GiB with a 2 GiB ARC left the
    host ~4 GiB.
 4. **Serial console.** On HP desktops with AMT, the "KT Redirection" UART
-   (`00:16.3`) is `ttyS4`. `GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0
-   console=ttyS4,115200n8"` in `/etc/default/grub`, `update-grub &&
-   proxmox-boot-tool refresh`, `systemctl enable --now
+   (`00:16.3`) is `ttyS4` (the PVE kernel registers enough 8250 ports for
+   it; if `ttyS4` is missing, add `8250.nr_uarts=8`, as the bare-metal Talos
+   schematic does). `GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0
+   console=ttyS4,115200n8"` in `/etc/default/grub`, `proxmox-boot-tool
+   refresh` (it runs `update-grub`), `systemctl enable --now
    serial-getty@ttyS4.service`. Once the iGPU belongs to the VM, this is the
    host's only console.
 5. **iGPU to vfio-pci.** `lspci -nn -s 00:02.0` gives the id (a Comet Lake

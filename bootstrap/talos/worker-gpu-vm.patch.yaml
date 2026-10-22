@@ -6,8 +6,8 @@
 #
 # Contains no secrets, so it is committed as-is and never hydrated.
 #
-# What this assumes of the VM (the host checklist lives with the private
-# inventory):
+# What this assumes of the VM (the host's procedure: the runbook's "The
+# Proxmox host"):
 #   - q35, OVMF without enrolled keys (no Secure Boot), cpu: host;
 #   - virtio-scsi-single with two virtual disks, a small install disk
 #     (~20 GB) and a ~100 GB scratch disk, both discard=on, ssd=1. Talos's
