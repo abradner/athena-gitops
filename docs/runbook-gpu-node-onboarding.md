@@ -193,7 +193,7 @@ inventory, not here. What changes on the Talos side:
 | Node list | `GPU_WORKER_IP` | `GPU_VM_WORKER_IP` |
 | Secure Boot | on; `-secureboot` ISO and installer | off (OVMF, no enrolled keys); plain ISO and installer |
 | Extensions | `i915`, `intel-ucode`, `mei` | `i915`, `intel-ucode`, `qemu-guest-agent` |
-| Console | AMT serial-over-LAN, `ttyS4` | the VM's serial port, `ttyS0` (`qm terminal <vmid>`) |
+| Console | AMT serial-over-LAN, `ttyS4` | the VM's serial port, `ttyS0` (`qm terminal <vmid>`); no `tty0`, no dashboard |
 | Install disk | the Optane, by device | the virtual disk of 40 GB or less, by size |
 | EPHEMERAL | the SATA SSD, by transport | the virtual disk of 64 GiB or more, by size |
 | Swap | rest of the Optane, with zswap | none |
@@ -212,9 +212,13 @@ Four rules that come from those differences:
 - **Firmware steps (section 1) are the host's**, not the VM's. Secure Boot,
   boot order and AMT are about the Proxmox host. The VM's only firmware
   setting is OVMF without enrolled keys.
-- **The noVNC console goes blank** once i915 binds the passed-through iGPU:
-  the kernel console moves to the iGPU's framebuffer, which has no monitor.
-  Use the serial console.
+- **The serial console is the only console.** The schematic removes
+  `console=tty0` and disables the Talos dashboard, so noVNC shows only the
+  early boot (a row of Tux logos). This is deliberate: with a framebuffer
+  console on the passed-through iGPU (no monitor attached), every kernel
+  message took about a second to draw, the kernel logged RCU stalls every
+  ~20 s, and maintenance mode took 97 s instead of 18 s. Read the node with
+  `qm terminal <vmid>` or `talosctl dmesg`.
 
 Onboarding, by section:
 

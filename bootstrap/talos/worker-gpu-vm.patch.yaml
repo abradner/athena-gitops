@@ -60,7 +60,7 @@ machine:
         # Image Factory schematic: worker-gpu-vm.schematic.yaml. The plain
         # (non-Secure-Boot) installer, which is the one to `talosctl upgrade`
         # with (bump the tag only).
-        image: factory.talos.dev/metal-installer/a57e3b281f16d59ca6e776e2207a47989e8b969fab23794cb61564f8a984b905:v1.13.11
+        image: factory.talos.dev/metal-installer/c1088994705061689fa45e19fbb41294f58c89191c3eb9d5c4ce9c8d960a9cf3:v1.13.11
     nodeLabels:
         spritz.dev/gpu: intel
     nodeTaints:

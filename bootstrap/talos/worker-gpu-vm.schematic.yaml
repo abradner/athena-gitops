@@ -1,7 +1,7 @@
 # Image Factory schematic for GPU workers that run as a Proxmox VM with the
 # host's Intel iGPU passed through (vfio-pci). POST it to get the id:
 #   curl -sS -X POST --data-binary @worker-gpu-vm.schematic.yaml https://factory.talos.dev/schematics
-# -> a57e3b281f16d59ca6e776e2207a47989e8b969fab23794cb61564f8a984b905
+# -> c1088994705061689fa45e19fbb41294f58c89191c3eb9d5c4ce9c8d960a9cf3
 # A changed file means a new id: update install.image in
 # worker-gpu-vm.patch.yaml.
 #
@@ -12,11 +12,17 @@
 #     PLAIN variants (metal-amd64.iso, metal-installer). The -secureboot UKI
 #     would also boot, but nothing would be verifying it.
 #   - No mei. The VM has no Intel ME; AMT belongs to the Proxmox host.
-#   - Serial console on ttyS0, the VM's own serial port (serial0: socket,
-#     read with `qm terminal <vmid>`), not the AMT UART. Once i915 binds the
-#     passed-through iGPU the kernel console moves to its framebuffer, which
-#     has no monitor, and Proxmox's noVNC console goes blank: ttyS0 is then
-#     the only console. Last console= is /dev/console.
+#   - The ONLY console is ttyS0, the VM's own serial port (serial0: socket,
+#     read with `qm terminal <vmid>`), not the AMT UART. `-console` removes
+#     Talos's default console=tty0, and the Talos dashboard is disabled.
+#     Why (found on the first VM, 2026-10-22): once i915 registers its
+#     framebuffer for the passed-through iGPU (no monitor, no CRTC), every
+#     write to a framebuffer console takes about a second. With tty0 as a
+#     console, each kernel message blocked on it: RCU stalls every ~20 s,
+#     97 s to reach maintenance mode, 128 s to start apid. With ttyS0 only:
+#     18 s, no stalls. Do not add console=tty0 back. Check the resulting
+#     command line before booting anything:
+#       curl -sSL https://factory.talos.dev/image/<id>/<talos version>/cmdline-metal-amd64
 #
 # Extensions: only what the node uses.
 #   - i915: the GPU driver and its DMC/GuC/HuC firmware.
@@ -35,8 +41,9 @@
 # gets its config.
 customization:
   extraKernelArgs:
-    - console=tty0
+    - -console
     - console=ttyS0,115200n8
+    - talos.dashboard.disabled=1
   systemExtensions:
     officialExtensions:
       - siderolabs/i915
