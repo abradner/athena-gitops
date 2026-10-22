@@ -1,0 +1,103 @@
+# Main's Gemfile.lock and mise.toml for the spritz gem tree (bundle-cache.yaml),
+# refreshed every 5 minutes into the Secret spritz-bundle-source.
+#
+# spritz is private, and nothing on a worker holds a credential
+# (cluster/zagreus/README.md). So External Secrets, on the control plane,
+# mints an installation token from the zagreus-arc App, scoped to spritz with
+# contents:read, and a webhook store fetches the two files from main with it.
+# The fill pods mount only the resulting Secret: file contents, no credential.
+# The token Secret is mounted by no pod.
+#
+# Polling main, not a CI step, is the security property: a tree is only ever
+# built from a lockfile already merged to main. No runner pod and no PR branch
+# can choose what goes into a tree that every later job on the node loads.
+#
+# Needs Repository permissions -> Contents: Read-only on the zagreus-arc App.
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: GithubAccessToken
+metadata:
+  name: spritz-contents-read
+  namespace: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # Identifiers, not secrets: the key stays in arc-github-app (core/github-app.yaml).
+  appID: "5388917"
+  installID: "173214451"
+  repositories: [spritz]
+  permissions:
+    contents: read
+  auth:
+    privateKey:
+      secretRef:
+        name: arc-github-app
+        key: github_app_private_key
+---
+# Installation tokens last an hour; refresh well inside that.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: spritz-contents-token
+  namespace: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: 45m
+  target:
+    name: spritz-contents-token
+    creationPolicy: Owner
+    template:
+      metadata:
+        # A webhook store reads only Secrets that carry this label.
+        labels: {external-secrets.io/type: webhook}
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: GithubAccessToken
+          name: spritz-contents-read
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: spritz-main-files
+  namespace: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  provider:
+    webhook:
+      url: "https://api.github.com/repos/abradner/spritz/contents/{{ .remoteRef.key }}?ref=main"
+      method: GET
+      headers:
+        Accept: application/vnd.github.raw
+        X-GitHub-Api-Version: "2022-11-28"
+        Authorization: "Bearer {{ .auth.token }}"
+      secrets:
+        - name: auth
+          secretRef:
+            name: spritz-contents-token
+            key: token
+      timeout: 30s
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: spritz-bundle-source
+  namespace: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: 5m
+  secretStoreRef:
+    kind: SecretStore
+    name: spritz-main-files
+  target:
+    name: spritz-bundle-source
+    creationPolicy: Owner
+  data:
+    - secretKey: Gemfile.lock
+      remoteRef: {key: Gemfile.lock}
+    - secretKey: mise.toml
+      remoteRef: {key: mise.toml}
