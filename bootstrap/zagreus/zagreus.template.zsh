@@ -27,6 +27,15 @@ AMD64_RUNNER_IP=(
   "<ip>"
 )
 
+# Patches every node takes, control plane and every worker class, on top of
+# its class config. They live in the private infrastructure repo because they
+# name private addresses (shipping Talos's kernel and service logs to the log
+# receiver, for one). Must be declared; NODE_PATCHES=() is allowed but means
+# the nodes ship no logs off the box.
+NODE_PATCHES=(
+  "<path to the private repo>/zagreus/talos/logging.patch.yaml"
+)
+
 BOOTSTRAP_NODE="<ip>"
 
 _zagreus_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

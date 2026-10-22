@@ -29,11 +29,18 @@ domains_are_empty() { # <merged config file>
 
 # Every class array must be declared, even empty: a loop over an unset array
 # runs zero times, and a node class would be skipped without a word.
-for var in ARM_RUNNER_IP ARM_BUILDER_IP AMD64_RUNNER_IP; do
+for var in ARM_RUNNER_IP ARM_BUILDER_IP AMD64_RUNNER_IP NODE_PATCHES; do
   if ! declare -p "$var" >/dev/null 2>&1; then
     echo "$var is not set in zagreus.zsh (see zagreus.template.zsh; use $var=() for none)" >&2
     exit 1
   fi
+done
+
+# Patches every node takes (zagreus.zsh), checked before anything is merged.
+node_patches=()
+for p in "${NODE_PATCHES[@]}"; do
+  [ -f "$p" ] || { echo "NODE_PATCHES entry '$p' not found" >&2; exit 1; }
+  node_patches+=(--patch "@$p")
 done
 
 # Merged configs hold the cluster PKI: keep them in one private directory and
@@ -49,7 +56,7 @@ apply() { # <ip> <patch> <class> [extra patch]
   fi
   # Merge locally first, check the result, then apply exactly that file.
   local merged="$merged_dir/$1.yaml"
-  talosctl machineconfig patch worker.yaml --patch "@$2" ${extra[@]+"${extra[@]}"} -o "$merged"  # empty-array safe on macOS bash 3.2
+  talosctl machineconfig patch worker.yaml --patch "@$2" ${node_patches[@]+"${node_patches[@]}"} ${extra[@]+"${extra[@]}"} -o "$merged"  # empty-array safe on macOS bash 3.2
   if ! domains_are_empty "$merged"; then
     echo "$1: merged config lost ResolverConfig searchDomains.domains: [] (patcher too old?)" >&2
     exit 1
