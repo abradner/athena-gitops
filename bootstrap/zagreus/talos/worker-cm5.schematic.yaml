@@ -15,11 +15,25 @@
 # No extensions on purpose: nothing here uses iSCSI, and an extension whose
 # service is left unconfigured blocks boot and reboots the node on a timer.
 #
+# The fan: Talos 1.14's mainline kernel has no RP1 PWM driver, so the CM5's
+# `cooling_fan` (pwm-fan on RP1 pwm1, GPIO45) never probes and the fan header
+# never spins (siderolabs/pkgs#1499, siderolabs/sbc-raspberrypi#90). GPIO45
+# drives the CM5's open-collector Fan_PWM line; holding it low through a
+# gpio-hog lets the fan's own pull-up run it at full speed. Seen working on
+# the arm64 builder's carrier, 2026-10-22. No temperature
+# control until the RP1 PWM driver is mainlined; then drop this line for
+# `dtparam=cooling_fan=on`. The overlay installer writes config.txt only on
+# install and upgrade, so a node takes a change here through `talosctl
+# upgrade` to the new installer.
+#
 # Pin the installer by digest ONLY (factory.talos.dev/metal-installer/<id>@sha256:…):
 # a Talos 1.14.4 node fails `talosctl upgrade` from a tag@digest ref.
 overlay:
   image: siderolabs/sbc-raspberrypi
   name: rpi_5
+  options:
+    configTxtAppend: |
+      dtoverlay=gpio-hog,gpio=45,active_low
 customization:
   extraKernelArgs:
     - sdhci.debug_quirks2=4
