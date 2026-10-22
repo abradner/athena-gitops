@@ -4,9 +4,11 @@
 # transcodes on an Intel iGPU and uploads through presigned URLs. No inbound
 # port, no Service, no probe: it only makes outbound calls.
 #
-# Runs only on the GPU workers (bootstrap/talos/worker-gpu.patch.yaml): it
-# tolerates their taint, and gpu.intel.com/i915 (cluster/core/intel-gpu-plugin)
-# is advertised nowhere else, so it cannot land on an arm worker.
+# Runs only on the GPU workers, of either class (bootstrap/talos/
+# worker-gpu.patch.yaml for bare metal, worker-gpu-vm.patch.yaml for a Proxmox
+# VM): it tolerates their taint, and gpu.intel.com/i915
+# (cluster/core/intel-gpu-plugin) is advertised nowhere else, so it cannot
+# land on an arm worker.
 #
 # TRANSCODER_TOKEN: the transcoder's half of the shared secret. The app holds
 # only its SHA-256 (TRANSCODER_TOKEN_DIGEST in the spritz-app ExternalSecret;
@@ -112,7 +114,9 @@ spec:
             - name: work
               mountPath: /work
       volumes:
-        # On the SSD (EPHEMERAL). The largest original is 4 GiB, plus outputs.
+        # On EPHEMERAL: the SATA SSD on a bare-metal GPU worker, the scratch
+        # virtual disk on the VM class. The largest original is 4 GiB, plus
+        # outputs.
         - name: work
           emptyDir:
             sizeLimit: 20Gi
