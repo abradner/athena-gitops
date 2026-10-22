@@ -294,9 +294,12 @@ another Proxmox cluster). In order; each step has its check.
 9. **Gates, in maintenance mode, before any cluster step:**
    - `talosctl get disks --insecure`: the two disks (step 4 below).
    - The iGPU is in the guest, **found by id, not address**: with `pcie=1`
-     it sits behind a q35 root port, not at `00:02.0`. `talosctl get
-     pcidevices --insecure` lists it with `driver: i915`; `talosctl dmesg
-     --insecure | grep i915` shows it initialised. "Failed to find VBIOS
+     it sits behind a q35 root port, not at `00:02.0`. The default table
+     shows names, so ask for YAML: `talosctl get pcidevices --insecure -o
+     yaml` lists `vendor_id: "0x8086"`, `product_id: "0x9bc8"` and `driver:
+     i915`. `talosctl dmesg --insecure | grep i915` shows it initialised
+     (checked with a 1.14 talosctl against a 1.13 node; with an older client,
+     read the serial console instead). "Failed to find VBIOS
      tables (VBT)" is expected and harmless: QEMU 11 already copies the
      host OpRegion (`x-igd-opregion` defaults on), OVMF does not install
      it, and i915 copes.
@@ -384,7 +387,14 @@ transcoding unless the new node joins first. Order:
    workloads would land on it.
 5. Soak: the transcoders stay healthy on the new node for at least three
    hours, with no restarts, no Failed pods and no self-reboot.
-6. After the soak, remove the old node for good:
+6. After the soak, remove the old node for good. **First make sure it cannot
+   boot back into this cluster**: its disks still hold this cluster's
+   machine config, so if it starts (a VM's autostart, a BIOS set to power on
+   after AC loss, someone moving it and switching it on) it re-registers as
+   a NEW node, without the cordon and without the GPU taint. Wipe it first:
+   boot the Talos ISO (pick USB from the boot menu; a GPU node's disk boots
+   first) and `talosctl wipe disk` in maintenance mode, or for a VM `qm set
+   <vmid> --onboot 0` and destroy its disks. Only then:
 
    ```bash
    kubectl delete node <old>
@@ -393,9 +403,8 @@ transcoding unless the new node joins first. Order:
    Remove its entry from `athena.zsh` (an emptied list stays declared, as
    `GPU_WORKER_IP=()` or `GPU_VM_WORKER_IP=()`: `apply-worker.sh` exits on
    an undeclared one) and from the 1Password backup, and release its DHCP
-   reservation. Its disks hold this cluster's machine
-   config, which includes cluster secrets: wipe them before the hardware
-   goes anywhere else (`talosctl wipe disk` in maintenance mode).
+   reservation. The wipe above also removes this cluster's secrets from
+   the hardware before it goes anywhere else.
 
 ## Changing the schematic or Talos version on a running node
 
