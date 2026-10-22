@@ -73,15 +73,11 @@ spec:
                 command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
                 env:
                   - name: RUNNER_CACHE_DIRS
-                    value: /home/runner/.local/share/mise:/home/runner/.cache/ms-playwright:/home/runner/.bun/install/cache:/home/runner/.cache/bundle
-                  # Gems: the shared per-node cache holds the downloaded .gem
-                  # files; each pod installs into its own path. Installing
-                  # straight into the shared Ruby would let two concurrent jobs
-                  # write the same gem directory.
-                  - name: BUNDLE_USER_CACHE
-                    value: /home/runner/.cache/bundle
-                  - name: BUNDLE_GLOBAL_GEM_CACHE
-                    value: "true"
+                    value: /home/runner/.local/share/mise:/home/runner/.cache/ms-playwright:/home/runner/.bun/install/cache
+                  # Gems: each pod downloads and installs into its own path. A shared
+                  # per-node download cache (BUNDLE_GLOBAL_GEM_CACHE) raced: jobs starting
+                  # together on one node fetched the same .gem into it at once and Bundler
+                  # aborted with ENOENT on a half-written file (spritz run 39776737369).
                   - name: BUNDLE_PATH
                     value: /home/runner/.bundle-local
                   # Playwright's install removes every browser its own version
@@ -109,7 +105,6 @@ spec:
                   - {name: mise, mountPath: /home/runner/.local/share/mise}
                   - {name: playwright, mountPath: /home/runner/.cache/ms-playwright}
                   - {name: bun, mountPath: /home/runner/.bun/install/cache}
-                  - {name: bundle, mountPath: /home/runner/.cache/bundle}
                   - {name: pg, mountPath: /var/lib/postgresql}
                   - {name: shm, mountPath: /dev/shm}
             volumes:
@@ -119,7 +114,6 @@ spec:
               - {name: mise, hostPath: {path: /var/lib/ci-cache/mise, type: DirectoryOrCreate}}
               - {name: playwright, hostPath: {path: /var/lib/ci-cache/ms-playwright, type: DirectoryOrCreate}}
               - {name: bun, hostPath: {path: /var/lib/ci-cache/bun, type: DirectoryOrCreate}}
-              - {name: bundle, hostPath: {path: /var/lib/ci-cache/bundle, type: DirectoryOrCreate}}
               - {name: pg, emptyDir: {}}
               - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
   destination:
