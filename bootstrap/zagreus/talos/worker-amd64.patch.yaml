@@ -17,10 +17,11 @@
 machine:
     install:
         disk: /dev/nvme0n1
-        # Image Factory schematic: worker-amd64.schematic.yaml (intel-ucode and
-        # the SOL console only). Secure Boot variant; see that file. This IS
+        # Image Factory schematic: worker-amd64.schematic.yaml (i915, mei,
+        # intel-ucode and the SOL console; the same schematic as athena's
+        # bare-metal GPU workers). Secure Boot variant; see that file. This IS
         # the installer to `talosctl upgrade` amd64 nodes with (bump the tag).
-        image: factory.talos.dev/metal-installer-secureboot/8a18ae1a0023dc585c9a286f689c53a90af120dbb1f91b22b9a9c34647561cdd:v1.14.4
+        image: factory.talos.dev/metal-installer-secureboot/4286f1ed0899cc6efd70d14f4fc29cb9cccf7de3acb01a386d2b54adf49ca67f:v1.14.4
     nodeLabels:
         zagreus.asn.casa/role: amd64-runner
 ---

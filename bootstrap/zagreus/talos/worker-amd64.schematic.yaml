@@ -3,6 +3,16 @@
 #   curl -sS -X POST --data-binary @worker-amd64.schematic.yaml https://factory.talos.dev/schematics
 # A changed file means a new id: update install.image in worker-amd64.patch.yaml.
 #
+# The same schematic as athena's bare-metal GPU workers
+# (bootstrap/talos/worker-gpu.schematic.yaml, id 4286f1ed…): one image for every
+# amd64 desktop in either cluster, so a box can move between them, and zagreus
+# stays a true canary for athena's metal. Keep the two files identical.
+#   - i915: the iGPU driver and its DMC/GuC firmware. Even with nothing on the
+#     display it lets the iGPU power-manage (RC6), which deeper package
+#     C-states need, and it is what a VA-API job would use.
+#   - mei: the Intel ME interface (AMT).
+# Neither ships a service, so neither can hold up boot.
+#
 # Only what these nodes use. A system extension that ships a service (tailscale,
 # cloudflared, nut-client, zfs) and is left unconfigured never reaches "up",
 # so Talos's boot task startAllServices never finishes and the node reboots
@@ -24,4 +34,6 @@ customization:
     - 8250.nr_uarts=8
   systemExtensions:
     officialExtensions:
+      - siderolabs/i915
       - siderolabs/intel-ucode
+      - siderolabs/mei

@@ -16,6 +16,9 @@
 #   - 8250.nr_uarts=8: the kernel registers only 4 8250 ports by default, and
 #     the KT UART comes after ttyS0-3, so without this it gets no tty at all.
 #
+# zagreus's amd64 workers use this same schematic (bootstrap/zagreus/talos/
+# worker-amd64.schematic.yaml): keep the two files identical, so one image
+# serves every amd64 desktop and zagreus canaries athena's metal.
 # Extensions: only what the GPU node uses. i915 (GPU driver and DMC/GuC
 # firmware), intel-ucode (CPU microcode), mei (the Intel ME interface AMT
 # sits behind).
