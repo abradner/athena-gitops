@@ -424,8 +424,8 @@ general rule.** Argo-specific traps have their own section above.
    VM's schematic removes `console=tty0` (`-console`), keeps `console=ttyS0` and disables
    the dashboard (`worker-gpu-vm.schematic.yaml`); boot then took 18 s with no stalls.
    General rule: a node whose GPU is passed through to it and drives no display gets a
-   serial console only. (The bare-metal GPU workers keep `console=tty0` without trouble:
-   their framebuffer is the firmware's, not one i915 creates for a headless passthrough.)
+   serial console only. (The bare-metal GPU workers keep `console=tty0` without trouble;
+   why they differ was not established.)
    Read the resulting command line from the Image Factory before booting
    (`/image/<id>/<version>/cmdline-metal-amd64`), and time the boot: "it boots" hid this.
 
