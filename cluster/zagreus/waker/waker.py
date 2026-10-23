@@ -45,6 +45,14 @@ LOG = logging.getLogger("waker")
 
 ANNOTATION_STATE = "zagreus.asn.casa/waker-state"
 ANNOTATION_CORDON = "zagreus.asn.casa/waker-cordon"
+# Set just before `talosctl shutdown`. A Ready condition whose last transition
+# is older than this is the API server's stale view of a node that is already
+# going down (it keeps Ready for ~40 s after the kubelet stops), not a node
+# that came back.
+ANNOTATION_SLEPT_AT = "zagreus.asn.casa/waker-slept-at"
+# States that leave a node off the asleep list (so its alert can fire) but
+# still eligible for another wake once its backoff has passed.
+RETRY_STATES = ("wake-failed", "sleep-unconfirmed", "on-not-ready")
 SCALE_SET_LABEL = "actions.github.com/scale-set-name"
 NODE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -183,7 +191,11 @@ def unmet_by_set(demand, live_caps, runners, unstarted):
     out = {}
     for name, d in demand.items():
         claimed = min(unstarted.get(name, 0), d)
-        spare = max(0, live_caps.get(name, 0) - runners.get(name, 0))
+        cap = live_caps.get(name, 0)
+        if cap is None:  # no maxRunners on the set: ARC reads that as unlimited
+            out[name] = 0
+            continue
+        spare = max(0, cap - runners.get(name, 0))
         out[name] = max(0, d - claimed - spare)
     return out
 
@@ -212,8 +224,12 @@ def bound_caps(wanted, live, ceilings):
         ceiling = ceilings.get(name)
         if ceiling is not None:
             out[name] = min(want, ceiling)
-        elif name in live:
+        elif name in live and live[name] is not None:
             out[name] = min(want, live[name])
+        elif name in live:
+            # The set has no maxRunners at all, which ARC reads as unlimited:
+            # the slot sum is the only bound there is, so write it.
+            out[name] = want
         else:
             out[name] = None
     return out
@@ -227,7 +243,11 @@ def choose_wake(cfg, unmet, node_states, backoff_until, now_s):
         return None
     for n in cfg["nodes"]:
         st = node_states.get(n["name"])
-        if st is None or not st["asleep"]:
+        if st is None:
+            continue
+        # Listed asleep, or left off the list after a failure and not Ready:
+        # retried once its backoff has passed.
+        if not (st["asleep"] or (st.get("retry") and not st["ready"])):
             continue
         if backoff_until.get(n["name"], 0) > now_s:
             continue
@@ -258,11 +278,19 @@ def pod_holds_node(pod, evictable_namespaces=()):
     return True
 
 
-def choose_sleep(cfg, node_states, idle_since, unmet, backoff_until, now_s):
+def choose_sleep(cfg, node_states, idle_since, unmet, backoff_until, now_s,
+                 wakeable=None, unplaced=0):
     """The last awake node, in configured order, idle for idleMinutes, while
-    no set it serves has unmet demand."""
+    no set it serves has unmet demand. Never a node the waker could not wake
+    again (no AMT address or credentials, no Wake-on-LAN), and nothing while
+    a driven set has a runner not yet bound to a node: it may be waiting for
+    this node's capacity."""
+    if unplaced:
+        return None
     hungry = {name for name, u in unmet.items() if u > 0}
     for n in reversed(cfg["nodes"]):
+        if wakeable is not None and n["name"] not in wakeable:
+            continue
         st = node_states.get(n["name"])
         if st is None or not node_awake(st) or st["busy"]:
             continue
@@ -286,7 +314,8 @@ def heartbeat_lines(asleep, emitter, node_name, renewed, now_s, ttl):
         return []
     if not str(renewed).isdigit() or now_s - int(renewed) > ttl:
         return []
-    return [f"log-pipeline asleep {n}" for n in asleep.split() if NODE_NAME_RE.match(n)]
+    names = [n for n in asleep.split() if NODE_NAME_RE.match(n)][:8]
+    return [f"log-pipeline asleep {n}" for n in names]
 
 
 # --------------------------------------------------------------------------
@@ -346,6 +375,31 @@ def node_ready(node):
     return False
 
 
+def ready_transition(node):
+    """Epoch seconds of the Ready condition's last transition, or None."""
+    for c in node.get("status", {}).get("conditions", []):
+        if c.get("type") == "Ready" and c.get("lastTransitionTime"):
+            return parse_time(c["lastTransitionTime"]).timestamp()
+    return None
+
+
+def node_fresh_ready(node):
+    """Ready, and Ready since the waker last shut it down: a node that has
+    really come back has a Ready transition newer than the shutdown."""
+    if not node_ready(node):
+        return False
+    ann = node.get("metadata", {}).get("annotations", {}) or {}
+    slept_at = ann.get(ANNOTATION_SLEPT_AT)
+    if not slept_at:
+        return True
+    try:
+        slept = float(slept_at)
+    except ValueError:
+        return True
+    since = ready_transition(node)
+    return since is not None and since > slept
+
+
 def node_ip(node):
     for a in node.get("status", {}).get("addresses", []):
         if a.get("type") == "InternalIP":
@@ -358,31 +412,79 @@ def node_ip(node):
 # --------------------------------------------------------------------------
 
 class GitHub:
-    def __init__(self, token, api):
+    """Conditional requests (ETag): GitHub does not count a 304 against the
+    rate limit, and between passes most runs have not changed, so a pass
+    every 30 s costs little even with a stack of PRs in flight. A 403/429
+    for rate limiting stops calls until GitHub's reset time; the waker holds
+    (neither wakes nor sleeps) meanwhile."""
+
+    MAX_PAGES = 10
+
+    def __init__(self, token, api, clock=time.time):
         self.token = token
         self.api = api.rstrip("/")
+        self.clock = clock
+        self.etags = {}  # path -> (etag, data)
+        self.used = set()
+        self.blocked_until = 0.0
 
     def _get(self, path):
+        if self.clock() < self.blocked_until:
+            raise RuntimeError(f"GitHub rate limited for {int(self.blocked_until - self.clock())} s more")
+        self.used.add(path)
         req = urllib.request.Request(self.api + path)
         req.add_header("Authorization", f"Bearer {self.token}")
         req.add_header("Accept", "application/vnd.github+json")
         req.add_header("X-GitHub-Api-Version", "2022-11-28")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.load(resp)
+        cached = self.etags.get(path)
+        if cached:
+            req.add_header("If-None-Match", cached[0])
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.load(resp)
+                etag = resp.headers.get("ETag")
+                if etag:
+                    self.etags[path] = (etag, data)
+                return data
+        except urllib.error.HTTPError as e:
+            if e.code == 304 and cached:
+                return cached[1]
+            if e.code in (403, 429) and (e.headers.get("Retry-After")
+                                         or e.headers.get("X-RateLimit-Remaining") == "0"):
+                wait = e.headers.get("Retry-After")
+                if wait and wait.isdigit():
+                    self.blocked_until = self.clock() + int(wait)
+                else:
+                    reset = e.headers.get("X-RateLimit-Reset", "")
+                    self.blocked_until = float(reset) if reset.isdigit() else self.clock() + 300
+            raise
+
+    def _get_all(self, path, key):
+        items = []
+        sep = "&" if "?" in path else "?"
+        for page in range(1, self.MAX_PAGES + 1):
+            got = self._get(f"{path}{sep}per_page=100&page={page}").get(key, [])
+            items.extend(got)
+            if len(got) < 100:
+                break
+        return items
 
     def queued_jobs(self, repo, lookback_hours, now):
         """Every queued job in the repo's queued or in-progress runs.
 
         A run is in_progress as soon as one of its jobs starts, so its other
         jobs can be queued inside it: both lists are read."""
-        since = (now - dt.timedelta(hours=lookback_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Whole hours, so the run-list URLs (and their ETags) stay the same
+        # from one pass to the next.
+        since = (now - dt.timedelta(hours=lookback_hours)).strftime("%Y-%m-%dT%H:00:00Z")
         jobs = []
+        prefix = f"/repos/{repo}/"
+        self.used = {k for k in self.used if not k.startswith(prefix)}
         for status in ("queued", "in_progress"):
-            q = urllib.parse.urlencode({"status": status, "per_page": 100, "created": f">={since}"})
-            runs = self._get(f"/repos/{repo}/actions/runs?{q}").get("workflow_runs", [])
+            q = urllib.parse.urlencode({"status": status, "created": f">={since}"})
+            runs = self._get_all(f"/repos/{repo}/actions/runs?{q}", "workflow_runs")
             for run in runs:
-                page = self._get(f"/repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100")
-                for j in page.get("jobs", []):
+                for j in self._get_all(f"/repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs"):
                     if j.get("status") != "queued":
                         continue
                     jobs.append({
@@ -392,6 +494,8 @@ class GitHub:
                         "labels": j.get("labels", []),
                         "created_at": parse_time(j["created_at"]),
                     })
+        # Forget runs no longer queued or in progress, so the cache stays small.
+        self.etags = {k: v for k, v in self.etags.items() if not k.startswith(prefix) or k in self.used}
         return jobs
 
 
@@ -583,6 +687,12 @@ class Waker:
         self.awake_since = {}
         self.last_wake_at = 0.0
         self.pending_first_job = {}  # node -> wake start (s)
+        self.on_since = {}  # listed-asleep node -> when AMT first said it was on
+
+    def wakeable(self):
+        """Nodes the waker can power on again; it puts no other to sleep."""
+        return {n["name"] for n in self.cfg["nodes"]
+                if self.amt.available(n["name"]) or (self.wol.get(n["name"]) and self.wol.get("_broadcast"))}
 
     # ----- what the mode allows
 
@@ -670,7 +780,8 @@ class Waker:
                 continue
             ann = node["metadata"].get("annotations", {}) or {}
             states[n["name"]] = {
-                "ready": node_ready(node),
+                "ready": node_fresh_ready(node),
+                "retry": ann.get(ANNOTATION_STATE) in RETRY_STATES,
                 "unschedulable": bool(node.get("spec", {}).get("unschedulable")),
                 "waker_cordon": ann.get(ANNOTATION_CORDON) == "true",
                 "asleep": n["name"] in asleep,
@@ -678,12 +789,15 @@ class Waker:
             }
             ips[n["name"]] = node_ip(node)
 
-        live, labels, ceilings, runners, unstarted = {}, {}, {}, {}, {}
+        live, labels, ceilings, runners, unstarted, unplaced = {}, {}, {}, {}, {}, {}
         for s in cfg["sets"]:
             ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
             if ars is None:
                 continue
-            live[s["name"]] = int(ars["spec"].get("maxRunners", 0))
+            mr = ars["spec"].get("maxRunners")
+            live[s["name"]] = None if mr is None else int(mr)
+            if mr is None:
+                LOG.warning("%s has no maxRunners, which ARC reads as unlimited", s["name"])
             labels[s["name"]] = ars["spec"].get("runnerScaleSetLabels", []) or []
             app = self.kube.get(APP.format(ns=cfg["applicationsNamespace"], name=s["application"]))
             try:
@@ -694,10 +808,15 @@ class Waker:
             ers = self.kube.get(ERS.format(ns=s["namespace"]) + "?" + q).get("items", [])
             runners[s["name"]] = len(ers)
             unstarted[s["name"]] = sum(1 for e in ers if not e.get("status", {}).get("jobRequestId"))
+            placed = sum(1 for p in pods
+                         if (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL) == s["name"]
+                         and p.get("spec", {}).get("nodeName")
+                         and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"))
+            unplaced[s["name"]] = max(0, len(ers) - placed)
 
         return {"states": states, "ips": ips, "pods_by_node": by_node, "live": live,
                 "labels": labels, "ceilings": ceilings, "runners": runners,
-                "unstarted": unstarted}
+                "unstarted": unstarted, "unplaced": unplaced}
 
     def demand(self, labels):
         now = dt.datetime.now(dt.timezone.utc)
@@ -717,7 +836,7 @@ class Waker:
             want = target.get(name)
             if want is None or name not in snap["live"] or snap["live"][name] == want:
                 continue
-            changed[name] = (snap["live"][name], want)
+            changed[name] = (snap["live"][name], want)  # old may be None (unlimited)
             if self.may_patch_caps:
                 self.kube.merge_patch(ARS.format(ns=s["namespace"], name=name),
                                       {"spec": {"maxRunners": want}})
@@ -735,7 +854,8 @@ class Waker:
                     "metadata": {"annotations": {ANNOTATION_CORDON: "true", ANNOTATION_STATE: "draining"}}}
         else:
             body = {"spec": {"unschedulable": None},
-                    "metadata": {"annotations": {ANNOTATION_CORDON: None, ANNOTATION_STATE: "awake"}}}
+                    "metadata": {"annotations": {ANNOTATION_CORDON: None, ANNOTATION_STATE: "awake",
+                                                 ANNOTATION_SLEPT_AT: None}}}
         self.kube.merge_patch(f"/api/v1/nodes/{node}", body)
 
     def set_state_annotation(self, node, value):
@@ -747,10 +867,21 @@ class Waker:
     def reconcile_ready_nodes(self, snap):
         """Between procedures no node should be both Ready and asleep, or
         Ready and under our cordon. Either means it came back on by hand, or a
-        wake or sleep was interrupted: take it back as awake."""
+        wake or sleep was interrupted: take it back as awake.
+
+        "Ready" here is fresh Ready (node_fresh_ready): the API server keeps a
+        node Ready for ~40 s after it goes down, and taking that back would
+        count an off node's slots. Where AMT answers, it must also say on."""
         for name, st in snap["states"].items():
             if not st["ready"] or not (st["asleep"] or st["waker_cordon"]):
                 continue
+            if self.amt.available(name):
+                try:
+                    if self.amt.power_state(name) != POWER_ON:
+                        LOG.info("%s reports Ready but AMT says it is off: not taking it back", name)
+                        continue
+                except Exception as e:
+                    LOG.warning("AMT unreadable for %s (%s); going by its Ready transition", name, e)
             LOG.info("%s is Ready but %s: taking it back as awake", name,
                      "listed asleep" if st["asleep"] else "under the waker's cordon")
             if not self.may_power:
@@ -763,12 +894,49 @@ class Waker:
                 st["waker_cordon"] = False
                 st["unschedulable"] = False
 
+    def audit_asleep_list(self, snap, now):
+        """The list must name only nodes that are really off. Names no longer
+        configured are dropped. A listed node that AMT says is on, but that
+        has not come Ready within readyTimeoutSeconds (a power-restore boot
+        that hung, say), leaves the list so its alert fires."""
+        listed = self.read_asleep()
+        configured = {n["name"] for n in self.cfg["nodes"]}
+        keep = [n for n in listed if n in configured]
+        for name in keep:
+            st = snap["states"].get(name)
+            if st is None or st["ready"] or not self.amt.available(name):
+                self.on_since.pop(name, None)
+                continue
+            try:
+                on = self.amt.power_state(name) == POWER_ON
+            except Exception as e:
+                LOG.warning("AMT unreadable for listed %s: %s", name, e)
+                continue
+            if not on:
+                self.on_since.pop(name, None)
+                continue
+            since = self.on_since.setdefault(name, now)
+            if now - since > self.cfg["readyTimeoutSeconds"]:
+                LOG.error("%s is listed asleep, AMT says on, and it has not come Ready for %ss: "
+                          "taking it off the list so its alert fires", name, int(now - since))
+                keep.remove(name)
+                st["asleep"] = False
+                self.on_since.pop(name, None)
+                self.set_state_annotation(name, "on-not-ready")
+                self.backoff_until[name] = now + self.cfg["failureBackoffSeconds"]
+                self.record_event("on-not-ready", name)
+        if keep != listed:
+            dropped = sorted(set(listed) - set(keep))
+            LOG.info("asleep list: dropping %s", dropped)
+            self.write_asleep(keep)
+
     def tick(self):
         now = self.clock()
         snap = self.observe()
         states = snap["states"]
         if self.may_power:
             self.reconcile_ready_nodes(snap)
+            self.audit_asleep_list(snap, now)
             self._renew()  # or the heartbeat pod stops asserting
 
         # Idle and awake clocks.
@@ -802,7 +970,8 @@ class Waker:
                 self.wake(wake, snap)
             return
 
-        sleep = choose_sleep(self.cfg, states, self.idle_since, unmet, self.backoff_until, now)
+        sleep = choose_sleep(self.cfg, states, self.idle_since, unmet, self.backoff_until, now,
+                             wakeable=self.wakeable(), unplaced=sum(snap["unplaced"].values()))
         if sleep:
             LOG.info("would sleep %s (idle since %s)", sleep,
                      dt.datetime.fromtimestamp(self.idle_since[sleep], dt.timezone.utc).isoformat())
@@ -827,7 +996,7 @@ class Waker:
         self.set_state_annotation(node, "waking")
         try:
             self._power_on(node)
-            self._wait(lambda: self._node(node) and node_ready(self._node(node)),
+            self._wait(lambda: node_fresh_ready(self._node(node) or {}),
                        self.cfg["readyTimeoutSeconds"], f"{node} Ready")
             ready_s = self.clock() - start
             self._wait(lambda: self._heartbeat_ready(node),
@@ -903,20 +1072,34 @@ class Waker:
         self._pause(cfg["drainRecheckSeconds"])
         if self._busy(node):
             return self._abort_sleep(node, snap, "a pod landed while draining")
+        if self._unplaced():
+            return self._abort_sleep(node, snap, "a driven set has a runner not yet on a node")
         # 3. Off the expected-node list before the power goes.
         self.mark_asleep(node, True)
         self._pause(cfg["assertLeadSeconds"])
         if self._busy(node):
             return self._abort_sleep(node, snap, "a pod landed after the cordon", unassert=True)
-        # 4. Shut down, and confirm through AMT.
+        # 4. Shut down, and confirm through AMT. The time goes on the node
+        #    first: until it has been Ready since then, its Ready is stale.
         ip = snap["ips"].get(node)
+        self.kube.merge_patch(f"/api/v1/nodes/{node}", {"metadata": {"annotations": {
+            ANNOTATION_SLEPT_AT: str(int(self.clock()))}}})
         try:
             if not ip:
                 raise RuntimeError("no InternalIP")
             self.talos.shutdown(ip)
+            off = self._wait_off(node)
         except Exception as e:
-            return self._abort_sleep(node, snap, f"talosctl shutdown failed: {e}", unassert=True)
-        off = self._wait_off(node)
+            # A failed or timed-out call may still have been accepted: the
+            # node may be going down. Only an answer that it is still on
+            # makes this an abort.
+            LOG.warning("talosctl shutdown of %s: %s; checking whether it is going down anyway", node, e)
+            if not self._wait_off(node, 120):
+                if not self.amt.available(node) or self._amt_on(node):
+                    return self._abort_sleep(node, snap, f"talosctl shutdown failed: {e}", unassert=True)
+                off = False  # AMT unreadable: fall through to the hard-off below
+            else:
+                off = True
         if not off and self.amt.available(node):
             LOG.warning("%s still on after %ss; AMT power off", node, cfg["offTimeoutSeconds"])
             try:
@@ -927,7 +1110,12 @@ class Waker:
         if not off:
             # Not confirmed off: back on the expected list so the alert
             # judges it, and no further power actions on it for a while.
+            # It stays cordoned, out of the caps; if it is in fact up, the
+            # next pass takes it back (its Ready is no longer judged against
+            # a shutdown that did not happen).
             self.mark_asleep(node, False)
+            self.kube.merge_patch(f"/api/v1/nodes/{node}", {"metadata": {"annotations": {
+                ANNOTATION_SLEPT_AT: None, ANNOTATION_STATE: "sleep-unconfirmed"}}})
             self.backoff_until[node] = self.clock() + cfg["failureBackoffSeconds"]
             self.record_event("sleep-unconfirmed", node)
             return False
@@ -948,6 +1136,16 @@ class Waker:
         self.apply_caps(snap)  # back up: the node is still awake
         self.record_event("sleep-aborted", node, reason=why[:200])
         return False
+
+    def _amt_on(self, node):
+        try:
+            return self.amt.power_state(node) == POWER_ON
+        except Exception:
+            return False
+
+    def _unplaced(self):
+        snap = self.observe()
+        return sum(snap["unplaced"].values()) > 0
 
     def _busy(self, node):
         q = urllib.parse.urlencode({"fieldSelector": f"spec.nodeName={node}"})
@@ -1045,6 +1243,10 @@ def main(argv):
         LOG.error("GITHUB_TOKEN is not set: demand cannot be read, so nothing will wake")
     if cfg["mode"] == "full" and not waker.talos.available():
         LOG.error("mode full without talosctl or a talosconfig: sleeps will abort")
+    unwakeable = sorted({n["name"] for n in cfg["nodes"]} - waker.wakeable())
+    if unwakeable:
+        LOG.error("no AMT address or credentials (and no Wake-on-LAN) for %s: "
+                  "they will never be put to sleep", unwakeable)
     LOG.info("zagreus waker starting: mode=%s nodes=%s sets=%s", cfg["mode"],
              [n["name"] for n in cfg["nodes"]], [s["name"] for s in cfg["sets"]])
     while True:

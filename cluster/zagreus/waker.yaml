@@ -1,7 +1,7 @@
 ---
 # The node waker (waker/README.md): powers the amd64 runner nodes on and off
 # and drives the scale sets' maxRunners. Its own Application, rather than part
-# of zagreus-core, because it is kustomize (waker.py and config.json are real
+# of zagreus-core, because it is kustomize (waker.py and waker.conf are real
 # files under test) and core is plain manifests.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

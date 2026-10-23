@@ -229,6 +229,18 @@ After a restart, any Ready node that is listed asleep or under the waker's
 cordon is taken back as awake. A restart halfway through a sleep therefore
 leaves the node awake, and its idle clock starts again.
 
+## Permissions
+
+- **Nodes:** get and patch, by name: only the nodes in `waker.conf`. Labels
+  and taints keep every credential on the control plane, so a waker that
+  could patch any node could move them. Add a node to the ClusterRole in
+  the same change that adds it to `waker.conf`.
+- **Pods:** list, cluster-wide.
+- **The three driven AutoscalingRunnerSets:** get and patch, by name, plus
+  listing their EphemeralRunners.
+- **The three Applications:** get, by name, to read the ceilings.
+- **Its two ConfigMaps:** get, patch and create.
+
 ## Credentials (ESO, control plane only)
 
 The 1Password item `zagreus-waker` sits in the CI-only vault. `waker.yaml`
@@ -289,28 +301,54 @@ has been proven. Turn Wake-on-LAN on only after a test from S5.
 
 ## Go-live (each step is Alex's call; nothing here is live until merged)
 
-1. **Merge in observe mode.** This changes the heartbeat DaemonSet: it rolls
-   once, adds one env var and an optional, empty volume, and writes
-   nothing new until the waker does. It also adds the `ignoreDifferences` and
-   starts the waker, which writes nothing in this mode.
-2. **Create the 1Password item** `zagreus-waker` with the fields above.
+1. **Create the 1Password item** `zagreus-waker` with the fields above,
+   before the merge. Without it the ExternalSecret fails and Argo shows
+   `zagreus-waker` Degraded (harmless in observe mode, but noisy, and ESO
+   keeps retrying against the vault the ARC key depends on).
+2. **Merge in observe mode.** The heartbeat DaemonSet rolls once (one env
+   var, an optional and absent volume, `set -f`), and writes nothing new
+   until the waker does. The coredns PodDisruptionBudget is created. Argo
+   starts ignoring `spec.maxRunners` on the three sets. The waker starts and
+   writes nothing.
 3. **Prove AMT power-on from S5 on one ProDesk** (needs Alex's word):
-   - `talosctl -n <node> shutdown` the node by hand, then check that
-     `kubectl -n zagreus-waker exec deploy/zagreus-waker -- python3
-     /opt/waker/waker.py amt-status zag-amd64-02` prints `8`.
+   - Shut the node down by hand with `talosctl -n <node> shutdown`.
+   - Check that `kubectl -n zagreus-waker exec deploy/zagreus-waker --
+     python3 /opt/waker/waker.py amt-status zag-amd64-02` prints `8`.
    - Then run `... amt-on zag-amd64-02`, and time it to Ready.
    - Until this passes, AMT is only presumed to work from S5.
 4. **Deploy the asn-infra side:** the recording rule, the alert change and
    the Vector timing tweak. They must be live before step 6.
 5. **`caps` mode** for a day. The caps track the nodes as they are, and
-   cordoning a node by hand drops them. This is the "maxRunners 0 keeps jobs
-   off sleeping nodes" proof in the test plan.
-6. **`full` mode**, once Alex has answered the open questions: the idle
+   cordoning a node by hand drops them. This is the waker-level proof that
+   `maxRunners` 0 keeps jobs off sleeping nodes (see "Test plan").
+6. **`full` mode**, once Alex has answered three open questions: the idle
    timeout, whether core joins, and whether arm64 stays always-on.
 
-**Rollback:** set `mode` back to `observe` and merge, then put the
-Applications' ceilings back with an Argo sync. If nodes are asleep, power
-them on by hand with `amt-on`.
+**Rollback.** An Argo sync can't do this part. With `RespectIgnoreDifferences`,
+every sync, manual ones included, keeps the live `maxRunners`. If you leave
+it, sets the waker had at 0 stay at 0, and jobs that name a set
+(`runs-on: zagreus-ci`, used by dependency-update PRs) queue for ever.
+
+1. Set `mode` back to `observe`, or scale the waker to 0, and merge.
+2. Power on any node that is asleep: `amt-on <node>` from the waker pod, or
+   by hand. Wait for it to be Ready, then uncordon it if the waker's cordon
+   is still on it.
+3. Put each set back to its ceiling by hand:
+
+   ```
+   kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci --type merge -p '{"spec":{"maxRunners":3}}'
+   kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci-x64 --type merge -p '{"spec":{"maxRunners":1}}'
+   kubectl -n arc-builders patch autoscalingrunnerset zagreus-docker-amd64 --type merge -p '{"spec":{"maxRunners":1}}'
+   ```
+
+   The numbers are the `maxRunners` in each Application under
+   `../runners/spritz/`. Check them there first.
+4. If the waker is to go for good, also remove the `ignoreDifferences` and
+   `RespectIgnoreDifferences` from those three Applications, so Argo owns
+   `maxRunners` again.
+
+The same applies if the waker dies or is deleted while in `caps` or `full`
+mode: the sets keep whatever it last wrote.
 
 ## Measurements
 
@@ -389,3 +427,16 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | a claimed job counted twice | `Unmet.test_a_claimed_job_is_not_counted_twice` |
 | observe mode allowed to patch | `Modes.test_observe_writes_nothing_at_all` |
 | no renewal of the asleep list during a long sleep | `SleepProcedure.test_the_asleep_list_is_renewed_through_a_long_procedure` |
+| a stale Ready trusted after a shutdown | `ReviewFindings.test_stale_ready_is_not_taken_back_without_amt_either` |
+| a failed `talosctl` call always aborts | `ReviewFindings.test_a_failed_talosctl_call_on_a_node_going_down_is_a_sleep` |
+| failed nodes never retried | `ReviewFindings.test_a_failed_wake_is_retried_after_the_backoff` |
+| a node it can't wake is put to sleep | `ReviewFindings.test_a_node_it_cannot_wake_is_never_put_to_sleep` |
+| no ETag, or no rate-limit hold, on GitHub calls | `GitHubClient.test_pages_and_then_revalidates`, `test_rate_limit_stops_calls_until_reset` |
+| the asleep list never audited against AMT or the config | `test_a_listed_node_on_but_never_ready_leaves_the_list`, `test_unknown_names_are_dropped_from_the_list` |
+| a set with no `maxRunners` left alone | `test_a_set_with_no_max_runners_is_written` |
+| an unplaced runner ignored when choosing a sleep | `test_a_runner_not_yet_on_a_node_blocks_sleep` |
+
+The heartbeat loop was also run under the pinned busybox, before and after
+it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed
+on a renewal time with a leading zero (octal), and wrote all 12 of 12 names.
+The new loop wrote 1, 1 and 8.

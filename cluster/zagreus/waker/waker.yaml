@@ -14,8 +14,12 @@ metadata:
   name: zagreus-waker
   namespace: zagreus-waker
 ---
-# Nodes: read, cordon/uncordon and annotate. Pods: list, to tell an idle node
-# from a busy one.
+# Nodes: read, cordon/uncordon and annotate, the nodes in waker.conf only.
+# By name, because node labels and taints are what keep every credential on
+# the control plane: a waker able to patch any node could put the
+# control-plane label on a worker, or lift cp1's taint. Add a node here in
+# the same change that adds it to waker.conf. Pods: list, to tell an idle
+# node from a busy one.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -23,7 +27,8 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [nodes]
-    verbs: [get, list, patch]
+    resourceNames: [zag-amd64-01, zag-amd64-02]
+    verbs: [get, patch]
   - apiGroups: [""]
     resources: [pods]
     verbs: [list]

@@ -27,6 +27,11 @@ import waker as w  # noqa: E402
 
 UTC = dt.timezone.utc
 T0 = 1_800_000_000.0  # fake epoch seconds
+STALE_READY_SECONDS = 45  # the API server's node-monitor grace: Ready outlives the kubelet
+
+
+def iso(t):
+    return dt.datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def production_config():
@@ -60,6 +65,7 @@ class FakeKube:
     def __init__(self, cfg, clock):
         self.clock = clock
         self.boots = {}  # node -> time its kubelet reports Ready
+        self.going_down = {}  # node -> time the API server stops reporting it Ready
         self.writes = []  # (verb, path, body) in order
         self.asleep_writes = []  # (time, asleep) for every write of the asleep list
         self.nodes = {}
@@ -89,7 +95,8 @@ class FakeKube:
         self.nodes[name] = {
             "metadata": {"name": name, "annotations": {}},
             "spec": {},
-            "status": {"conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+            "status": {"conditions": [{"type": "Ready", "status": "True" if ready else "False",
+                                       "lastTransitionTime": iso(self.clock() - 86400)}],
                        "addresses": [{"type": "InternalIP", "address": f"192.0.2.{len(self.nodes) + 10}"}]},
         }
         # Each node runs a heartbeat DaemonSet pod.
@@ -101,7 +108,11 @@ class FakeKube:
         })
 
     def set_ready(self, name, ready):
-        self.nodes[name]["status"]["conditions"][0]["status"] = "True" if ready else "False"
+        cond = self.nodes[name]["status"]["conditions"][0]
+        status = "True" if ready else "False"
+        if cond["status"] != status:
+            cond["status"] = status
+            cond["lastTransitionTime"] = iso(self.clock())
 
     def add_runner_pod(self, node, set_name, phase="Running", name=None):
         self.pods.append({
@@ -135,6 +146,9 @@ class FakeKube:
         m = re.fullmatch(r"/api/v1/nodes/([^/]+)", p)
         if m:
             name = m.group(1)
+            if name in self.going_down and self.clock() >= self.going_down[name]:
+                self.set_ready(name, False)
+                del self.going_down[name]
             if name in self.boots and self.clock() >= self.boots[name]:
                 self.set_ready(name, True)  # the kubelet comes up on its own
                 del self.boots[name]
@@ -232,9 +246,10 @@ class FakeAMT:
         self.calls = []
         self.boot_seconds = boot_seconds
         self.refuse_on = set()
+        self.missing = set()  # nodes with no AMT address
 
     def available(self, node):
-        return True
+        return node not in self.missing
 
     def power_state(self, node):
         return self.state.get(node, w.POWER_ON)
@@ -263,7 +278,8 @@ class FakeTalos:
                     if o["status"]["addresses"][0]["address"] == ip)
         self.calls.append(node)
         self.kube.writes.append(("SHUTDOWN", node, None))
-        self.kube.set_ready(node, False)
+        # Off at once as AMT sees it; still Ready as the API server sees it.
+        self.kube.going_down[node] = self.kube.clock() + STALE_READY_SECONDS
         self.amt.state[node] = 8
 
 
@@ -643,11 +659,209 @@ class WakeProcedure(unittest.TestCase):
     def test_a_node_powered_on_by_hand_is_taken_back(self):
         r = Rig()
         r.put_all_to_sleep()
+        r.tick(advance=120)
+        r.amt.state["zag-amd64-02"] = w.POWER_ON
         r.kube.set_ready("zag-amd64-02", True)
         r.tick(advance=30)
         self.assertNotIn("zag-amd64-02", r.kube.asleep())
         self.assertNotIn("unschedulable", r.kube.nodes["zag-amd64-02"]["spec"])
         self.assertEqual(r.kube.caps()["zagreus-ci"], 2)
+
+
+class ReviewFindings(unittest.TestCase):
+    """One test per finding of the independent review (23 Oct 2026)."""
+
+    def test_stale_ready_after_shutdown_is_not_taken_back(self):
+        # The API server keeps a shut-down node Ready for ~45 s. The next pass
+        # lands inside that window: the node must stay listed and count nothing.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")  # 01 stays awake
+        r.tick()
+        r.tick(advance=61 * 60)  # 02 shut down; Ready is stale until +45 s
+        self.assertEqual(r.kube.nodes["zag-amd64-02"]["status"]["conditions"][0]["status"], "True")
+        r.tick(advance=5)
+        self.assertIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)  # 01's slot only
+
+    def test_stale_ready_is_not_taken_back_without_amt_either(self):
+        r = Rig()
+        r.tick()
+        r.tick(advance=61 * 60)
+        r.amt.missing.add("zag-amd64-02")  # AMT unreachable from here on
+        r.tick(advance=5)
+        self.assertIn("zag-amd64-02", r.kube.asleep())
+
+    def test_a_failed_talosctl_call_on_a_node_going_down_is_a_sleep(self):
+        r = Rig()
+        r.tick()
+        real = r.talos.shutdown
+
+        def accepted_then_error(ip):
+            real(ip)
+            raise RuntimeError("rpc error: transport is closing")
+        r.talos.shutdown = accepted_then_error
+        r.tick(advance=61 * 60)
+        self.assertIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_a_failed_talosctl_call_on_a_node_still_on_aborts(self):
+        r = Rig()
+        r.tick()
+
+        def refused(ip):
+            raise RuntimeError("permission denied")
+        r.talos.shutdown = refused
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), set())
+        self.assertEqual(r.kube.caps(), CEILINGS)
+
+    def test_a_failed_wake_is_retried_after_the_backoff(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertNotIn("zag-amd64-01", r.kube.asleep())
+        r.amt.refuse_on.clear()
+        r.amt.calls.clear()
+        r.tick(advance=600)
+        self.assertEqual(r.amt.calls, [])  # still in backoff
+        r.tick(advance=r.cfg["failureBackoffSeconds"])
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+        self.assertEqual(r.kube.caps()["zagreus-docker-amd64"], 1)
+
+    def test_a_node_it_cannot_wake_is_never_put_to_sleep(self):
+        r = Rig()
+        r.amt.missing.add("zag-amd64-02")
+        r.tick()
+        r.tick(advance=61 * 60)
+        self.assertNotIn("zag-amd64-02", r.talos.calls)
+        self.assertIn("zag-amd64-01", r.talos.calls)  # the wakeable one still sleeps
+
+    def test_a_listed_node_on_but_never_ready_leaves_the_list(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.tick(advance=120)
+        r.amt.state["zag-amd64-02"] = w.POWER_ON  # a power-restore boot that hangs
+        r.tick(advance=30)
+        self.assertIn("zag-amd64-02", r.kube.asleep())
+        r.tick(advance=r.cfg["readyTimeoutSeconds"] + 60)
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"][w.ANNOTATION_STATE],
+                         "on-not-ready")
+
+    def test_unknown_names_are_dropped_from_the_list(self):
+        r = Rig()
+        r.kube.cms[("log-heartbeat", "waker-asleep")] = {"data": {
+            "asleep": "zag-amd64-99", "renewed": "0", "emitter": "cp1"}}
+        r.tick()
+        self.assertEqual(r.kube.asleep(), set())
+
+    def test_a_set_with_no_max_runners_is_written(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        del r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"]
+        del r.kube.apps["zagreus-spritz-ci"]["spec"]["source"]["helm"]["valuesObject"]["maxRunners"]
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 0)
+
+    def test_a_runner_not_yet_on_a_node_blocks_sleep(self):
+        r = Rig()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {}})
+        r.tick()
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, [])
+        r.kube.ers["arc-runners"].clear()
+        r.tick(advance=30)
+        self.assertEqual(r.talos.calls, ["zag-amd64-02"])
+
+    def test_observe_with_nodes_listed_asleep_and_demand_powers_nothing(self):
+        # The README's rollback state: back to observe with nodes asleep.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.cfg["mode"] = "observe"
+        r.kube.writes.clear()
+        r.amt.calls.clear()
+        r.talos.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=600)
+        r.tick(advance=300)
+        r.amt.state["zag-amd64-02"] = w.POWER_ON
+        r.kube.set_ready("zag-amd64-02", True)
+        r.tick(advance=300)
+        self.assertEqual(r.kube.writes, [])
+        self.assertEqual(r.amt.calls, [])
+        self.assertEqual(r.talos.calls, [])
+
+
+class GitHubClient(unittest.TestCase):
+    """ETags, paging and the rate limit, against a fake urlopen."""
+
+    def setUp(self):
+        self.calls = []
+        self.etag_hits = 0
+        self.rate_limited = False
+        self.orig = w.urllib.request.urlopen
+        test = self
+
+        class Resp:
+            def __init__(self, data, etag):
+                self.data, self.headers = data, {"ETag": etag}
+
+            def read(self, *a):
+                return json.dumps(self.data).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake(req, timeout=None):
+            url = req.full_url
+            test.calls.append(url)
+            if test.rate_limited:
+                raise w.urllib.error.HTTPError(url, 403, "rate", {"X-RateLimit-Remaining": "0",
+                                                                  "X-RateLimit-Reset": str(int(T0) + 900)}, None)
+            if req.get_header("If-none-match") == "E":
+                test.etag_hits += 1
+                raise w.urllib.error.HTTPError(url, 304, "not modified", {}, None)
+            if "/actions/runs?" in url:
+                page = int(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["page"][0])
+                runs = [{"id": i} for i in range((page - 1) * 100, min(page * 100, 150))]
+                return Resp({"workflow_runs": runs}, "E")
+            return Resp({"jobs": [{"id": 1, "status": "queued", "labels": ["zagreus-ci"],
+                                   "created_at": "2026-10-23T00:00:00Z"}]}, "E")
+        w.urllib.request.urlopen = fake
+
+    def tearDown(self):
+        w.urllib.request.urlopen = self.orig
+
+    def test_pages_and_then_revalidates(self):
+        gh = w.GitHub("t", "https://api.example", clock=lambda: T0)
+        now = dt.datetime.fromtimestamp(T0, UTC)
+        first = gh.queued_jobs("o/r", 72, now)
+        self.assertEqual(len(first), 2 * 150)  # 150 runs over two pages, both statuses
+        n, hits = len(self.calls), self.etag_hits
+        second = gh.queued_jobs("o/r", 72, now)
+        self.assertEqual(len(second), len(first))
+        self.assertEqual(self.etag_hits - hits, len(self.calls) - n)  # every repeat was a 304
+
+    def test_rate_limit_stops_calls_until_reset(self):
+        clock = Clock()
+        gh = w.GitHub("t", "https://api.example", clock=clock)
+        now = dt.datetime.fromtimestamp(T0, UTC)
+        self.rate_limited = True
+        with self.assertRaises(Exception):
+            gh.queued_jobs("o/r", 72, now)
+        self.rate_limited = False
+        n = len(self.calls)
+        with self.assertRaises(RuntimeError):
+            gh.queued_jobs("o/r", 72, now)
+        self.assertEqual(len(self.calls), n)  # no request while blocked
+        clock.sleep(901)
+        gh.queued_jobs("o/r", 72, now)
+        self.assertGreater(len(self.calls), n)
 
 
 class Modes(unittest.TestCase):
@@ -712,6 +926,11 @@ class Heartbeat(unittest.TestCase):
             ({"asleep": "zag-amd64-01", "emitter": "cp1", "renewed": str(now - 400)}, "cp1"),
             ({"asleep": "zag-amd64-01 BAD;rm x", "emitter": "cp1", "renewed": str(now)}, "cp1"),
             ({"asleep": "zag-amd64-01", "emitter": "cp1", "renewed": "nonsense"}, "cp1"),
+            # A glob must not expand; a 0-led time with an 8 or 9 must not
+            # end the loop (octal); at most eight names.
+            ({"asleep": "* zag-amd64-01 ?", "emitter": "cp1", "renewed": str(now)}, "cp1"),
+            ({"asleep": "zag-amd64-01", "emitter": "cp1", "renewed": "0" + str(now)}, "cp1"),
+            ({"asleep": " ".join(f"n{i}" for i in range(12)), "emitter": "cp1", "renewed": str(now)}, "cp1"),
             ({}, "cp1"),
         ]
         for files, node in cases:
