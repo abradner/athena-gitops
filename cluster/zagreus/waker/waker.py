@@ -57,14 +57,18 @@ RETRY_STATES = ("wake-failed", "sleep-unconfirmed", "on-not-ready")
 # Still Ready this long after the waker's shutdown time, the node never went
 # down (the waker stopped between stamping the time and shutting it down).
 STALE_READY_LIMIT_S = 600
-# The kubelet renews its node Lease every 10 s. A Lease the waker has not
-# seen change for this long means the kubelet is gone (powered off, crashed,
-# unplugged), whatever the Ready condition says: the node controller takes
-# ~40 s to notice, and never does if kube-controller-manager is down. No
-# fresh Lease, no slots. "Seen change" is judged by the waker's own clock, as
-# the node controller does: renewTime is the worker's clock, which may be
-# skewed (a box just woken, before NTP).
+# The kubelet renews its node Lease every 10 s. A Lease not renewed for this
+# long means the kubelet is gone (powered off, crashed, unplugged), whatever
+# the Ready condition says: the node controller takes ~40 s to notice, and
+# never does if kube-controller-manager is down. No fresh Lease, no slots.
+# The renewal is timed by the API server's stamp on the kubelet's update
+# (metadata.managedFields[].time), not spec.renewTime: renewTime is the
+# worker's clock, which may be skewed (a box just woken, before NTP), while
+# the stamp is the control plane's clock, the one the waker runs on.
 LEASE_FRESH_S = 25
+# One failed Lease read keeps the last good answer this long, so a transient
+# API error does not flap the caps; past it, the node is not alive.
+LEASE_HOLD_S = 60
 SCALE_SET_LABEL = "actions.github.com/scale-set-name"
 NODE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -430,6 +434,15 @@ class LeaseUnreadable(Exception):
     pass
 
 
+def lease_stamp(lease):
+    """Epoch seconds the API server last recorded an update to the Lease
+    (its managedFields stamp; second resolution), or None."""
+    times = [parse_time(m["time"]).timestamp()
+             for m in (lease or {}).get("metadata", {}).get("managedFields", []) or []
+             if m.get("time")]
+    return max(times) if times else None
+
+
 LEASE = "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/{name}"
 
 
@@ -721,7 +734,7 @@ class Waker:
         self.last_wake_at = 0.0
         self.pending_first_job = {}  # node -> wake start (s)
         self.on_since = {}  # listed-asleep node -> when AMT first said it was on
-        self.lease_seen = {}  # node -> (renewTime, waker time it was first seen)
+        self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep."""
@@ -1246,30 +1259,29 @@ class Waker:
         return self.kube.get(f"/api/v1/nodes/{node}")
 
     def _lease_age(self, node, strict=False):
-        """Seconds since the waker last saw the node's Lease renewTime
-        change, by the waker's clock. First sight counts as a change.
+        """Seconds since the API server recorded the node's last Lease
+        renewal, by the control plane's clock.
 
-        Unreadable (API error, no Lease): strict raises LeaseUnreadable, so
-        a wait for "off" keeps waiting; otherwise the last known age is used
-        (None if never seen), so one failed read neither confirms anything
-        nor flaps the caps, and a long outage still ages into "not alive"."""
+        Unreadable (API error, no Lease, no stamp): strict raises
+        LeaseUnreadable, so a wait for "off" keeps waiting; otherwise the
+        age from the last good read is reused for up to LEASE_HOLD_S, then
+        None (not alive)."""
         now = self.clock()
         try:
-            lease = self.kube.get(LEASE.format(name=node))
-            renew = ((lease or {}).get("spec") or {}).get("renewTime")
-            if not renew:
-                raise LeaseUnreadable(f"no Lease renewTime for {node}")
+            stamp = lease_stamp(self.kube.get(LEASE.format(name=node)))
+            if stamp is None:
+                raise LeaseUnreadable(f"no Lease stamp for {node}")
         except Exception as e:
             if strict:
                 raise LeaseUnreadable(str(e)) from e
             LOG.warning("lease unreadable for %s: %s", node, e)
-            seen = self.lease_seen.get(node)
-            return None if seen is None else now - seen[1]
-        seen = self.lease_seen.get(node)
-        if seen is None or seen[0] != renew:
-            self.lease_seen[node] = (renew, now)
-            return 0.0
-        return now - seen[1]
+            last = self.lease_last.get(node)
+            if last and now - last[0] <= LEASE_HOLD_S:
+                return last[1]
+            return None
+        age = max(0.0, now - stamp)
+        self.lease_last[node] = (now, age)
+        return age
 
     def _wait(self, cond, timeout, what, fatal=True, step=5):
         deadline = self.clock() + timeout

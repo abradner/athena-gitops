@@ -156,8 +156,12 @@ class FakeKube:
                 raise RuntimeError("GET lease: 500")
             if name not in self.dead:
                 self.last_renew[name] = self.clock()
-            t = self.last_renew.get(name, self.clock() - 86400) + self.lease_skew.get(name, 0)
-            return {"spec": {"renewTime": iso(t)}}
+            t = self.last_renew.get(name, self.clock() - 86400)
+            # renewTime is the worker's (possibly skewed) clock; the
+            # managedFields stamp is the API server's.
+            return {"spec": {"renewTime": iso(t + self.lease_skew.get(name, 0))},
+                    "metadata": {"managedFields": [{"manager": "kubelet", "operation": "Update",
+                                                    "time": iso(t)}]}}
         m = re.fullmatch(r"/api/v1/nodes/([^/]+)", p)
         if m:
             name = m.group(1)
@@ -296,6 +300,7 @@ class FakeTalos:
         self.kube.writes.append(("SHUTDOWN", node, None))
         # Off at once as AMT sees it; still Ready as the API server sees it.
         self.kube.going_down[node] = self.kube.clock() + STALE_READY_SECONDS
+        self.kube.last_renew[node] = self.kube.clock()  # its kubelet's last renewal
         self.kube.dead.add(node)
         self.amt.state[node] = 8
 
@@ -926,9 +931,49 @@ class LeaseFindings(unittest.TestCase):
         r.tick()
         r.kube.lease_fail.add("zag-amd64-02")
         r.kube.writes.clear()
-        r.tick(advance=10)
+        r.tick(advance=30)  # the real cadence
         self.assertEqual(r.kube.caps(), CEILINGS)
         self.assertFalse([x for x in r.kube.writes if "autoscalingrunnersets" in x[1]])
+
+    def test_a_lease_failing_for_long_drops_the_node(self):
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        r.kube.lease_fail.add("zag-amd64-02")
+        r.tick(advance=30)
+        r.tick(advance=30)
+        r.tick(advance=30)  # 90 s without a good read
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_a_restarted_waker_does_not_count_a_dead_node(self):
+        # Delta review: first sight must not count as a renewal. The node
+        # died a day ago and the node controller is down, so Ready stays True.
+        r = Rig()
+        r.kube.dead.add("zag-amd64-02")
+        r.kube.last_renew["zag-amd64-02"] = r.clock() - 86400
+        r.tick()  # a fresh Waker: nothing remembered
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_without_amt_off_waits_a_margin_after_the_lease_stops(self):
+        r = self.no_amt_rig()
+        r.tick()
+        times = []
+        real = r.talos.shutdown
+
+        def stamp(ip):
+            times.append(r.clock())
+            real(ip)
+        r.talos.shutdown = stamp
+        orig = r.kube.merge_patch
+
+        def watch(path, body):
+            if body.get("metadata", {}).get("annotations", {}).get(w.ANNOTATION_STATE) == "asleep":
+                times.append(r.clock())
+            return orig(path, body)
+        r.kube.merge_patch = watch
+        r.tick(advance=61 * 60)
+        self.assertEqual(len(times), 2, times)
+        self.assertGreaterEqual(times[1] - times[0], w.LEASE_FRESH_S + 30)
 
     def test_a_woken_node_without_a_live_kubelet_is_a_failed_wake(self):
         # Ready but no Lease renewals: the wake must not count it.
