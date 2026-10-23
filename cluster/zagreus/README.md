@@ -37,20 +37,40 @@ repo-server and redis to everything but Argo.
 ## Runners
 
 One Application per repository and runner class, under `runners/<repo>/`.
-Workflows target a scale set by its **name**, bare (`runs-on: zagreus-ci`).
-A scale set has none of a classic runner's implicit `self-hosted`/`linux`/`X64`
-labels; extra labels can be declared (`scaleSetLabels`, chart 0.14+) but only
-at creation, so they are not used. The names differ from the legacy runners'
-labels on purpose: a job aimed at zagreus can only run on zagreus, which is
-what makes "proved by a real job" mean something.
 
-| Scale set | Nodes | Scale | For |
-|---|---|---|---|
-| `zagreus-ci-light` | always-on arm64: prefers arm runners, may use arm64 builder nodes | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
-| `zagreus-ci` | prefers amd64, falls back to arm64 | 0–6 | general CI |
-| `zagreus-ci-x64` | amd64 only | 0–6 | e2e (must not rasterise on arm64) |
-| `zagreus-docker-arm64` | arm64 builder (always on) | 0–1 | PR build checks, arm64 release leg |
-| `zagreus-docker-amd64` | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
+**Each scale set shares a class label set with the classic runners**
+(`scaleSetLabels`), so the classic runners take jobs first and zagreus takes the
+overflow: a job asking for a class's labels goes to whichever matching runner
+can take it. Each job class matches exactly one scale set; a job matching two
+would go to either, so a heavy job could land in a light pod. The scale-set
+name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus
+and nothing else (dependency-update PRs use it: zagreus is where third-party
+code runs, above).
+
+| Scale set | Labels (besides its name) | Classic runners sharing them | Nodes | Scale | For |
+|---|---|---|---|---|---|
+| `zagreus-ci-light` | `self-hosted, linux, spritz-light` | ci-runner-137/138/139, the Mac runners | always-on arm64: prefers arm runners, may use arm64 builder nodes | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
+| `zagreus-ci` | `self-hosted, linux, spritz-ci, playwright-full` | the same | prefers amd64, falls back to arm64 | 0–3 | general CI, the full browser matrix |
+| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-e2e` | ci-runner-137/138/139 | amd64 only | 0–2 | e2e (must not rasterise on arm64) |
+| `zagreus-docker-arm64` | `self-hosted, linux, ARM64, docker-arm64` | ci-builder-fulcrum, ci-builder-mac | arm64 builder (always on) | 0–1 | PR build checks, arm64 release leg |
+| `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
+
+Two rules keep the overflow honest:
+
+- **Labels reach GitHub only when ARC creates the scale set** (chart 0.15.0:
+  the controller sends them in `CreateRunnerScaleSet` and never updates them;
+  actions-runner-controller#4424). After changing `scaleSetLabels`, delete
+  that AutoscalingRunnerSet while it is idle
+  (`kubectl -n <arc-runners|arc-builders> delete autoscalingrunnerset <name>`)
+  and let Argo recreate it. Recreate `zagreus-docker-arm64` only once it has
+  built a real image in a real spritz job: its label puts release legs on it.
+- **`maxRunners` never exceeds what the nodes can schedule.** A claimed job is
+  bound to its scale set, so a claim beyond capacity waits in a Pending pod
+  while a classic runner could have taken it. `zagreus-ci` and
+  `zagreus-ci-x64` share the amd64 nodes and their caps add up to them.
+
+ARC runners themselves show no labels on GitHub's Runners page or in the
+runners API: the labels belong to the scale set (actions-runner-controller#4579).
 
 Scale-set names are registered per repository, so every repository onboarded
 later reuses the same five names under its own `runners/<repo>/`.

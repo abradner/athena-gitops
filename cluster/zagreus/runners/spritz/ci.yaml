@@ -24,13 +24,25 @@ spec:
       releaseName: spritz-ci
       valuesObject:
         runnerScaleSetName: zagreus-ci
+        # The class labels this set shares with the classic runners, so a job
+        # asking for them goes to whichever pool can take it first
+        # (README, "Runners"). ARC writes them only when it CREATES the scale
+        # set: after a change here, delete the AutoscalingRunnerSet and let
+        # Argo recreate it, or GitHub keeps the old labels.
+        scaleSetLabels: [self-hosted, linux, spritz-ci, playwright-full]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 0
-        maxRunners: 6
+        # Never more runners than the nodes can schedule. A job this set claims
+        # is bound to it: a claim beyond capacity sits in a Pending pod while a
+        # classic runner with the same labels could have taken it. The two
+        # amd64 nodes fit five 6 GiB pods (23 GiB: three, 15 GiB: two), shared
+        # with ci-x64.yaml: this set 3, that one 2. Raise both together when a
+        # node joins, and count sleeping nodes once the node waker exists.
+        maxRunners: 3
         listenerTemplate:
           spec:
             nodeSelector:
