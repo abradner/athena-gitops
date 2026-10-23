@@ -269,11 +269,14 @@ spec:
               fo = os.open(dst + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
               off = 0
               while buf := os.read(fi, 8 << 20):
-                  os.write(fo, buf)
+                  if os.write(fo, buf) != len(buf):
+                      raise SystemExit("short write: disk full?")
                   os.fsync(fo)
                   os.posix_fadvise(fo, off, len(buf), os.POSIX_FADV_DONTNEED)
                   os.posix_fadvise(fi, off, len(buf), os.POSIX_FADV_DONTNEED)
                   off += len(buf)
+              if not off == os.fstat(fi).st_size == os.fstat(fo).st_size:
+                  raise SystemExit("size mismatch: incomplete copy")
               os.close(fi)
               os.close(fo)
               os.chmod(dst + ".tmp", 0o755)
