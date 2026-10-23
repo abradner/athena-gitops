@@ -59,7 +59,7 @@ code runs, above).
 |---|---|---|---|---|---|
 | `zagreus-ci-light` | `self-hosted, linux, spritz-light` | ci-runner-137/138/139, the Mac runners | always-on arm64: prefers arm runners, may use arm64 builder nodes | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
 | `zagreus-ci` | `self-hosted, linux, spritz-ci, playwright-full` | the same | prefers amd64, falls back to arm64 | 0–3 | general CI, the full browser matrix |
-| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-e2e` | ci-runner-137/138/139 | amd64 only | 0–2 | e2e (must not rasterise on arm64) |
+| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-e2e` | ci-runner-137/138/139 | amd64 only | 0–1 | e2e (must not rasterise on arm64) |
 | `zagreus-docker-arm64` | `self-hosted, linux, ARM64, docker-arm64` | ci-builder-fulcrum, ci-builder-mac | arm64 builder (always on) | 0–1 | PR build checks, arm64 release leg |
 | `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
 
@@ -76,7 +76,10 @@ Two rules keep the overflow honest:
   bound to its scale set, so a claim beyond capacity waits in a Pending pod
   while a classic runner could have taken it (seen in the probe above: the
   claimed job sat queued beside an idle classic runner until cancelled). `zagreus-ci` and
-  `zagreus-ci-x64` share the amd64 nodes and their caps add up to them.
+  `zagreus-ci-x64` share the amd64 nodes with the amd64 builder and the light
+  pods; their caps (3 and 1) are the four 6 GiB pods that schedule under every
+  placement, not the five that fit when nothing else runs (`ci.yaml` has the
+  arithmetic).
 
 ARC runners themselves show no labels on GitHub's Runners page or in the
 runners API: the labels belong to the scale set (actions-runner-controller#4579).

@@ -29,10 +29,11 @@ spec:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 0
-        # 2 of the five 6 GiB pods the amd64 nodes fit; ci.yaml has the other
-        # 3 and says why the sum must not exceed capacity. e2e overflows here
-        # from the classic x64 runners, which take it first.
-        maxRunners: 2
+        # 1 of the four 6 GiB pods the amd64 nodes always fit; ci.yaml has the
+        # other 3 and the arithmetic. Its labels match no job class until the
+        # classic runners carry spritz-e2e, so today it takes only jobs that
+        # name it (bot-authored PRs).
+        maxRunners: 1
         listenerTemplate:
           spec:
             nodeSelector:
