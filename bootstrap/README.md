@@ -149,6 +149,14 @@ EPHEMERAL is still on the SD, use
 [docs/runbook-worker-ephemeral-relocation.md](../docs/runbook-worker-ephemeral-relocation.md).
 Check the placement with `talosctl -n <ip> get volumestatus EPHEMERAL`.
 
+**Watchdog.** Every worker class also gets `watchdog.patch.yaml`, which arms
+the node's hardware watchdog: a hung node resets itself (within about 15 s
+of a kernel hang on a CM5, about four minutes on the GPU VM, and two minutes
+after machined itself stops feeding).
+The control planes get none: they have no watchdog device. Patching running
+nodes, the forced-hang test and rollback:
+[docs/runbook-node-watchdogs.md](../docs/runbook-node-watchdogs.md).
+
 **Do not `talosctl upgrade` workers from the template's `install.image`.**
 The workers are CM5 Lites on a community build; see the warning on that line.
 

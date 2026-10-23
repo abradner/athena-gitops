@@ -36,11 +36,14 @@ for entry in "${GPU_WORKER_IP[@]}" "${GPU_VM_WORKER_IP[@]}"; do
   split_gpu_entry "$entry"
 done
 
+# Every worker class also gets watchdog.patch.yaml (the hardware watchdog;
+# see that file). The control planes do not: they have no watchdog device.
 for ip in "${WORKER_IP[@]}"; do
   echo "=== Applying configuration to node $ip ==="
   talosctl apply-config --insecure \
     --nodes $ip \
-    --file worker.yaml
+    --file worker.yaml \
+    --config-patch @watchdog.patch.yaml
   echo "Configuration applied to $ip"
   echo ""
 done
@@ -52,7 +55,8 @@ for ip in "${NVME_WORKER_IP[@]}"; do
   talosctl apply-config --insecure \
     --nodes $ip \
     --file worker.yaml \
-    --config-patch @worker-nvme.patch.yaml
+    --config-patch @worker-nvme.patch.yaml \
+    --config-patch @watchdog.patch.yaml
   echo "Configuration applied to $ip"
   echo ""
 done
@@ -68,6 +72,7 @@ for entry in "${GPU_WORKER_IP[@]}"; do
     --nodes $ip \
     --file worker.yaml \
     --config-patch @worker-gpu.patch.yaml \
+    --config-patch @watchdog.patch.yaml \
     --config-patch "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
   echo "Configuration applied to $ip"
   echo ""
@@ -83,6 +88,7 @@ for entry in "${GPU_VM_WORKER_IP[@]}"; do
     --nodes $ip \
     --file worker.yaml \
     --config-patch @worker-gpu-vm.patch.yaml \
+    --config-patch @watchdog.patch.yaml \
     --config-patch "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
   echo "Configuration applied to $ip"
   echo ""

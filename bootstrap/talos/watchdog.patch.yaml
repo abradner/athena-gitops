@@ -1,0 +1,50 @@
+# Config patch that arms the node's hardware watchdog through Talos.
+# Applied on top of worker.yaml by apply-worker.sh to EVERY worker class
+# (plain, scratch, GPU bare metal, GPU VM), and patched onto running nodes
+# with `talosctl patch mc` (docs/runbook-node-watchdogs.md). One copy, used
+# both ways, so a fresh install and a live node cannot drift apart.
+#
+# Contains no secrets, so it is committed as-is and never hydrated.
+#
+# What it does: machined opens the device and feeds it. If machined stops
+# feeding for `timeout` (a kernel hang with no panic, PID 1 wedged, the box
+# thrashing too hard to schedule it), the hardware resets the node. A kernel
+# PANIC is not the watchdog's job: Talos boots with panic=10, so a panic
+# reboots by itself in 10 s. The kernel's soft/hard lockup detectors are not
+# built into Talos's kernel, so before this nothing at all caught a hang.
+#
+# What each worker class has at /dev/watchdog0 (read 2026-10-23):
+#   - CM5 (and Pi 5) workers: "Broadcom BCM2835 Watchdog timer". Its hardware
+#     limit is about 15 s; the kernel's watchdog core pings the hardware for
+#     us between machined's pings, so a longer timeout here is fine.
+#   - GPU worker VM (q35): "iTCO_wdt", QEMU's emulation of the ICH9 TCO
+#     timer, present on every q35 VM without adding a device. QEMU resets
+#     the VM on its second expiry only if the ICH9 noreboot strap is clear,
+#     which it is from q35 machine type 8.0 on; the guest cannot see the
+#     strap, so the runbook checks the machine type and the forced-hang test
+#     proves the reset. iTCO always reports bootstatus 0, so the node cannot
+#     say afterwards that the watchdog reset it. If it does not, add `watchdog: model=i6300esb,
+#     action=reset` to the VM (amd64 Talos builds i6300esb as a module) and
+#     point `device` at whichever /dev/watchdogN identifies as i6300esb.
+#   - GPU worker on bare metal (none in athena today): iTCO_wdt, the real one,
+#     but only with worker-gpu.schematic.yaml's module_blacklist=mei_wdt. The
+#     mei extension otherwise adds a second device (the AMT watchdog) and
+#     /dev/watchdog0 becomes a probe race; zagreus's twin ProDesks came up
+#     one each way. Check identity after every boot of such a node.
+# The control planes are NOT covered: they are arm64 Proxmox VMs, and Talos's
+# arm64 kernel builds neither i6300esb nor softdog, so they have no watchdog
+# device at all. Their hang detection runs on the hypervisor instead; see the
+# runbook. Do not add this patch to controlplane.yaml: a missing device makes
+# the controller retry and log forever.
+#
+# Timeout: 2 minutes. Short enough that a hung node is back in a few
+# minutes; long enough that a node under heavy I/O or memory pressure (which
+# still schedules PID 1 at -999 OOM score) is not reset for being slow. Talos
+# accepts 10 s and up; iTCO's hardware ceiling is about 10 minutes.
+#
+# Verify after applying: `talosctl -n <ip> get watchdogtimerstatus` shows the
+# device and timeout, and node-exporter's node_watchdog_info{state="active"}.
+apiVersion: v1alpha1
+kind: WatchdogTimerConfig
+device: /dev/watchdog0
+timeout: 2m

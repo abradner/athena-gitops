@@ -1,0 +1,16 @@
+# Rollback for watchdog.patch.yaml: removes the WatchdogTimerConfig document
+# from a running node's machine config. machined then closes the device,
+# which disarms it. No reboot.
+#
+#   talosctl -n <ip> patch mc --patch @watchdog-remove.patch.yaml
+#
+# Proven by dry-run on 1.13 and 1.14 nodes (2026-10-23): applying
+# watchdog.patch.yaml and this file together reports "no changes detected",
+# while watchdog.patch.yaml alone adds the document.
+#
+# This only changes the live node. apply-worker.sh still applies
+# watchdog.patch.yaml at the next install; remove it there too if the
+# rollback is meant to stick.
+apiVersion: v1alpha1
+kind: WatchdogTimerConfig
+$patch: delete

@@ -429,6 +429,18 @@ general rule.** Argo-specific traps have their own section above.
    Read the resulting command line from the Image Factory before booting
    (`/image/<id>/<version>/cmdline-metal-amd64`), and time the boot: "it boots" hid this.
 
+6. **A privileged debug pod could not write one sysctl.** A forced-hang test ran
+   `kubectl debug node/<node> --profile=sysadmin` with the node-exporter image, wrote
+   `kernel.panic=0` and triggered sysrq, and nothing happened: the node kept answering on the
+   same boot. Root cause: that image runs as `nobody`, and a privileged container running as a
+   non-root user gets an empty effective capability set (`CapEff: 0`), so every `/proc/sys`
+   write failed with "Permission denied". `privileged: true` grants capabilities to root, not to
+   the user. General rules: a debug pod that must act on the host runs as root
+   (`kubectl debug --custom` with `securityContext.runAsUser: 0`); a destructive test gates its
+   trigger on its preconditions (`&&`, so nothing fires unless `panic=0` was written); and a
+   test that "did nothing" is read from its own output before it is called a pass or a fail.
+   The procedure: `docs/runbook-node-watchdogs.md`.
+
 ## The public/private split
 
 **This repository is public.** Internal addresses, guest inventories, host-to-service mappings
