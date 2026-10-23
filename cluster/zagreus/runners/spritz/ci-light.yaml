@@ -31,14 +31,12 @@ spec:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 1
-        # TEMPORARY 4 (23 Oct, arm builder down): its two runners are wedged in
-        # Terminating and hold their slots until the node comes back, so the
-        # amd64 fallback (below) needs slots of its own. maxRunners is global,
-        # not per node class: once the builder is healthy, put this back to 2,
-        # or up to 4 light pods could land on the 8 GB builder beside a
-        # docker-arm64 build (the old invariant: two light pods plus a build's
-        # requests fit, so a build never has to preempt a light job).
-        maxRunners: 4
+        # Capped at 2 while the light lane shares an 8 GB arm64 builder: two
+        # light pods plus a build's requests fit together, so a build never
+        # has to preempt a running light job. (Raised to 4 on 23 Oct while the
+        # builder was down; restored once it was back and its kernel log
+        # reached central logging.)
+        maxRunners: 2
         listenerTemplate:
           spec:
             nodeSelector:
