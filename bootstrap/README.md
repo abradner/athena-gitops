@@ -90,6 +90,32 @@ diff ~/.kube/config ~/.kube/config-athena
 nano ~/.kube/config
 ```
 
+#### Control plane VIP
+
+`apply-control.sh` adds a Talos `Layer2VIPConfig` (address `CONTROL_PLANE_VIP`
+from `athena.zsh`, on the CP VMs' `enp0s11`). The three control planes share it:
+one holds it at a time, elected through etcd, and another takes it over when the
+holder goes away. The LAN's DNS answers the `cluster.controlPlane.endpoint`
+name with the VIP, so `kubectl` keeps working on the LAN when one control plane
+is down or the WAN path to the public answer is. Public DNS keeps its own answer
+for clients off the LAN.
+
+Three things to get right:
+
+- **The VIP is for the Kubernetes API only.** `talosctl` keeps using the node
+  addresses in `talosconfig` (the VIP rides on etcd, and Talos's API must work
+  when etcd doesn't).
+- **The LAN's DNS answer is an A record for the VIP, never A records for the
+  control planes' own addresses.** On this network a DNS name bound to a
+  DHCP-reserved address is handed to that client as its DHCP hostname, and a
+  Talos node takes a DHCP hostname over its generated one. A records for the
+  CP addresses could rename the control planes, and with them their etcd
+  members. The VIP is not a DHCP client.
+- **A running cluster gets the VIP by patch, one control plane at a time**,
+  not by re-running this script (which needs maintenance mode):
+  `talosctl -n <cp> patch mc --patch @<vip patch> --dry-run`, then
+  `--mode no-reboot`. Remove it with the same document plus `$patch: delete`.
+
 ### 4. Provision Core Infrastructure (CNI & Gateway)
 
 *Important: Do not apply worker configurations until the CNI is established.*
