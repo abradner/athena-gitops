@@ -26,7 +26,11 @@
 #     say afterwards that the watchdog reset it. If it does not, add `watchdog: model=i6300esb,
 #     action=reset` to the VM (amd64 Talos builds i6300esb as a module) and
 #     point `device` at whichever /dev/watchdogN identifies as i6300esb.
-#   - GPU worker on bare metal (none in athena today): iTCO_wdt, the real one.
+#   - GPU worker on bare metal (none in athena today): iTCO_wdt, the real one,
+#     but only with worker-gpu.schematic.yaml's module_blacklist=mei_wdt. The
+#     mei extension otherwise adds a second device (the AMT watchdog) and
+#     /dev/watchdog0 becomes a probe race; zagreus's twin ProDesks came up
+#     one each way. Check identity after every boot of such a node.
 # The control planes are NOT covered: they are arm64 Proxmox VMs, and Talos's
 # arm64 kernel builds neither i6300esb nor softdog, so they have no watchdog
 # device at all. Their hang detection runs on the hypervisor instead; see the
