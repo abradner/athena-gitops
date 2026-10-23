@@ -1,5 +1,6 @@
-# zagreus arm64 image builder: a CM5 8 GB Lite whose /var lives on a SATA SSD
-# in a USB 3 (UASP) enclosure, until an NVMe HAT replaces it. Always on, so
+# zagreus arm64 image builder (today zag-arm64-02): a CM5 8 GB Lite whose /var
+# lives on a 256 GB NVMe SSD in a USB 3 (UASP) enclosure (Realtek RTL9210B),
+# until an NVMe HAT replaces it. Always on, so
 # arm64 image builds no longer wait for a Mac to be awake. It runs the
 # docker-arm64 dind scale set and the light lane (unprivileged, no docker
 # socket), which it shares with any arm64 runner nodes.
@@ -9,6 +10,17 @@
 # weeks on an existing builder). Flash sticks are slow at that and wear
 # out. If the enclosure drops off the bus, the node loses /var and goes down;
 # what runs here is the builder and the light lane, so that is the whole blast radius.
+#
+# Why NVMe in the enclosure and not the SATA SSD it started with (23 Oct
+# 2026): the SATA drive stalled writes for seconds at a time, which matches it
+# flushing its SLC cache under build load. A UAS write timed out, the abort
+# path left the CM5's xHCI controller unresponsive ("HC died"), and every USB
+# device on it dropped, /var included. It did so twice in an hour, the second
+# time about a minute after boot. No under-voltage was logged. Talos then
+# cannot finish a reset either, because it waits on the vanished EPHEMERAL
+# volume; power-cycle the node instead. If it recurs with this drive,
+# disabling UAS for the bridge (usb-storage.quirks=<vid>:<pid>:u) is the next
+# step, at some cost in throughput.
 #
 # Contains no secrets; committed as-is, never hydrated.
 machine:

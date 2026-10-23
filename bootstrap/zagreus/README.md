@@ -13,7 +13,7 @@ Addresses and inventory live in the private infrastructure repo.
 |---|---|---|---|
 | Control plane | CM5 4 GB Lite, Optane NVMe | `controlplane.template.yaml` | always on |
 | arm64 runner | CM5 8 GB Lite, 128 GB NVMe | `worker.template.yaml` + `worker-arm-runner.patch.yaml` | always on |
-| arm64 builder | CM5 8 GB Lite, SATA SSD over USB 3 | `worker.template.yaml` + `worker-arm-builder.patch.yaml` | always on |
+| arm64 builder (`zag-arm64-02`) | CM5 8 GB Lite, NVMe SSD in a USB 3 enclosure (RTL9210B) | `worker.template.yaml` + `worker-arm-builder.patch.yaml` | always on |
 | amd64 runner | HP ProDesk/EliteDesk, Optane + SATA SSD | `worker.template.yaml` + `worker-amd64.patch.yaml` | woken on demand |
 
 Every node, whatever its class, also takes the patches listed in `zagreus.zsh`'s

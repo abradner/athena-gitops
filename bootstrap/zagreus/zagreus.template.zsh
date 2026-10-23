@@ -16,7 +16,7 @@ ARM_RUNNER_IP=(
   # may be empty: ARM_RUNNER_IP=() is fine
 )
 
-# arm64 image builder (CM5 8 GB + USB SSD), worker-arm-builder.patch.yaml.
+# arm64 image builder (CM5 8 GB + USB-attached NVMe), worker-arm-builder.patch.yaml.
 ARM_BUILDER_IP=(
   "<ip>"
 )
