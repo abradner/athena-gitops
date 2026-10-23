@@ -435,6 +435,8 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | the asleep list never audited against AMT or the config | `test_a_listed_node_on_but_never_ready_leaves_the_list`, `test_unknown_names_are_dropped_from_the_list` |
 | a set with no `maxRunners` left alone | `test_a_set_with_no_max_runners_is_written` |
 | an unplaced runner ignored when choosing a sleep | `test_a_runner_not_yet_on_a_node_blocks_sleep` |
+| AMT "off" ignored while the API server still says Ready (Codex P1) | `CodexFindings.test_a_node_that_loses_power_stops_counting_at_once` |
+| no limit on how long Ready can be "stale" (Codex P2) | `CodexFindings.test_a_crash_between_stamp_and_shutdown_does_not_strand_the_node` |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed

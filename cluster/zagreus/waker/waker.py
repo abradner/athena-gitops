@@ -53,6 +53,10 @@ ANNOTATION_SLEPT_AT = "zagreus.asn.casa/waker-slept-at"
 # States that leave a node off the asleep list (so its alert can fire) but
 # still eligible for another wake once its backoff has passed.
 RETRY_STATES = ("wake-failed", "sleep-unconfirmed", "on-not-ready")
+# A stale Ready lasts until the node controller's grace runs out (~40 s).
+# Still Ready this long after the waker's shutdown time, the node never went
+# down (the waker stopped between stamping the time and shutting it down).
+STALE_READY_LIMIT_S = 600
 SCALE_SET_LABEL = "actions.github.com/scale-set-name"
 NODE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -383,9 +387,11 @@ def ready_transition(node):
     return None
 
 
-def node_fresh_ready(node):
+def node_fresh_ready(node, now_s=None):
     """Ready, and Ready since the waker last shut it down: a node that has
-    really come back has a Ready transition newer than the shutdown."""
+    really come back has a Ready transition newer than the shutdown. A Ready
+    that has outlived the shutdown time by STALE_READY_LIMIT_S is not stale
+    either: the shutdown never happened."""
     if not node_ready(node):
         return False
     ann = node.get("metadata", {}).get("annotations", {}) or {}
@@ -397,7 +403,9 @@ def node_fresh_ready(node):
     except ValueError:
         return True
     since = ready_transition(node)
-    return since is not None and since > slept
+    if since is not None and since > slept:
+        return True
+    return now_s is not None and now_s - slept > STALE_READY_LIMIT_S
 
 
 def node_ip(node):
@@ -774,13 +782,26 @@ class Waker:
 
         states = {}
         ips = {}
+        now = self.clock()
         for n in cfg["nodes"]:
             node = self.kube.get(f"/api/v1/nodes/{n['name']}")
             if node is None:
                 continue
             ann = node["metadata"].get("annotations", {}) or {}
+            ready = node_fresh_ready(node, now)
+            if ready and n["name"] not in asleep and self.amt.available(n["name"]):
+                # Lost power, or switched off by hand: AMT knows at once,
+                # while the API server keeps Ready for ~40 s and the caps
+                # would offer the dead node's slots meanwhile.
+                try:
+                    if self.amt.power_state(n["name"]) in OFF_STATES:
+                        LOG.warning("%s reports Ready but AMT says it is off: counting it as down", n["name"])
+                        ready = False
+                except Exception as e:
+                    LOG.debug("AMT unreadable for %s: %s", n["name"], e)
             states[n["name"]] = {
-                "ready": node_fresh_ready(node),
+                "ready": ready,
+                "slept_at": ann.get(ANNOTATION_SLEPT_AT),
                 "retry": ann.get(ANNOTATION_STATE) in RETRY_STATES,
                 "unschedulable": bool(node.get("spec", {}).get("unschedulable")),
                 "waker_cordon": ann.get(ANNOTATION_CORDON) == "true",
@@ -889,6 +910,10 @@ class Waker:
             if st["asleep"]:
                 self.mark_asleep(name, False)
                 st["asleep"] = False
+            if st.get("slept_at"):
+                self.kube.merge_patch(f"/api/v1/nodes/{name}", {"metadata": {"annotations": {
+                    ANNOTATION_SLEPT_AT: None}}})
+                st["slept_at"] = None
             if st["waker_cordon"]:
                 self.cordon(name, False)
                 st["waker_cordon"] = False
@@ -996,7 +1021,7 @@ class Waker:
         self.set_state_annotation(node, "waking")
         try:
             self._power_on(node)
-            self._wait(lambda: node_fresh_ready(self._node(node) or {}),
+            self._wait(lambda: node_fresh_ready(self._node(node) or {}, self.clock()),
                        self.cfg["readyTimeoutSeconds"], f"{node} Ready")
             ready_s = self.clock() - start
             self._wait(lambda: self._heartbeat_ready(node),

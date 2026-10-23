@@ -794,6 +794,38 @@ class ReviewFindings(unittest.TestCase):
         self.assertEqual(r.talos.calls, [])
 
 
+class CodexFindings(unittest.TestCase):
+    """Codex on athena-gitops#232 (a8122230)."""
+
+    def test_a_node_that_loses_power_stops_counting_at_once(self):
+        # P1: unexpected power loss. Ready is stale for ~45 s; AMT is not.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        self.assertEqual(r.kube.caps(), CEILINGS)
+        r.amt.state["zag-amd64-02"] = 8
+        r.kube.going_down["zag-amd64-02"] = r.clock() + STALE_READY_SECONDS
+        r.tick(advance=5)  # inside the stale window
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_a_crash_between_stamp_and_shutdown_does_not_strand_the_node(self):
+        # P2: the waker stopped after stamping slept-at and cordoning, before
+        # talosctl ran. The node is on, Ready since long before the stamp.
+        r = Rig()
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True
+        r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"].update({
+            w.ANNOTATION_CORDON: "true", w.ANNOTATION_SLEPT_AT: str(int(T0))})
+        r.kube.cms[("log-heartbeat", "waker-asleep")] = {"data": {
+            "asleep": "zag-amd64-02", "renewed": str(int(T0)), "emitter": "cp1"}}
+        r.tick(advance=w.STALE_READY_LIMIT_S + 60)
+        ann = r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"]
+        self.assertNotIn(w.ANNOTATION_SLEPT_AT, ann)
+        self.assertNotIn("unschedulable", r.kube.nodes["zag-amd64-02"]["spec"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+
+
 class GitHubClient(unittest.TestCase):
     """ETags, paging and the rate limit, against a fake urlopen."""
 
