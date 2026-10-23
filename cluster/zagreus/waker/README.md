@@ -111,7 +111,9 @@ because the drain moves them. On 23 Oct both coredns replicas sat on
 zag-amd64-01. `../core/coredns-pdb.yaml` makes the drain move one at a time.
 A node idle for `idleMinutes` (60) is a candidate for sleep.
 
-**Alive** means Ready *and* a kubelet Lease renewed in the last 25 s. The
+**Alive** means Ready *and* a kubelet Lease the waker has seen change in
+the last 25 s, by the waker's own clock (renewTime is the worker's clock,
+which can be skewed on a box just woken). The
 kubelet renews it every 10 s, and the Lease stops the moment the node loses
 power. The Ready condition takes ~40 s to notice, and never notices if
 kube-controller-manager is down. AMT can't be the check either: it dies
@@ -444,6 +446,10 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | no kubelet Lease check: a dead node counts while its Ready is stale, or for ever if the node controller is down (Codex P1, delta review M1/M2) | `CodexFindings.test_a_node_that_loses_power_stops_counting_at_once`, `test_an_off_node_whose_ready_never_flips_is_not_taken_back` |
 | no limit on how long Ready can be "stale" (Codex P2) | `CodexFindings.test_a_crash_between_stamp_and_shutdown_does_not_strand_the_node` |
 | no stamp clear when taking back an uncordoned listed node | `CodexFindings.test_a_listed_uncordoned_on_node_loses_its_stamp_when_taken_back` |
+| Lease age read from the worker's clock, not the waker's | `LeaseFindings.test_a_worker_clock_far_behind_still_counts_a_live_node` |
+| one failed Lease read drops the node | `LeaseFindings.test_one_failed_lease_read_does_not_drop_the_node` |
+| without AMT, an unreadable Lease, or the shutdown stamp, confirms "off" | `LeaseFindings.test_without_amt_an_unreadable_lease_never_confirms_off`, `test_without_amt_a_hung_shutdown_with_a_live_kubelet_is_not_off` |
+| the wake counts a Ready node with no live kubelet | `LeaseFindings.test_a_woken_node_without_a_live_kubelet_is_a_failed_wake` |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed

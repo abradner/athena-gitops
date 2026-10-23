@@ -68,6 +68,8 @@ class FakeKube:
         self.going_down = {}  # node -> time the API server stops reporting it Ready
         self.dead = set()  # nodes whose kubelet is gone: their Lease stops renewing
         self.last_renew = {}
+        self.lease_skew = {}  # node -> seconds its (worker) clock is off by
+        self.lease_fail = set()  # nodes whose Lease GET errors
         self.writes = []  # (verb, path, body) in order
         self.asleep_writes = []  # (time, asleep) for every write of the asleep list
         self.nodes = {}
@@ -150,9 +152,12 @@ class FakeKube:
             name = m.group(1)
             if name not in self.nodes:
                 return None
+            if name in self.lease_fail:
+                raise RuntimeError("GET lease: 500")
             if name not in self.dead:
                 self.last_renew[name] = self.clock()
-            return {"spec": {"renewTime": iso(self.last_renew.get(name, self.clock() - 86400))}}
+            t = self.last_renew.get(name, self.clock() - 86400) + self.lease_skew.get(name, 0)
+            return {"spec": {"renewTime": iso(t)}}
         m = re.fullmatch(r"/api/v1/nodes/([^/]+)", p)
         if m:
             name = m.group(1)
@@ -864,6 +869,83 @@ class CodexFindings(unittest.TestCase):
         self.assertNotIn("unschedulable", r.kube.nodes["zag-amd64-02"]["spec"])
         self.assertNotIn("zag-amd64-02", r.kube.asleep())
         self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+
+
+class LeaseFindings(unittest.TestCase):
+    """Delta review of c9d2ce0."""
+
+    def no_amt_rig(self):
+        r = Rig()
+        r.waker.wol = {"zag-amd64-02": "00:00:5e:00:53:01", "_broadcast": "192.0.2.255"}
+        r.amt.missing.add("zag-amd64-02")  # wakeable by WoL only: off is judged by the Lease
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        return r
+
+    def test_without_amt_a_stale_lease_confirms_off(self):
+        r = self.no_amt_rig()
+        r.tick()
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, ["zag-amd64-02"])
+        self.assertIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"][w.ANNOTATION_STATE], "asleep")
+
+    def test_without_amt_a_hung_shutdown_with_a_live_kubelet_is_not_off(self):
+        r = self.no_amt_rig()
+        r.tick()
+        r.talos.shutdown = lambda ip: r.talos.calls.append("zag-amd64-02")  # accepted, nothing happens
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, ["zag-amd64-02"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+
+    def test_without_amt_an_unreadable_lease_never_confirms_off(self):
+        # The shutdown hangs and the Lease cannot be read: not "off".
+        r = self.no_amt_rig()
+        r.tick()
+
+        def hangs_and_lease_unreadable(ip):
+            r.talos.calls.append("zag-amd64-02")
+            r.kube.lease_fail.add("zag-amd64-02")
+        r.talos.shutdown = hangs_and_lease_unreadable
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, ["zag-amd64-02"])  # the sleep did reach the shutdown
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertNotEqual(r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"].get(w.ANNOTATION_STATE),
+                            "asleep")
+
+    def test_a_worker_clock_far_behind_still_counts_a_live_node(self):
+        r = Rig()
+        r.kube.lease_skew["zag-amd64-02"] = -3600
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps(), CEILINGS)
+
+    def test_one_failed_lease_read_does_not_drop_the_node(self):
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        r.kube.lease_fail.add("zag-amd64-02")
+        r.kube.writes.clear()
+        r.tick(advance=10)
+        self.assertEqual(r.kube.caps(), CEILINGS)
+        self.assertFalse([x for x in r.kube.writes if "autoscalingrunnersets" in x[1]])
+
+    def test_a_woken_node_without_a_live_kubelet_is_a_failed_wake(self):
+        # Ready but no Lease renewals: the wake must not count it.
+        r = Rig()
+        r.put_all_to_sleep()
+        orig = r.kube.get
+
+        def boot_without_lease(path):
+            out = orig(path)
+            r.kube.dead.add("zag-amd64-01")
+            return out
+        r.kube.get = boot_without_lease
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(r.kube.nodes["zag-amd64-01"]["metadata"]["annotations"][w.ANNOTATION_STATE],
+                         "wake-failed")
+        self.assertEqual(r.kube.caps()["zagreus-docker-amd64"], 0)
 
 
 class GitHubClient(unittest.TestCase):
