@@ -46,11 +46,14 @@ while it hands the rest to idle classic runners (probe, spritz run 39882337983,
 23 Oct 2026). A scale set at `maxRunners: 0` is offered nothing, and raising it
 on the live set takes effect within seconds (runs 39883352061 and 39883642252).
 So "classic first, zagreus for the overflow" comes from `maxRunners`: the
-planned waker holds it at 0 while the amd64 nodes sleep and raises it to the
-awake nodes' slots when the classic runners are saturated, which will need an
-Argo `ignoreDifferences` on `spec.maxRunners`. Until then the static caps below
-apply, and with the amd64 nodes always on, `zagreus-ci` races the classic
-runners for up to three jobs at a time rather than waiting for them to fill. Each job class matches at most one scale set; a job matching two
+node waker (`waker/README.md`) holds it at 0 while the amd64 nodes sleep and
+raises it to the awake nodes' slots when the classic runners are saturated.
+It drives `zagreus-ci`, `zagreus-ci-x64` and `zagreus-docker-amd64`; their
+Applications ignore `spec.maxRunners`, and the value written in each is the
+waker's ceiling. Until the waker leaves observe mode the static caps below
+apply as written, and with the amd64 nodes always on, `zagreus-ci` races the
+classic runners for up to three jobs at a time rather than waiting for them
+to fill. Each job class matches at most one scale set; a job matching two
 would go to either, so a heavy job could land in a light pod. The scale-set
 name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus
 and nothing else (dependency-update PRs use it: zagreus is where third-party
@@ -78,6 +81,9 @@ Two rules keep the overflow honest:
   Recreate a set only while it is idle and nothing is queued for it by name:
   deleting it fails any job running on it, and jobs that name a set have no
   classic fallback.
+  For a set the waker drives, recreate it while the waker's nodes are awake:
+  Argo creates it at the ceiling, and until the waker's next pass (30 s) it
+  could claim jobs for nodes that are asleep.
   - For either docker set, the old dind pod must be gone before the new
     set can start one, since both would use the node's one dockerd data root.
     Turning off auto-sync on its own Application does not hold, because
@@ -135,11 +141,15 @@ jobs for a runner more than 30 days behind the latest release. An outdated
 runner exits with code 7, and ARC then switches that scale set's autoscaling
 off. Each runner image must track actions/runner releases.
 
+## The node waker
+
+`waker/` (its own Application, `waker.yaml`): powers the amd64 nodes on
+through Intel AMT when the classic runners are saturated, off after an idle
+hour, and drives the scale sets' `maxRunners` to match. It ships in observe
+mode; `waker/README.md` has the design, the go-live steps and the rollback.
+
 ## Not yet here
 
-- **The node waker** (P2b): powers amd64 nodes on when CI pods sit
-  unschedulable, and off after an idle hour. A separate controller, to land in
-  `core/` once it exists. Until then the amd64 nodes stay on.
 - **A pull-through registry cache**, so each image crosses the uplink once (P2c).
 - **An alert for long-Pending runner pods.** ARC has no pod-start timeout, so a
   job whose pod cannot schedule waits silently in GitHub's queue (unassigned

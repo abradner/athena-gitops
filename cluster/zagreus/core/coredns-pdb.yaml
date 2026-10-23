@@ -1,0 +1,16 @@
+# coredns may sit on an amd64 runner node (on 23 Oct 2026 both replicas did),
+# and the node waker powers those down: `talosctl shutdown` drains the node
+# first. Without a budget the drain evicts both replicas at once and every pod
+# in the cluster loses DNS until they reschedule. With it, the drain moves one
+# at a time, the second only once the first is Ready elsewhere.
+# (cluster/zagreus/waker/README.md; waker.py pod_holds_node.)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: coredns
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      k8s-app: kube-dns

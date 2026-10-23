@@ -164,6 +164,15 @@ spec:
               - {name: bundle, emptyDir: {}}
               - {name: pg, emptyDir: {}}
               - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
+  # The node waker (../../waker/README.md) owns the live maxRunners: 0 while
+  # the amd64 nodes sleep, their slots once awake. The value above is its
+  # ceiling. RespectIgnoreDifferences keeps a sync from writing the ceiling
+  # back over the waker's value; only a set Argo creates afresh starts at it
+  # (README, "Runners": recreate a set only while its nodes are awake).
+  ignoreDifferences:
+    - group: actions.github.com
+      kind: AutoscalingRunnerSet
+      jsonPointers: [/spec/maxRunners]
   destination:
     server: https://kubernetes.default.svc
     namespace: arc-runners
@@ -173,6 +182,7 @@ spec:
       selfHeal: true
     syncOptions:
       - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
     # The first syncs race zagreus-core (CRDs, namespaces, the repo secret):
     # automated sync does not retry a failed revision on its own.
     retry:

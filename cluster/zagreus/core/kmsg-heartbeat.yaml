@@ -51,10 +51,45 @@ spec:
           # One line, then a minute's sleep. `sleep 60 || exit 1` keeps a
           # failing sleep from turning the loop into a flood; a failed write
           # still waits its minute. "<6>" is the kernel log level (info).
+          #
+          # On the node the node waker runs on (../waker/README.md), it also
+          # writes "log-pipeline asleep <node>" for each node the waker has
+          # powered down, read from the waker's ConfigMap (mounted below), so
+          # the log store's ZagreusNodeKmsgGone can leave sleeping nodes off
+          # its expected list. Only while the waker keeps renewing it: past
+          # five minutes without a renewal the lines stop, and sleeping nodes
+          # alert, which is how a dead waker shows. Names are checked against
+          # a DNS label before they reach the kernel log, with globbing off
+          # (an entry of `*` must not expand), at most eight of them, and
+          # leading zeros stripped from the renewal time (busybox reads 0-led
+          # numbers as octal, and an 8 or 9 in one would end the loop).
+          # ../waker/tests/test_waker.py (Heartbeat) runs this loop.
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
           command:
             - sh
             - -c
-            - 'while :; do echo "<6>log-pipeline heartbeat" > /dev/kmsg; sleep 60 || exit 1; done'
+            - |
+              set -f
+              while :; do
+                echo "<6>log-pipeline heartbeat" > /dev/kmsg
+                if [ "$NODE_NAME" = "$(cat /waker/emitter 2>/dev/null)" ]; then
+                  renewed=$(cat /waker/renewed 2>/dev/null)
+                  case "$renewed" in ''|*[!0-9]*) renewed=0 ;; esac
+                  renewed=${renewed#"${renewed%%[!0]*}"}
+                  if [ $(( $(date +%s) - ${renewed:-0} )) -le 300 ]; then
+                    i=0
+                    for n in $(cat /waker/asleep 2>/dev/null); do
+                      case "$n" in ''|-*|*-|*[!a-z0-9-]*) continue ;; esac
+                      [ $i -lt 8 ] || break
+                      i=$((i + 1))
+                      echo "<6>log-pipeline asleep $n" > /dev/kmsg
+                    done
+                  fi
+                fi
+                sleep 60 || exit 1
+              done
           securityContext:
             privileged: true
             readOnlyRootFilesystem: true
@@ -69,11 +104,20 @@ spec:
           volumeMounts:
             - name: kmsg
               mountPath: /dev/kmsg
+            - name: waker
+              mountPath: /waker
+              readOnly: true
       volumes:
         - name: kmsg
           hostPath:
             path: /dev/kmsg
             type: CharDevice
+        # Written only by the node waker; optional, so the heartbeat runs
+        # unchanged before the waker exists or while it observes.
+        - name: waker
+          configMap:
+            name: waker-asleep
+            optional: true
 ---
 # It needs no network at all.
 apiVersion: networking.k8s.io/v1

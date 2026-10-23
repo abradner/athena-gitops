@@ -24,6 +24,31 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
       - run: ./scripts/validate_yaml.sh
 
+  waker-tests:
+    name: zagreus waker unit tests
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13" # the waker's image is python:3.13
+      # The heartbeat test extracts the shell loop from kmsg-heartbeat.yaml
+      # with yq, and skips without it: install it so the skip cannot happen
+      # here.
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.44.3
+        run: |
+          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_arm64"
+          sudo chmod +x /usr/local/bin/yq
+      - name: Run
+        # An unset shell runs `bash -e` without pipefail: say it, or tee's
+        # status would hide a failing run.
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cluster/zagreus/waker/tests -v 2>&1 | tee /tmp/waker-tests.log
+          ! grep -q "skipped" /tmp/waker-tests.log
+
   k8s-schema:
     name: Kubernetes schema (kubeconform)
     runs-on: ubuntu-24.04-arm
