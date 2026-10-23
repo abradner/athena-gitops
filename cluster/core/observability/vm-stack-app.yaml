@@ -100,6 +100,90 @@ spec:
               limits:
                 memory: 512Mi
 
+        # --- node-exporter: boot facts for the node health record -----
+        #
+        # The long-lived node health record (kept outside the cluster, in
+        # the private infra repo) keeps, per node: boot time, uptime,
+        # readiness and WHY the node last started. Boot time is already here
+        # (node_boot_time_seconds). The reset cause mostly is not:
+        # node_watchdog_bootstatus is always 0 on iTCO (the driver
+        # hard-codes it), and on the Raspberry Pi watchdog it says nothing.
+        # The Raspberry Pi firmware's own reset status does: it is how a
+        # power loss is told from a reboot on the CM5s (0x1000 = power-on
+        # reset, as a CM5 worker showed after a power loss on 2026-10-20).
+        # This sidecar reads it from the device tree and hands it to the
+        # textfile collector.
+        #
+        # The sidecar reuses node-exporter's own image (quay.io/prometheus
+        # images are busybox-based), so no new image is pulled. It reads
+        # /sys read-only and writes only to an in-memory emptyDir. It never
+        # exits on error: a crash-looping sidecar would make the whole pod
+        # NotReady and drop the node's metrics, so a failed read is reported
+        # as athena_bootfacts_ok 0 instead.
+        prometheus-node-exporter:
+          extraArgs:
+            # The first two are the k8s-stack chart's defaults, restated: a
+            # list in these values REPLACES the chart's list rather than
+            # appending to it (gotcha #1's cousin). Check the rendered
+            # DaemonSet after any change here.
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+            - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|erofs|sysfs|tracefs)$
+            - --collector.textfile.directory=/run/node-health
+          # The chart makes this an emptyDir (medium: Memory), read-write in
+          # the sidecars and read-only in node-exporter.
+          sidecarVolumeMount:
+            - name: node-health-textfiles
+              mountPath: /run/node-health
+              readOnly: false
+          sidecars:
+            - name: bootfacts
+              volumeMounts:
+                # The chart's own hostPath /sys volume.
+                - name: sys
+                  mountPath: /host/sys
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 1m
+                  memory: 4Mi
+                limits:
+                  memory: 16Mi
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  dt=/host/sys/firmware/devicetree/base/chosen/bootloader
+                  out=/run/node-health/bootfacts.prom
+                  # A devicetree cell is a big-endian u32; od reads bytes.
+                  be32() {
+                    set -- $(od -An -tu1 "$1" 2>/dev/null)
+                    [ "$#" -eq 4 ] || return 1
+                    echo $(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
+                  }
+                  emit() {
+                    ok=1
+                    if [ -d "$dt" ]; then
+                      echo '# HELP athena_bootloader_rsts Raspberry Pi firmware PM_RSTS at boot. 0x1000 = power-on reset (cold start, e.g. after a power loss); 0x20 = watchdog-driven reset (a software reboot, a panic reboot or a watchdog expiry: the SoC does not tell them apart).'
+                      echo '# TYPE athena_bootloader_rsts gauge'
+                      if v=$(be32 "$dt/rsts"); then echo "athena_bootloader_rsts $v"; else ok=0; fi
+                      echo '# HELP athena_bootloader_boot_count Boots the Raspberry Pi firmware counted since its last power-on reset.'
+                      echo '# TYPE athena_bootloader_boot_count gauge'
+                      if v=$(be32 "$dt/count"); then echo "athena_bootloader_boot_count $v"; else ok=0; fi
+                    fi
+                    echo '# HELP athena_bootfacts_ok 1 when every boot fact this node has was read; 0 means a read failed.'
+                    echo '# TYPE athena_bootfacts_ok gauge'
+                    echo "athena_bootfacts_ok $ok"
+                  }
+                  # Exit at once on TERM, so a pod roll never waits out
+                  # the 30 s grace period on the background sleep.
+                  trap 'exit 0' TERM INT
+                  # The facts are fixed for a boot; re-writing them every
+                  # five minutes only covers a lost emptyDir.
+                  while :; do
+                    emit > "$out.tmp" && mv "$out.tmp" "$out"
+                    sleep 300 & wait $!
+                  done
+
         # --- rules + alerting ------------------------------------------
         vmalert:
           # rules are evaluated by the vmalert on obs-metrics, from files
