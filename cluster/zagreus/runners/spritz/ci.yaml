@@ -48,7 +48,7 @@ spec:
         # ci-x64.yaml 1. The margin is about 1 GiB across both nodes, so
         # re-check whenever a DaemonSet or system pod grows, and raise both
         # together when a node joins. CPU (worst node: 3 x 1.5 plus the
-        # builder's 1.25 of 7.95) and ephemeral storage (about 108 and 115 GB
+        # builder's 1.25 and two light pods' 0.5, 6.25 of 7.95) and ephemeral storage (about 108 and 115 GB
         # allocatable against 34 GiB of requests) do not bind. Once the node
         # waker exists it drives this value from the awake nodes instead
         # (README, "Runners").
