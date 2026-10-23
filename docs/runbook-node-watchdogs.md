@@ -49,7 +49,12 @@ node-exporter reports `node_watchdog_info{state="active"}` with
 `node_watchdog_timeout_seconds` 120 for it, before the next node. An armed
 watchdog that resets a healthy node shows within those ten minutes.
 
-## Forced-hang test (one node per class; needs the operator's word)
+## Forced-hang test (in a node's upgrade cordon; needs the operator's word)
+
+**When:** only inside a node's upgrade cordon, never as a separate outage (operator's rule, 2026-10-23, for
+every node of this cluster and the CI cluster). The node is drained for the upgrade anyway, and the test then
+also proves the new version comes back from an unclean stop. One node per class has been tested outside an
+upgrade (a CM5, before the rule).
 
 Proves the hardware resets a hung node by itself. It hangs the kernel on
 purpose: it panics with the panic reboot disabled (`kernel.panic=0`), so
