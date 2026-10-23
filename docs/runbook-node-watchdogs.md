@@ -92,10 +92,18 @@ kubectl debug node/$node -n kube-system --profile=sysadmin --custom=/tmp/debug-r
 # can lose its record that the pod ran, run it again, and panic the node
 # again. If it is still answering after a minute, the crash did not happen:
 # `kubectl -n kube-system logs <the node-debugger pod>` says why; stop there.
-for i in $(seq 30); do timeout 3 talosctl -n $ip version >/dev/null 2>&1 || break; sleep 2; done
-kubectl -n kube-system get pods -o name | grep "node-debugger-$node" | xargs kubectl -n kube-system delete --force --grace-period=0
-until talosctl -n $ip version >/dev/null 2>&1; do sleep 5; done; date   # back
-kubectl uncordon $node
+pod=$(kubectl -n kube-system get pods -o name | grep "node-debugger-$node" | tail -1)
+down=no
+for i in $(seq 30); do timeout 3 talosctl -n $ip version >/dev/null 2>&1 || { down=yes; break; }; sleep 2; done
+if [ "$down" != yes ]; then
+  echo "STOP: $node never stopped answering, so the crash did not happen."
+  kubectl -n kube-system logs $pod    # why; the pod is kept for diagnosis
+  # Do not go on, and do not uncordon until the cause is known.
+else
+  kubectl -n kube-system delete $pod --force --grace-period=0
+  until talosctl -n $ip version >/dev/null 2>&1; do sleep 5; done; date   # back
+fi
+# Uncordon only once the pass checks below hold: kubectl uncordon $node
 ```
 
 Expected time from T0 to the node answering again:
