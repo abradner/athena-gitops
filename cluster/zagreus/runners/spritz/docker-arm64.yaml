@@ -36,12 +36,13 @@ spec:
       releaseName: spritz-docker-arm64
       valuesObject:
         runnerScaleSetName: zagreus-docker-arm64
-        # The class labels this set shares with the classic runners, so a job
-        # asking for them goes to whichever pool can take it first
-        # (README, "Runners"). ARC writes them only when it CREATES the scale
-        # set: after a change here, delete the AutoscalingRunnerSet and let
-        # Argo recreate it, or GitHub keeps the old labels.
-        scaleSetLabels: [self-hosted, linux, ARM64, docker-arm64]
+        # No class labels, deliberately: this set is reached by name only.
+        # Bot-authored dependency PRs build here by name (spritz#1231), while
+        # the arm64 release legs reach the classic Mac builders by the
+        # docker-arm64 label. A docker-arm64 label here would let release legs
+        # (which hold a GHCR write token) build on the same dind data root,
+        # buildkit cache included, as those third-party builds. Add one only
+        # once the two no longer share a data root (README, "Runners").
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
