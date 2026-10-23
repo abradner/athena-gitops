@@ -39,9 +39,17 @@ repo-server and redis to everything but Argo.
 One Application per repository and runner class, under `runners/<repo>/`.
 
 **Each scale set shares a class label set with the classic runners**
-(`scaleSetLabels`), so the classic runners take jobs first and zagreus takes the
-overflow: a job asking for a class's labels goes to whichever matching runner
-can take it. Each job class matches exactly one scale set; a job matching two
+(`scaleSetLabels`), so a job asking for a class's labels can go to whichever
+matching runner takes it. It is a race, not a preference: GitHub offers a scale
+set up to `maxRunners` jobs at once, whether or not its pods can be scheduled,
+while it hands the rest to idle classic runners (probe, spritz run 39882337983,
+23 Oct 2026). A scale set at `maxRunners: 0` is offered nothing, and raising it
+on the live set takes effect within seconds (runs 39883352061 and 39883642252).
+So "classic first, zagreus for the overflow" comes from `maxRunners`: the
+planned waker holds it at 0 while the amd64 nodes sleep and raises it to the
+awake nodes' slots when the classic runners are saturated, which will need an
+Argo `ignoreDifferences` on `spec.maxRunners`. Until then the static caps below
+apply. Each job class matches exactly one scale set; a job matching two
 would go to either, so a heavy job could land in a light pod. The scale-set
 name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus
 and nothing else (dependency-update PRs use it: zagreus is where third-party
@@ -66,7 +74,8 @@ Two rules keep the overflow honest:
   built a real image in a real spritz job: its label puts release legs on it.
 - **`maxRunners` never exceeds what the nodes can schedule.** A claimed job is
   bound to its scale set, so a claim beyond capacity waits in a Pending pod
-  while a classic runner could have taken it. `zagreus-ci` and
+  while a classic runner could have taken it (seen in the probe above: the
+  claimed job sat queued beside an idle classic runner until cancelled). `zagreus-ci` and
   `zagreus-ci-x64` share the amd64 nodes and their caps add up to them.
 
 ARC runners themselves show no labels on GitHub's Runners page or in the
