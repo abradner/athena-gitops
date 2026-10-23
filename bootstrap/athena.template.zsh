@@ -19,6 +19,12 @@ CONTROL_PLANE_IP=(
   "10.10.80.x"
 )
 
+# Shared VIP for the control planes' API (Talos Layer2VIPConfig), added by
+# apply-control.sh. The LAN DNS answers the control-plane endpoint name with
+# it. Pick a free address on the K8s VLAN: outside the DHCP pool, the Cilium
+# LB pool, and every reservation. Must be declared; "" means no VIP.
+CONTROL_PLANE_VIP="10.10.80.x"
+
 # Worker node IPs, applied in order by apply-worker.sh.
 # These are not a free choice — observability accepts telemetry only from a
 # defined range of node addresses. See "Worker Node Reprovisioning" in
