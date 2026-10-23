@@ -81,12 +81,13 @@ kubectl debug node/$node -n kube-system --profile=sysadmin --custom=/tmp/debug-r
   --image=quay.io/prometheus/node-exporter:v1.11.1 -- \
   /bin/sh -c 'echo 0 > /proc/sys/kernel/panic && echo 1 > /proc/sys/kernel/sysrq || { echo 10 > /proc/sys/kernel/panic; exit 1; }; sleep 5; echo c > /proc/sysrq-trigger || echo 10 > /proc/sys/kernel/panic'
 # kube-system is exempt from Pod Security, which a privileged debug pod needs.
-# Check the node actually went down (talosctl stops answering within ~10 s).
-# If it keeps answering on the same boot ID, the crash never happened:
-# kubectl -n kube-system logs <the node-debugger pod> says why.
-# Delete the debugger pod NOW, while the node is hung: after a crash the
-# kubelet can lose its record that the pod already ran, and would run it,
-# and panic the node, again.
+# `kubectl debug` returns as soon as the pod exists, before its command runs.
+# Wait for the node to stop answering (the panic fired), and only THEN delete
+# the debugger pod, while the node is still hung: after a crash the kubelet
+# can lose its record that the pod ran, run it again, and panic the node
+# again. If it is still answering after a minute, the crash did not happen:
+# `kubectl -n kube-system logs <the node-debugger pod>` says why; stop there.
+for i in $(seq 30); do timeout 3 talosctl -n $ip version >/dev/null 2>&1 || break; sleep 2; done
 kubectl -n kube-system get pods -o name | grep "node-debugger-$node" | xargs kubectl -n kube-system delete --force --grace-period=0
 until talosctl -n $ip version >/dev/null 2>&1; do sleep 5; done; date   # back
 kubectl uncordon $node
