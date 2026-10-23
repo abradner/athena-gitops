@@ -21,7 +21,12 @@ spec:
   # It hid for a long time because ARP caches. Hosts that had already resolved
   # 10.10.80.240 kept working until their entry aged out, so the cluster looked
   # reachable for hours after it had stopped announcing.
+  #
+  # The GPU worker is a Proxmox VM whose NIC is ens18, so it needs its own entry:
+  # without it, the same silent failure happens when the lease lands there.
+  # Any new node class must have its NIC name here, or be kept off the lease.
   - enp0s11
   - end0
+  - ens18
   externalIPs: true
   loadBalancerIPs: true
