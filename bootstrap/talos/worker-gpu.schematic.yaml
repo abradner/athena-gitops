@@ -1,6 +1,6 @@
 # Image Factory schematic for the GPU workers. POST it to get the id:
 #   curl -sS -X POST --data-binary @worker-gpu.schematic.yaml https://factory.talos.dev/schematics
-# -> 4286f1ed0899cc6efd70d14f4fc29cb9cccf7de3acb01a386d2b54adf49ca67f
+# -> 462290b86991b5b5327ca8799c8e7cc45e4b721c3aa84415b8bcf9f1e160456e
 # A changed file means a new id: update install.image in worker-gpu.patch.yaml.
 #
 # The nodes run Secure Boot, so boot media and installer must both be the
@@ -31,11 +31,23 @@
 # version of this file was copied from another schematic with cloudflared,
 # nut-client, tailscale and zfs in it, and the first node rebooted every
 # ~71 min from 2026-10-17 until this was fixed.
+#   - module_blacklist=mei_wdt: the mei extension also brings mei_wdt, the
+#     AMT agent watchdog (iamt_wdt). With it loaded the box has TWO watchdog
+#     devices, and which one becomes /dev/watchdog0 is a probe race: on
+#     2026-10-23 one zagreus ProDesk had iTCO there and its twin had iamt_wdt,
+#     so Talos's WatchdogTimerConfig (device: /dev/watchdog0) armed the AMT
+#     watchdog, which resets nothing without an AMT policy, and left iTCO idle.
+#     Blacklisting the module leaves iTCO as the only device on these
+#     boxes (another model could expose a different extra one: the identity
+#     check catches that). AMT's power control and SOL run out of band in the
+#     ME, and mei_me (the host driver) is untouched. The kernel's own module
+#     loader honours module_blacklist=, whatever userspace asks for.
 customization:
   extraKernelArgs:
     - console=tty0
     - console=ttyS4,115200n8
     - 8250.nr_uarts=8
+    - module_blacklist=mei_wdt
   systemExtensions:
     officialExtensions:
       - siderolabs/i915

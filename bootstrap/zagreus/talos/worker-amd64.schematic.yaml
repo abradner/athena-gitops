@@ -4,7 +4,7 @@
 # A changed file means a new id: update install.image in worker-amd64.patch.yaml.
 #
 # The same schematic as athena's bare-metal GPU workers
-# (bootstrap/talos/worker-gpu.schematic.yaml, id 4286f1ed…): one image for every
+# (bootstrap/talos/worker-gpu.schematic.yaml, id 462290b8…): one image for every
 # amd64 desktop in either cluster, so a box can move between them, and zagreus
 # stays a true canary for athena's metal. Keep the two files identical.
 #   - i915: the iGPU driver and its DMC/GuC firmware. Even with nothing on the
@@ -27,11 +27,23 @@
 #   - console=ttyS4,115200n8 + 8250.nr_uarts=8: the AMT/ISM serial-over-LAN
 #     UART on the Q-chipset ProDesks (no KVM on those, so SOL is the only remote
 #     console). On a box whose SOL UART sits elsewhere this is harmless.
+#   - module_blacklist=mei_wdt: the mei extension also brings mei_wdt, the
+#     AMT agent watchdog (iamt_wdt). With it loaded the box has TWO watchdog
+#     devices, and which one becomes /dev/watchdog0 is a probe race: on
+#     2026-10-23 one zagreus ProDesk had iTCO there and its twin had iamt_wdt,
+#     so Talos's WatchdogTimerConfig (device: /dev/watchdog0) armed the AMT
+#     watchdog, which resets nothing without an AMT policy, and left iTCO idle.
+#     Blacklisting the module leaves iTCO as the only device on these
+#     boxes (another model could expose a different extra one: the identity
+#     check catches that). AMT's power control and SOL run out of band in the
+#     ME, and mei_me (the host driver) is untouched. The kernel's own module
+#     loader honours module_blacklist=, whatever userspace asks for.
 customization:
   extraKernelArgs:
     - console=tty0
     - console=ttyS4,115200n8
     - 8250.nr_uarts=8
+    - module_blacklist=mei_wdt
   systemExtensions:
     officialExtensions:
       - siderolabs/i915

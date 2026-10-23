@@ -49,3 +49,14 @@ provisioning:
         match: disk.transport == "usb"
     minSize: 32GiB
     grow: true
+---
+# Arm the SoC's hardware watchdog (bcm2835 on the CM5), as athena's workers
+# do (athena's bootstrap/talos/watchdog.patch.yaml and
+# docs/runbook-node-watchdogs.md: why 2 minutes, what it catches, the
+# forced-hang test, rollback). Applies live with no reboot. The Pi's own
+# hardware limit is about 15 s; the kernel's watchdog core pings it between
+# machined's 40 s feeds.
+apiVersion: v1alpha1
+kind: WatchdogTimerConfig
+device: /dev/watchdog0
+timeout: 2m
