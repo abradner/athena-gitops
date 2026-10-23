@@ -21,7 +21,7 @@ machine:
         # intel-ucode and the SOL console; the same schematic as athena's
         # bare-metal GPU workers). Secure Boot variant; see that file. This IS
         # the installer to `talosctl upgrade` amd64 nodes with (bump the tag).
-        image: factory.talos.dev/metal-installer-secureboot/4286f1ed0899cc6efd70d14f4fc29cb9cccf7de3acb01a386d2b54adf49ca67f:v1.14.4
+        image: factory.talos.dev/metal-installer-secureboot/462290b86991b5b5327ca8799c8e7cc45e4b721c3aa84415b8bcf9f1e160456e:v1.14.4
     nodeLabels:
         zagreus.asn.casa/role: amd64-runner
 ---
@@ -30,6 +30,18 @@ machine:
 # family have been seen to freeze with no panic and no trace: a hung
 # kernel never fires its own lockup panic in that state, but a hardware
 # watchdog still resets the machine. Talos feeds it while the node is alive.
+#
+# /dev/watchdog0 is iTCO only because the schematic blacklists mei_wdt (see
+# worker-amd64.schematic.yaml). On the previous image (4286f1ed…) a box has
+# two devices and watchdog0 is whichever probed first, decided again at every
+# boot: on 2026-10-23 one of two twin ProDesks had the AMT watchdog there,
+# armed, and iTCO idle. Any node still on that image may be unprotected after
+# any boot. Check after every boot:
+#   talosctl -n <ip> read /sys/class/watchdog/watchdog0/identity   # iTCO_wdt
+# A planned power-off does not trip it: S5 cuts the power, and the watchdog
+# is reset with the platform at the next boot. (Talos's controller also
+# writes the magic close when it stops; whether that always happens before
+# the poweroff call is not established.)
 apiVersion: v1alpha1
 kind: WatchdogTimerConfig
 device: /dev/watchdog0

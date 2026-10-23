@@ -56,7 +56,7 @@ machine:
         # serial console). Secure Boot variant, which these nodes need: see
         # that file. Unlike the arm workers, this installer IS the right one
         # to `talosctl upgrade` with (bump the tag only).
-        image: factory.talos.dev/metal-installer-secureboot/4286f1ed0899cc6efd70d14f4fc29cb9cccf7de3acb01a386d2b54adf49ca67f:v1.13.11
+        image: factory.talos.dev/metal-installer-secureboot/462290b86991b5b5327ca8799c8e7cc45e4b721c3aa84415b8bcf9f1e160456e:v1.13.11
     kubelet:
         extraConfig:
             # The node has swap (SwapVolumeConfig below). With the default
