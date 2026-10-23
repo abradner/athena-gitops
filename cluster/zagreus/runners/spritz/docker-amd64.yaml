@@ -24,6 +24,12 @@ spec:
       releaseName: spritz-docker-amd64
       valuesObject:
         runnerScaleSetName: zagreus-docker-amd64
+        # The class labels this set shares with the classic runners, so a job
+        # asking for them goes to whichever pool can take it first
+        # (README, "Runners"). ARC writes them only when it CREATES the scale
+        # set: after a change here, delete the AutoscalingRunnerSet and let
+        # Argo recreate it, or GitHub keeps the old labels.
+        scaleSetLabels: [self-hosted, linux, X64, docker-amd64]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:

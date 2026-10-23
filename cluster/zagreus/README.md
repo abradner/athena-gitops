@@ -37,20 +37,69 @@ repo-server and redis to everything but Argo.
 ## Runners
 
 One Application per repository and runner class, under `runners/<repo>/`.
-Workflows target a scale set by its **name**, bare (`runs-on: zagreus-ci`).
-A scale set has none of a classic runner's implicit `self-hosted`/`linux`/`X64`
-labels; extra labels can be declared (`scaleSetLabels`, chart 0.14+) but only
-at creation, so they are not used. The names differ from the legacy runners'
-labels on purpose: a job aimed at zagreus can only run on zagreus, which is
-what makes "proved by a real job" mean something.
 
-| Scale set | Nodes | Scale | For |
-|---|---|---|---|
-| `zagreus-ci-light` | always-on arm64: prefers arm runners, may use arm64 builder nodes | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
-| `zagreus-ci` | prefers amd64, falls back to arm64 | 0–6 | general CI |
-| `zagreus-ci-x64` | amd64 only | 0–6 | e2e (must not rasterise on arm64) |
-| `zagreus-docker-arm64` | arm64 builder (always on) | 0–1 | PR build checks, arm64 release leg |
-| `zagreus-docker-amd64` | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
+**Each scale set shares a class label set with the classic runners**
+(`scaleSetLabels`), so a job asking for a class's labels can go to whichever
+matching runner takes it. It is a race, not a preference: GitHub offers a scale
+set up to `maxRunners` jobs at once, whether or not its pods can be scheduled,
+while it hands the rest to idle classic runners (probe, spritz run 39882337983,
+23 Oct 2026). A scale set at `maxRunners: 0` is offered nothing, and raising it
+on the live set takes effect within seconds (runs 39883352061 and 39883642252).
+So "classic first, zagreus for the overflow" comes from `maxRunners`: the
+planned waker holds it at 0 while the amd64 nodes sleep and raises it to the
+awake nodes' slots when the classic runners are saturated, which will need an
+Argo `ignoreDifferences` on `spec.maxRunners`. Until then the static caps below
+apply, and with the amd64 nodes always on, `zagreus-ci` races the classic
+runners for up to three jobs at a time rather than waiting for them to fill. Each job class matches at most one scale set; a job matching two
+would go to either, so a heavy job could land in a light pod. The scale-set
+name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus
+and nothing else (dependency-update PRs use it: zagreus is where third-party
+code runs, above).
+
+| Scale set | Labels (besides its name) | Classic runners sharing them | Nodes | Scale | For |
+|---|---|---|---|---|---|
+| `zagreus-ci-light` | `self-hosted, linux, spritz-light` | the three x64 LXC runners and the two Mac runners, once they carry `spritz-light` (none do yet) | prefers arm runners, may use arm64 builder nodes, falls back to amd64 | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
+| `zagreus-ci` | `self-hosted, linux, spritz-ci, playwright-full` | the three x64 LXC runners and the two Mac runners carry both today | prefers amd64, falls back to arm64 | 0–3 | general CI, the full browser matrix |
+| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-e2e` | the three x64 LXC runners, once they carry `spritz-e2e` (none do yet) | amd64 only | 0–1 | e2e (must not rasterise on arm64) |
+| `zagreus-docker-arm64` | none: name only (`docker-arm64.yaml` says why) | none; the Mac builders keep `docker-arm64` | arm64 builder (always on) | 0–1 | bot-authored PR build checks; not release legs while they would share its data root |
+| `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
+
+Two rules keep the overflow honest:
+
+- **Labels reach GitHub only when ARC creates the scale set** (chart 0.15.0:
+  the controller sends them in `CreateRunnerScaleSet` and never updates them;
+  actions-runner-controller#4424). After changing `scaleSetLabels`, delete
+  that AutoscalingRunnerSet while it is idle
+  (`kubectl -n <arc-runners|arc-builders> delete autoscalingrunnerset <name>`)
+  and let Argo recreate it. Note the set's id first
+  (`kubectl -n <ns> get autoscalingrunnerset <name> -o jsonpath='{.metadata.annotations.runner-scale-set-id}'`),
+  then check the labels landed: the recreated set's id must differ. If it does not, the old
+  GitHub-side set survived the delete and was adopted with its old labels.
+  Recreate a set only while it is idle and nothing is queued for it by name:
+  deleting it fails any job running on it, and jobs that name a set have no
+  classic fallback.
+  - For either docker set, the old dind pod must be gone before the new
+    set can start one, since both would use the node's one dockerd data root.
+    Turning off auto-sync on its own Application does not hold, because
+    `zagreus-runners` and `zagreus-root` self-heal it back within seconds.
+    Turn it off top-down instead (`zagreus-root`, `zagreus-runners`, then the
+    set's Application), delete the set, wait for the pod to finish
+    terminating, then turn sync back on bottom-up.
+  - Recreate `zagreus-ci` only once spritz's light jobs ask for
+    `spritz-light`. Until then they ask for `spritz-ci` (RUNNER_CI_LIGHT is
+    set to the classic labels), so they would race onto 6 GiB heavy pods and
+    use up the set's three slots on every run's critical path.
+- **`maxRunners` never exceeds what the nodes can schedule.** A claimed job is
+  bound to its scale set, so a claim beyond capacity waits in a Pending pod
+  while a classic runner could have taken it (seen in the probe above: the
+  claimed job sat queued beside an idle classic runner until cancelled). `zagreus-ci` and
+  `zagreus-ci-x64` share the amd64 nodes with the amd64 builder and the light
+  pods; their caps (3 and 1) are the four 6 GiB pods that schedule under every
+  placement, not the five that fit when nothing else runs (`ci.yaml` has the
+  arithmetic).
+
+ARC runners themselves show no labels on GitHub's Runners page or in the
+runners API: the labels belong to the scale set (actions-runner-controller#4579).
 
 Scale-set names are registered per repository, so every repository onboarded
 later reuses the same five names under its own `runners/<repo>/`.

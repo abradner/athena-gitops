@@ -24,13 +24,35 @@ spec:
       releaseName: spritz-ci
       valuesObject:
         runnerScaleSetName: zagreus-ci
+        # The class labels this set shares with the classic runners, so a job
+        # asking for them goes to whichever pool can take it first
+        # (README, "Runners"). ARC writes them only when it CREATES the scale
+        # set: after a change here, delete the AutoscalingRunnerSet and let
+        # Argo recreate it, or GitHub keeps the old labels.
+        scaleSetLabels: [self-hosted, linux, spritz-ci, playwright-full]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 0
-        maxRunners: 6
+        # Never more runners than the nodes can schedule. A job this set claims
+        # is bound to it: a claim beyond capacity sits in a Pending pod while a
+        # classic runner with the same labels could have taken it. The two
+        # amd64 nodes have 22.5 and 14.5 GiB allocatable (23 Oct 2026); after
+        # the bundle filler and coredns they fit three 6 GiB pods and two. The
+        # amd64 builder (docker-amd64.yaml, 3.75 GiB with its dind sidecar)
+        # and up to two light pods (768 MiB, ci-light.yaml) share them, and
+        # with the builder on the 14.5 GiB node only one 6 GiB pod fits there.
+        # So four heavy pods always schedule, five do not: this set 3,
+        # ci-x64.yaml 1. The margin is about 1 GiB across both nodes, so
+        # re-check whenever a DaemonSet or system pod grows, and raise both
+        # together when a node joins. CPU (worst node: 3 x 1.5 plus the
+        # builder's 1.25 and two light pods' 0.5, 6.25 of 7.95) and ephemeral storage (about 108 and 115 GB
+        # allocatable against 34 GiB of requests) do not bind. Once the node
+        # waker exists it drives this value from the awake nodes instead
+        # (README, "Runners").
+        maxRunners: 3
         listenerTemplate:
           spec:
             nodeSelector:

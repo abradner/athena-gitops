@@ -25,6 +25,12 @@ spec:
       releaseName: spritz-ci-light
       valuesObject:
         runnerScaleSetName: zagreus-ci-light
+        # The class labels this set shares with the classic runners, so a job
+        # asking for them goes to whichever pool can take it first
+        # (README, "Runners"). ARC writes them only when it CREATES the scale
+        # set: after a change here, delete the AutoscalingRunnerSet and let
+        # Argo recreate it, or GitHub keeps the old labels.
+        scaleSetLabels: [self-hosted, linux, spritz-light]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:

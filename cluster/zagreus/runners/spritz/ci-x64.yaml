@@ -17,13 +17,23 @@ spec:
       releaseName: spritz-ci-x64
       valuesObject:
         runnerScaleSetName: zagreus-ci-x64
+        # The class labels this set shares with the classic runners, so a job
+        # asking for them goes to whichever pool can take it first
+        # (README, "Runners"). ARC writes them only when it CREATES the scale
+        # set: after a change here, delete the AutoscalingRunnerSet and let
+        # Argo recreate it, or GitHub keeps the old labels.
+        scaleSetLabels: [self-hosted, linux, X64, spritz-e2e]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 0
-        maxRunners: 6
+        # 1 of the four 6 GiB pods the amd64 nodes always fit; ci.yaml has the
+        # other 3 and the arithmetic. Its labels match no job class until the
+        # classic runners carry spritz-e2e, so today it takes only jobs that
+        # name it (bot-authored PRs).
+        maxRunners: 1
         listenerTemplate:
           spec:
             nodeSelector:
