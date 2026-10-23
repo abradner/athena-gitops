@@ -36,6 +36,9 @@ spec:
       namespace: arc-runners
     - server: 'https://kubernetes.default.svc'
       namespace: arc-builders
+    # The kernel-log heartbeat (core/kmsg-heartbeat.yaml).
+    - server: 'https://kubernetes.default.svc'
+      namespace: log-heartbeat
   # This cluster runs only what this repo puts on it: cluster-scoped kinds
   # (Namespaces, PriorityClasses, CRDs, ClusterRoles, the ClusterSecretStore)
   # are allowed.

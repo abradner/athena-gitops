@@ -1,11 +1,14 @@
 # zagreus namespaces and their Pod Security levels.
 #
 # The cluster default is enforce=baseline (bootstrap/zagreus/talos/controlplane.template.yaml).
-# The two runner namespaces opt into privileged, deliberately:
+# Three namespaces opt into privileged, deliberately:
 #   - arc-runners: runner pods mount per-node cache directories by hostPath,
 #     which baseline forbids. The caches are what let an ephemeral runner on a
 #     freshly woken node start warm.
 #   - arc-builders: dind sidecars must run privileged.
+#   - log-heartbeat: one pod per node writes a heartbeat into the host's
+#     kernel log, which needs /dev/kmsg, which needs privileged
+#     (kmsg-heartbeat.yaml has the failed unprivileged attempt).
 # What makes that acceptable here and not on athena: this cluster runs only CI,
 # on its own VLAN with internet egress only, and the control-plane nodes (which
 # hold the GitHub App key and etcd) never schedule a runner pod.
@@ -30,6 +33,15 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: arc-builders
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: log-heartbeat
   labels:
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/warn: privileged

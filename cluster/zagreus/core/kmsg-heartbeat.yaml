@@ -1,0 +1,86 @@
+# A heartbeat in every zagreus node's kernel log, once a minute.
+#
+# Each node ships its kernel messages off the box (Talos KmsgLogConfig, from
+# the NODE_PATCHES list in zagreus.zsh; see zagreus.template.zsh) to a log
+# store outside the cluster. Kernel logs are quiet: a healthy node can write
+# nothing for an hour, so "no kernel lines" cannot tell a quiet node from a
+# broken shipper, and a broken shipper loses evidence. This writes one known
+# line into the kernel log every minute, so it travels the exact path the
+# evidence does (ring buffer, Talos's sender, the network, the store), and an
+# alert outside the cluster fires when a node's heartbeats stop arriving.
+#
+# Privileged, because nothing less can write the host's kernel log. Tried
+# first: root, every capability dropped, /dev/kmsg by hostPath as a
+# CharDevice. Every pod failed with `sh: can't create /dev/kmsg: Operation not
+# permitted`: the container's device cgroup admits only the runtime's default
+# devices, and Kubernetes has no field to allow one more short of privileged
+# (or a device plugin). Privileged means every capability, every host device
+# and no seccomp; only the read-only root below narrows it. What keeps the blast radius
+# small is what it runs: one fixed line a minute from a pinned image, no
+# service account token, and a deny-all NetworkPolicy (which a compromised
+# privileged pod could undo, as it could anything on its node). The
+# namespace (namespaces.yaml) is Pod Security privileged to match.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kmsg-heartbeat
+  namespace: log-heartbeat
+spec:
+  selector:
+    matchLabels:
+      app: kmsg-heartbeat
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: kmsg-heartbeat
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Every node, control plane and tainted builders included: a node
+      # without a heartbeat is a node the alert cannot watch.
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: heartbeat
+          image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          # One line, then a minute's sleep. `sleep 60 || exit 1` keeps a
+          # failing sleep from turning the loop into a flood; a failed write
+          # still waits its minute. "<6>" is the kernel log level (info).
+          command:
+            - sh
+            - -c
+            - 'while :; do echo "<6>log-pipeline heartbeat" > /dev/kmsg; sleep 60 || exit 1; done'
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 1m
+              memory: 4Mi
+            limits:
+              memory: 16Mi
+          # Privileged already sees every host device; the mount names the one
+          # this pod uses, and fails the pod early if a node has none.
+          volumeMounts:
+            - name: kmsg
+              mountPath: /dev/kmsg
+      volumes:
+        - name: kmsg
+          hostPath:
+            path: /dev/kmsg
+            type: CharDevice
+---
+# It needs no network at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: log-heartbeat
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
