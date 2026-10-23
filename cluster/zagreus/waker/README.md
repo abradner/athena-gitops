@@ -241,6 +241,29 @@ lists its fields: the GitHub token (Actions: read, spritz), the AMT login, a
 - `os:operator` can reboot and shut down any zagreus node, and nothing
   outside zagreus: its certificate comes from zagreus's own Talos CA.
 
+## Footprint on the control plane
+
+cp1 is a 4 GB CM5. Measured on 23 Oct 2026 from the kubelet's summary API: a
+2.7 GiB working set, 1.2 GiB available, and requests of 1678 Mi of 3.1 GiB
+allocatable. kube-apiserver alone is 882 MiB.
+
+The waker was measured in its pinned image (arm64). The test ran the real
+`tick()` against the cluster's own nodes and pods (36 pods) plus a synthetic
+GitHub queue: 8 runs × 70 jobs in each list, so 1,120 queued jobs counted per
+pass, against a real burst of about 64.
+
+| What | Measured | Set |
+|---|---|---|
+| Waker, steady, 40 passes | 19-20 MiB cgroup, 26 MiB peak RSS | request 48 Mi, limit 160 Mi |
+| Same, with 10× the pods (360) | about 40 MiB cgroup | |
+| Waker plus `talosctl shutdown`, once per sleep, for seconds | talosctl 70 MiB peak RSS, container 96 MiB peak | under the 160 Mi limit |
+| Init container copying talosctl (106 MB) to the emptyDir | python 13 MiB; the cgroup fills to its 64 Mi limit with reclaimable page cache, and the copy completes | limit 64 Mi |
+
+Net cost to cp1: about 20 MiB resident, and a burst under 100 MiB for a few
+seconds per sleep. The binary sits in a disk-backed emptyDir, not
+`medium: Memory`: as tmpfs, its 106 MB would count as memory, and the copy was
+OOM-killed at 64 Mi in that test.
+
 ## Network
 
 A CiliumNetworkPolicy allows only these destinations:
@@ -301,6 +324,47 @@ The waker records these in `zagreus-waker/waker-events`:
 
 Awake hours per day can also be read from the log store: one heartbeat per
 minute per node that is on (`talos:kmsg_heartbeats_by_node`).
+
+## Test plan
+
+**Offline (done, in this PR):** the unit tests below, each mutation-proven,
+and the asn-infra rule test (red on the old rules, green on the new).
+
+**Red-first for "maxRunners 0 keeps jobs off sleeping nodes".** The red half
+is already on record, and it isn't repeated live because the red state
+strands a real job:
+
+- **Red:** run 39882337983. `maxRunners: 1` with no schedulable node; a job
+  was claimed and stuck while a classic runner sat idle.
+- **Green, ARC level:** run 39883352061. `maxRunners: 0`; all five jobs went
+  to the classic runner, and no EphemeralRunner was created.
+- **Green, waker level (live, `caps` mode, no power, needs a go):**
+  1. Cordon zag-amd64-01 and -02 by hand.
+  2. Within one pass (30 s), the waker logs `maxRunners 3 -> 0` (and 1 -> 0
+     twice), and `kubectl get autoscalingrunnersets -A` shows 0 for the three
+     driven sets.
+  3. Push a throwaway branch with a five-job matrix on
+     `[self-hosted, linux, spritz-ci]`. Pass: all five run on classic runners,
+     `kubectl -n arc-runners get ephemeralrunners -l
+     actions.github.com/scale-set-name=zagreus-ci` stays empty, and the
+     listener logs `max=0`.
+  4. Uncordon both nodes. Within 30 s the caps are back to 3/1/1.
+  5. Clean up: delete the branch.
+- **Wake and sleep (live, `full` mode, after the AMT proof):**
+  1. With both nodes idle, set `idleMinutes` to 5 for the test. Watch
+     02 sleep:
+     - `waker-events` gets `slept`;
+     - the asleep line shows in obs-logs (`{cluster="zagreus"} "log-pipeline
+       asleep"`);
+     - no `ZagreusNodeKmsgGone` fires;
+     - AMT reports 8.
+  2. Queue more jobs than the classic runners hold. Pass: 02 wakes, and
+     `waker-events` gets `woke` and `first-job` (the wake-to-first-job
+     latency).
+  3. Stop the waker (`kubectl -n zagreus-waker scale deploy/zagreus-waker
+     --replicas=0`) with a node asleep. Pass: `ZagreusNodeKmsgGone` fires for
+     it within about 8 minutes (the 5-minute TTL, the 150 s window and the
+     1-minute `for`). Scale it back up.
 
 ## Tests
 
