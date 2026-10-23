@@ -66,6 +66,8 @@ class FakeKube:
         self.clock = clock
         self.boots = {}  # node -> time its kubelet reports Ready
         self.going_down = {}  # node -> time the API server stops reporting it Ready
+        self.dead = set()  # nodes whose kubelet is gone: their Lease stops renewing
+        self.last_renew = {}
         self.writes = []  # (verb, path, body) in order
         self.asleep_writes = []  # (time, asleep) for every write of the asleep list
         self.nodes = {}
@@ -143,6 +145,14 @@ class FakeKube:
             return {"items": copy.deepcopy([x for x in self.pods if x["metadata"]["namespace"] == m.group(1)
                                             and x["spec"].get("nodeName") == node
                                             and x["metadata"].get("labels", {}).get(k) == v])}
+        m = re.fullmatch(r"/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/([^/]+)", p)
+        if m:
+            name = m.group(1)
+            if name not in self.nodes:
+                return None
+            if name not in self.dead:
+                self.last_renew[name] = self.clock()
+            return {"spec": {"renewTime": iso(self.last_renew.get(name, self.clock() - 86400))}}
         m = re.fullmatch(r"/api/v1/nodes/([^/]+)", p)
         if m:
             name = m.group(1)
@@ -151,6 +161,7 @@ class FakeKube:
                 del self.going_down[name]
             if name in self.boots and self.clock() >= self.boots[name]:
                 self.set_ready(name, True)  # the kubelet comes up on its own
+                self.dead.discard(name)
                 del self.boots[name]
             return copy.deepcopy(self.nodes.get(name))
         m = re.fullmatch(r"/apis/actions.github.com/v1alpha1/namespaces/([^/]+)/autoscalingrunnersets/([^/]+)", p)
@@ -280,6 +291,7 @@ class FakeTalos:
         self.kube.writes.append(("SHUTDOWN", node, None))
         # Off at once as AMT sees it; still Ready as the API server sees it.
         self.kube.going_down[node] = self.kube.clock() + STALE_READY_SECONDS
+        self.kube.dead.add(node)
         self.amt.state[node] = 8
 
 
@@ -662,6 +674,7 @@ class WakeProcedure(unittest.TestCase):
         r.tick(advance=120)
         r.amt.state["zag-amd64-02"] = w.POWER_ON
         r.kube.set_ready("zag-amd64-02", True)
+        r.kube.dead.discard("zag-amd64-02")
         r.tick(advance=30)
         self.assertNotIn("zag-amd64-02", r.kube.asleep())
         self.assertNotIn("unschedulable", r.kube.nodes["zag-amd64-02"]["spec"])
@@ -804,10 +817,37 @@ class CodexFindings(unittest.TestCase):
         r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
         r.tick()
         self.assertEqual(r.kube.caps(), CEILINGS)
-        r.amt.state["zag-amd64-02"] = 8
-        r.kube.going_down["zag-amd64-02"] = r.clock() + STALE_READY_SECONDS
-        r.tick(advance=5)  # inside the stale window
+        # Mains power lost: the kubelet stops and AMT goes with it.
+        r.kube.dead.add("zag-amd64-02")
+        r.amt.missing.add("zag-amd64-02")
+        r.kube.going_down["zag-amd64-02"] = r.clock() + STALE_READY_SECONDS + w.LEASE_FRESH_S
+        r.tick(advance=w.LEASE_FRESH_S + 1)  # Lease stale, Ready not yet flipped
+        self.assertEqual(r.kube.nodes["zag-amd64-02"]["status"]["conditions"][0]["status"], "True")
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_an_off_node_whose_ready_never_flips_is_not_taken_back(self):
+        # Delta review M2: kube-controller-manager down, so a node the waker
+        # shut down keeps Ready=True for ever. Past the 600 s rule it must
+        # still not count: its kubelet's Lease is dead.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        r.tick()
+        r.tick(advance=61 * 60)  # 02 asleep
+        r.kube.going_down.pop("zag-amd64-02")  # nothing ever flips Ready
+        r.amt.missing.add("zag-amd64-02")  # and AMT can't vouch either way
+        r.tick(advance=w.STALE_READY_LIMIT_S + 120)
+        self.assertIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_a_listed_uncordoned_on_node_loses_its_stamp_when_taken_back(self):
+        # The stamp clear in reconcile, on its own (no waker cordon to clear it).
+        r = Rig()
+        r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"][w.ANNOTATION_SLEPT_AT] = str(int(T0))
+        r.kube.cms[("log-heartbeat", "waker-asleep")] = {"data": {
+            "asleep": "zag-amd64-02", "renewed": str(int(T0)), "emitter": "cp1"}}
+        r.tick(advance=w.STALE_READY_LIMIT_S + 60)
+        self.assertNotIn(w.ANNOTATION_SLEPT_AT, r.kube.nodes["zag-amd64-02"]["metadata"]["annotations"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
 
     def test_a_crash_between_stamp_and_shutdown_does_not_strand_the_node(self):
         # P2: the waker stopped after stamping slept-at and cordoning, before

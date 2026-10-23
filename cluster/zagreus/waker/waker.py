@@ -57,6 +57,11 @@ RETRY_STATES = ("wake-failed", "sleep-unconfirmed", "on-not-ready")
 # Still Ready this long after the waker's shutdown time, the node never went
 # down (the waker stopped between stamping the time and shutting it down).
 STALE_READY_LIMIT_S = 600
+# The kubelet renews its node Lease every 10 s. A Lease older than this means
+# the kubelet is gone (powered off, crashed, unplugged), whatever the Ready
+# condition says: the node controller takes ~40 s to notice, and never does
+# if kube-controller-manager is down. No fresh Lease, no slots.
+LEASE_FRESH_S = 25
 SCALE_SET_LABEL = "actions.github.com/scale-set-name"
 NODE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -387,12 +392,22 @@ def ready_transition(node):
     return None
 
 
-def node_fresh_ready(node, now_s=None):
-    """Ready, and Ready since the waker last shut it down: a node that has
-    really come back has a Ready transition newer than the shutdown. A Ready
-    that has outlived the shutdown time by STALE_READY_LIMIT_S is not stale
-    either: the shutdown never happened."""
+def node_fresh_ready(node, now_s=None, lease_renew_s=None):
+    """Ready, with a kubelet alive to say so, and Ready since the waker last
+    shut it down.
+
+    - The kubelet's Lease must have been renewed in the last LEASE_FRESH_S
+      (when now_s is given). This is what catches a node that lost power,
+      AMT included (AMT dies with mains power), and a Ready the node
+      controller never flips because it is down itself. No Lease read
+      (None): not alive. Fail closed: the safe direction is fewer slots.
+    - A node that has really come back has a Ready transition newer than the
+      waker's shutdown stamp. A live kubelet still Ready STALE_READY_LIMIT_S
+      after the stamp means the shutdown never happened (the waker stopped
+      before talosctl ran)."""
     if not node_ready(node):
+        return False
+    if now_s is not None and (lease_renew_s is None or now_s - lease_renew_s > LEASE_FRESH_S):
         return False
     ann = node.get("metadata", {}).get("annotations", {}) or {}
     slept_at = ann.get(ANNOTATION_SLEPT_AT)
@@ -406,6 +421,15 @@ def node_fresh_ready(node, now_s=None):
     if since is not None and since > slept:
         return True
     return now_s is not None and now_s - slept > STALE_READY_LIMIT_S
+
+
+def lease_renew(lease):
+    """Epoch seconds of a node Lease's last renewal, or None."""
+    t = ((lease or {}).get("spec") or {}).get("renewTime")
+    return parse_time(t).timestamp() if t else None
+
+
+LEASE = "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/{name}"
 
 
 def node_ip(node):
@@ -788,17 +812,7 @@ class Waker:
             if node is None:
                 continue
             ann = node["metadata"].get("annotations", {}) or {}
-            ready = node_fresh_ready(node, now)
-            if ready and n["name"] not in asleep and self.amt.available(n["name"]):
-                # Lost power, or switched off by hand: AMT knows at once,
-                # while the API server keeps Ready for ~40 s and the caps
-                # would offer the dead node's slots meanwhile.
-                try:
-                    if self.amt.power_state(n["name"]) in OFF_STATES:
-                        LOG.warning("%s reports Ready but AMT says it is off: counting it as down", n["name"])
-                        ready = False
-                except Exception as e:
-                    LOG.debug("AMT unreadable for %s: %s", n["name"], e)
+            ready = node_fresh_ready(node, now, self._lease(n["name"]))
             states[n["name"]] = {
                 "ready": ready,
                 "slept_at": ann.get(ANNOTATION_SLEPT_AT),
@@ -1021,7 +1035,7 @@ class Waker:
         self.set_state_annotation(node, "waking")
         try:
             self._power_on(node)
-            self._wait(lambda: node_fresh_ready(self._node(node) or {}, self.clock()),
+            self._wait(lambda: node_fresh_ready(self._node(node) or {}, self.clock(), self._lease(node)),
                        self.cfg["readyTimeoutSeconds"], f"{node} Ready")
             ready_s = self.clock() - start
             self._wait(lambda: self._heartbeat_ready(node),
@@ -1182,8 +1196,9 @@ class Waker:
         if self.amt.available(node):
             check = lambda: self.amt.power_state(node) in OFF_STATES
         else:
-            # Without AMT, the best evidence is the kubelet gone quiet.
-            check = lambda: not node_ready(self._node(node) or {})
+            # Without AMT, the best evidence is the kubelet gone quiet: its
+            # Lease stops, well before the node controller flips Ready.
+            check = lambda: not node_fresh_ready(self._node(node) or {}, self.clock(), self._lease(node))
         try:
             self._wait(check, timeout, f"{node} off")
             return True
@@ -1217,6 +1232,13 @@ class Waker:
 
     def _node(self, node):
         return self.kube.get(f"/api/v1/nodes/{node}")
+
+    def _lease(self, node):
+        try:
+            return lease_renew(self.kube.get(LEASE.format(name=node)))
+        except Exception as e:
+            LOG.warning("lease unreadable for %s: %s", node, e)
+            return None
 
     def _wait(self, cond, timeout, what, fatal=True, step=5):
         deadline = self.clock() + timeout

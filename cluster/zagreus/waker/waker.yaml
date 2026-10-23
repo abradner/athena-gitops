@@ -29,6 +29,12 @@ rules:
     resources: [nodes]
     resourceNames: [zag-amd64-01, zag-amd64-02]
     verbs: [get, patch]
+  # Their kubelets' Leases (kube-node-lease): a node is alive only while its
+  # Lease is fresh. Same names, same rule about adding nodes.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [zag-amd64-01, zag-amd64-02]
+    verbs: [get]
   - apiGroups: [""]
     resources: [pods]
     verbs: [list]

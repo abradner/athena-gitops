@@ -111,6 +111,12 @@ because the drain moves them. On 23 Oct both coredns replicas sat on
 zag-amd64-01. `../core/coredns-pdb.yaml` makes the drain move one at a time.
 A node idle for `idleMinutes` (60) is a candidate for sleep.
 
+**Alive** means Ready *and* a kubelet Lease renewed in the last 25 s. The
+kubelet renews it every 10 s, and the Lease stops the moment the node loses
+power. The Ready condition takes ~40 s to notice, and never notices if
+kube-controller-manager is down. AMT can't be the check either: it dies
+with mains power. No fresh Lease, no slots.
+
 ## Wake
 
 The trigger is unmet demand for a set, with a sleeping node that has a slot
@@ -435,8 +441,9 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | the asleep list never audited against AMT or the config | `test_a_listed_node_on_but_never_ready_leaves_the_list`, `test_unknown_names_are_dropped_from_the_list` |
 | a set with no `maxRunners` left alone | `test_a_set_with_no_max_runners_is_written` |
 | an unplaced runner ignored when choosing a sleep | `test_a_runner_not_yet_on_a_node_blocks_sleep` |
-| AMT "off" ignored while the API server still says Ready (Codex P1) | `CodexFindings.test_a_node_that_loses_power_stops_counting_at_once` |
+| no kubelet Lease check: a dead node counts while its Ready is stale, or for ever if the node controller is down (Codex P1, delta review M1/M2) | `CodexFindings.test_a_node_that_loses_power_stops_counting_at_once`, `test_an_off_node_whose_ready_never_flips_is_not_taken_back` |
 | no limit on how long Ready can be "stale" (Codex P2) | `CodexFindings.test_a_crash_between_stamp_and_shutdown_does_not_strand_the_node` |
+| no stamp clear when taking back an uncordoned listed node | `CodexFindings.test_a_listed_uncordoned_on_node_loses_its_stamp_when_taken_back` |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed
