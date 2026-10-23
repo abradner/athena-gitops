@@ -66,8 +66,9 @@ STALE_READY_LIMIT_S = 600
 # worker's clock, which may be skewed (a box just woken, before NTP), while
 # the stamp is the control plane's clock, the one the waker runs on.
 LEASE_FRESH_S = 25
-# One failed Lease read keeps the last good answer this long, so a transient
-# API error does not flap the caps; past it, the node is not alive.
+# A failed Lease read keeps the last good answer while the renewal it
+# describes is under this old, so a transient API error does not flap the
+# caps; past it, the node is not alive.
 LEASE_HOLD_S = 60
 SCALE_SET_LABEL = "actions.github.com/scale-set-name"
 NODE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
@@ -435,11 +436,13 @@ class LeaseUnreadable(Exception):
 
 
 def lease_stamp(lease):
-    """Epoch seconds the API server last recorded an update to the Lease
-    (its managedFields stamp; second resolution), or None."""
+    """Epoch seconds the API server last recorded the kubelet's update to the
+    Lease (its managedFields stamp; second resolution), or None. Only the
+    kubelet's entry counts: anyone else touching the Lease (a label, an
+    annotation) must not make a dead node look alive."""
     times = [parse_time(m["time"]).timestamp()
              for m in (lease or {}).get("metadata", {}).get("managedFields", []) or []
-             if m.get("time")]
+             if m.get("time") and m.get("manager") == "kubelet"]
     return max(times) if times else None
 
 
@@ -1275,8 +1278,10 @@ class Waker:
             if strict:
                 raise LeaseUnreadable(str(e)) from e
             LOG.warning("lease unreadable for %s: %s", node, e)
+            # Held only while the renewal it describes is under LEASE_HOLD_S
+            # old: bounded by the kubelet's last renewal, not our last read.
             last = self.lease_last.get(node)
-            if last and now - last[0] <= LEASE_HOLD_S:
+            if last and last[1] + (now - last[0]) <= LEASE_HOLD_S:
                 return last[1]
             return None
         age = max(0.0, now - stamp)

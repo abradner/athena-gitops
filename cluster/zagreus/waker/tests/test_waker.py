@@ -70,6 +70,7 @@ class FakeKube:
         self.last_renew = {}
         self.lease_skew = {}  # node -> seconds its (worker) clock is off by
         self.lease_fail = set()  # nodes whose Lease GET errors
+        self.lease_extra_fields = {}  # node -> other managers' managedFields entries
         self.writes = []  # (verb, path, body) in order
         self.asleep_writes = []  # (time, asleep) for every write of the asleep list
         self.nodes = {}
@@ -159,9 +160,10 @@ class FakeKube:
             t = self.last_renew.get(name, self.clock() - 86400)
             # renewTime is the worker's (possibly skewed) clock; the
             # managedFields stamp is the API server's.
+            fields = [{"manager": "kubelet", "operation": "Update", "time": iso(t)}]
+            fields += self.lease_extra_fields.get(name, [])
             return {"spec": {"renewTime": iso(t + self.lease_skew.get(name, 0))},
-                    "metadata": {"managedFields": [{"manager": "kubelet", "operation": "Update",
-                                                    "time": iso(t)}]}}
+                    "metadata": {"managedFields": fields}}
         m = re.fullmatch(r"/api/v1/nodes/([^/]+)", p)
         if m:
             name = m.group(1)
@@ -943,6 +945,15 @@ class LeaseFindings(unittest.TestCase):
         r.tick(advance=30)
         r.tick(advance=30)
         r.tick(advance=30)  # 90 s without a good read
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_another_writer_on_the_lease_does_not_revive_a_dead_node(self):
+        r = Rig()
+        r.kube.dead.add("zag-amd64-02")
+        r.kube.last_renew["zag-amd64-02"] = r.clock() - 86400
+        r.kube.lease_extra_fields["zag-amd64-02"] = [
+            {"manager": "kubectl-label", "operation": "Update", "time": iso(r.clock())}]
+        r.tick()
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
 
     def test_a_restarted_waker_does_not_count_a_dead_node(self):

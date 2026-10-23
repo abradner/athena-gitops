@@ -462,6 +462,7 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | one failed Lease read drops the node (at the real 30 s cadence) | `LeaseFindings.test_one_failed_lease_read_does_not_drop_the_node` |
 | a failed Lease read is trusted for ever | `LeaseFindings.test_a_lease_failing_for_long_drops_the_node` |
 | no 30 s margin after the Lease stops, without AMT | `LeaseFindings.test_without_amt_off_waits_a_margin_after_the_lease_stops` |
+| any manager's stamp counts, not just the kubelet's | `LeaseFindings.test_another_writer_on_the_lease_does_not_revive_a_dead_node` |
 | without AMT, an unreadable Lease, or the shutdown stamp, confirms "off" | `LeaseFindings.test_without_amt_an_unreadable_lease_never_confirms_off`, `test_without_amt_a_hung_shutdown_with_a_live_kubelet_is_not_off` |
 | the wake counts a Ready node with no live kubelet | `LeaseFindings.test_a_woken_node_without_a_live_kubelet_is_a_failed_wake` |
 
