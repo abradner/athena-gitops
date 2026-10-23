@@ -289,12 +289,14 @@ pass, against a real burst of about 64.
 | Waker, steady, 40 passes | 19-20 MiB cgroup, 26 MiB peak RSS | request 48 Mi, limit 160 Mi |
 | Same, with 10× the pods (360) | about 40 MiB cgroup | |
 | Waker plus `talosctl shutdown`, once per sleep, for seconds | talosctl 70 MiB peak RSS, container 96 MiB peak | under the 160 Mi limit |
-| Init container copying talosctl (106 MB) to the emptyDir | python 13 MiB; the cgroup fills to its 64 Mi limit with reclaimable page cache, and the copy completes | limit 64 Mi |
+| Init container copying talosctl (106 MB) to the emptyDir | chunked copy, fsync and page-cache drop per 8 MiB: cgroup peak 28 MiB at any limit (a plain copy fills whatever limit it is given) | limit 128 Mi |
 
 Net cost to cp1: about 20 MiB resident, and a burst under 100 MiB for a few
 seconds per sleep. The binary sits in a disk-backed emptyDir, not
 `medium: Memory`: as tmpfs, its 106 MB would count as memory, and the copy was
-OOM-killed at 64 Mi in that test.
+OOM-killed at 64 Mi in that test. The first version used a plain copy. It finished in a local test
+at 64 Mi, but on cp1 it was OOM-killed within a second at the first sync,
+hence the chunked copy.
 
 ## Network
 

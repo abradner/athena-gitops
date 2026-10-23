@@ -251,22 +251,40 @@ spec:
         # and copied out, so this needs no image of our own. Copied rather
         # than run in place: an image volume is read-only and may be
         # mounted noexec.
+        #
+        # In 8 MiB chunks, each fsynced and dropped from the page cache: the
+        # binary is 106 MB, and page cache counts against this container's
+        # limit. A plain copy was OOM-killed at 64 Mi on cp1 within a second
+        # (23 Oct 2026, the first sync). This way the cgroup peaks near
+        # 30 MiB (measured in the pinned image).
         - name: talosctl
           image: &python python:3.13.17-alpine3.24@sha256:fa0bb0d0cd7c7d6cef30a69094d32ac2b71c7304c87c6107fec100e1ee4eda02
           command:
             - python3
             - -c
             - |
-              import os, shutil
-              shutil.copyfile("/talosctl-image/talosctl", "/tools/talosctl")
-              os.chmod("/tools/talosctl", 0o755)
+              import os
+              src, dst = "/talosctl-image/talosctl", "/tools/talosctl"
+              fi = os.open(src, os.O_RDONLY)
+              fo = os.open(dst + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
+              off = 0
+              while buf := os.read(fi, 8 << 20):
+                  os.write(fo, buf)
+                  os.fsync(fo)
+                  os.posix_fadvise(fo, off, len(buf), os.POSIX_FADV_DONTNEED)
+                  os.posix_fadvise(fi, off, len(buf), os.POSIX_FADV_DONTNEED)
+                  off += len(buf)
+              os.close(fi)
+              os.close(fo)
+              os.chmod(dst + ".tmp", 0o755)
+              os.rename(dst + ".tmp", dst)
           securityContext: &sc
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           resources:
             requests: {cpu: 10m, memory: 32Mi}
-            limits: {memory: 64Mi}
+            limits: {memory: 128Mi}
           volumeMounts:
             - {name: talosctl-image, mountPath: /talosctl-image, readOnly: true}
             - {name: tools, mountPath: /tools}
