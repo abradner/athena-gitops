@@ -21,6 +21,19 @@ spec:
         values: [arc-runners, arc-builders]
   ingress:
     - fromEntities: [host]
+  # No private address outside the cluster, whatever the router allows. Pod
+  # egress masquerades to the node's address, so anything the router lets a
+  # node reach (a log receiver, for one) a job could reach as that node. CIDR
+  # rules select only addresses outside the cluster, so in-cluster
+  # endpoints (cluster DNS below) are unaffected. A deny wins over the world
+  # allow whatever the order. It binds unprivileged pods: a privileged
+  # container (the builders' dind) can rewrite the node's BPF policy.
+  egressDeny:
+    - toCIDR:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
   egress:
     - toEntities: [world]
     - toEndpoints:

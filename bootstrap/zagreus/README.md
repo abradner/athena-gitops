@@ -16,6 +16,11 @@ Addresses and inventory live in the private infrastructure repo.
 | arm64 builder | CM5 8 GB Lite, SATA SSD over USB 3 | `worker.template.yaml` + `worker-arm-builder.patch.yaml` | always on |
 | amd64 runner | HP ProDesk/EliteDesk, Optane + SATA SSD | `worker.template.yaml` + `worker-amd64.patch.yaml` | woken on demand |
 
+Every node, whatever its class, also takes the patches listed in `zagreus.zsh`'s
+`NODE_PATCHES`; the apply scripts add them. They live in the private
+infrastructure repo because they name private addresses. See "Patches every
+node takes" below.
+
 All on Talos 1.14, ahead of athena: zagreus is the canary for Talos upgrades.
 The CM5s boot the Image Factory schematic in `talos/worker-cm5.schematic.yaml`:
 the official overlay plus the kernel argument `sdhci.debug_quirks2=4`, which
@@ -62,11 +67,14 @@ scripts refuse an older client.
   patch applied:
   ```bash
   (
-    talosctl validate --config controlplane.yaml --mode metal --strict || exit 1
+    source ../zagreus.zsh
+    np=(); for f in "${NODE_PATCHES[@]}"; do np+=(-p "@$f"); done
     umask 077; d=$(mktemp -d) || exit 1   # merged configs hold the cluster PKI
     trap 'rm -rf "$d"' EXIT
+    talosctl machineconfig patch controlplane.yaml "${np[@]}" -o "$d/cp.yaml" &&
+      talosctl validate --config "$d/cp.yaml" --mode metal --strict || exit 1
     for p in arm-runner arm-builder amd64; do
-      talosctl machineconfig patch worker.yaml -p @worker-$p.patch.yaml -o "$d/w-$p.yaml" &&
+      talosctl machineconfig patch worker.yaml -p @worker-$p.patch.yaml "${np[@]}" -o "$d/w-$p.yaml" &&
         talosctl validate --config "$d/w-$p.yaml" --mode metal --strict || exit 1
     done
   )
@@ -135,6 +143,30 @@ Taints are set by the kubelet at registration (`registerWithTaints`), not by
 Talos's `nodeTaints`, which NodeRestriction refuses after a node registers.
 Check each node: `kubectl get node --show-labels`, and
 `talosctl -n <ip> get volumestatus EPHEMERAL` shows the intended disk.
+
+### Patches every node takes
+
+`NODE_PATCHES` in `zagreus.zsh` lists patches from the private infrastructure
+repo that every node gets on top of its class config. The first one ships
+Talos's own logs off the node: a `KmsgLogConfig` for kernel messages and a
+`machine.logging` destination for Talos's service logs (machined, kubelet,
+containerd, etcd, apid). It exists because a node lost its disk, and the
+kernel and service logs that would have explained it were in-memory ring
+buffers that a crash-looping containerd then overwrote. A log store outside
+the cluster is the only place those lines survive what they describe.
+
+On a running node these apply without a reboot. Check first, then apply, from
+`bootstrap/zagreus/` with `zagreus.zsh` sourced:
+```bash
+source zagreus.zsh
+for f in "${NODE_PATCHES[@]}"; do talosctl -n <ip> patch mc --dry-run --patch "@$f"; done   # "without a reboot"
+for f in "${NODE_PATCHES[@]}"; do talosctl -n <ip> patch mc --patch "@$f"; done
+talosctl -n <ip> get kmsglogconfigs
+```
+Runner pods are kept off private addresses by the cluster's network policy
+(`cluster/zagreus/core/runner-network-policy.yaml`), since their traffic leaves
+with the node's address: a job could otherwise write to the log receiver as
+its node.
 
 ### 6. Prove it
 

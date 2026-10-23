@@ -36,13 +36,36 @@ if ! declare -p CONTROL_PLANE_IP >/dev/null 2>&1 || [ "${#CONTROL_PLANE_IP[@]}" 
   exit 1
 fi
 
-if ! domains_are_empty controlplane.yaml; then
-  echo "controlplane.yaml: ResolverConfig searchDomains.domains is not an empty list" >&2
+# Patches every node takes (zagreus.zsh). Declared even when empty, or a
+# missing line would silently drop them.
+if ! declare -p NODE_PATCHES >/dev/null 2>&1; then
+  echo "NODE_PATCHES is not set in zagreus.zsh (see zagreus.template.zsh; use NODE_PATCHES=() for none)" >&2
+  exit 1
+fi
+node_patches=()
+for p in "${NODE_PATCHES[@]}"; do
+  [ -f "$p" ] || { echo "NODE_PATCHES entry '$p' not found" >&2; exit 1; }
+  node_patches+=(--patch "@$p")
+done
+
+# The merged config holds the cluster PKI: keep it in a private directory and
+# remove it however the script ends.
+merged_dir=$(mktemp -d)
+trap 'rm -rf -- "$merged_dir"' EXIT
+merged="$merged_dir/controlplane.yaml"
+if [ "${#node_patches[@]}" -gt 0 ]; then
+  talosctl machineconfig patch controlplane.yaml "${node_patches[@]}" -o "$merged"
+else
+  cp controlplane.yaml "$merged"
+fi
+
+if ! domains_are_empty "$merged"; then
+  echo "merged control-plane config: ResolverConfig searchDomains.domains is not an empty list" >&2
   exit 1
 fi
 
 for ip in "${CONTROL_PLANE_IP[@]}"; do
   echo "=== Applying control-plane configuration to $ip ==="
-  talosctl apply-config --insecure --nodes "$ip" --file controlplane.yaml
+  talosctl apply-config --insecure --nodes "$ip" --file "$merged"
   echo ""
 done
