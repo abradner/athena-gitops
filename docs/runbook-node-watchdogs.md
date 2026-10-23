@@ -70,13 +70,20 @@ node=<node name>; ip=<its address>
 kubectl drain $node --ignore-daemonsets --delete-emptydir-data
 talosctl -n $ip get watchdogtimerstatus                            # armed, or stop here
 date                                                               # T0
-# If the sysrq write fails, put the panic reboot back rather than leave the
-# node with panic=0 until its next boot.
-kubectl debug node/$node -n kube-system --profile=sysadmin \
+# The image is already on every node (node-exporter) and has a shell, but it
+# runs as `nobody`: a privileged container then has NO capabilities and every
+# /proc/sys write is refused (gotcha 6). --custom makes it root.
+echo '{"securityContext":{"runAsUser":0,"runAsGroup":0}}' > /tmp/debug-root.json
+# The crash happens ONLY if panic=0 was written: without that, the kernel's
+# own panic reboot (panic=10) would bring the node back and the test would
+# prove nothing. If a write fails it restores panic=10 and exits.
+kubectl debug node/$node -n kube-system --profile=sysadmin --custom=/tmp/debug-root.json \
   --image=quay.io/prometheus/node-exporter:v1.11.1 -- \
-  /bin/sh -c 'echo 0 > /proc/sys/kernel/panic; echo 1 > /proc/sys/kernel/sysrq; echo c > /proc/sysrq-trigger || echo 10 > /proc/sys/kernel/panic'
+  /bin/sh -c 'echo 0 > /proc/sys/kernel/panic && echo 1 > /proc/sys/kernel/sysrq || { echo 10 > /proc/sys/kernel/panic; exit 1; }; sleep 5; echo c > /proc/sysrq-trigger || echo 10 > /proc/sys/kernel/panic'
 # kube-system is exempt from Pod Security, which a privileged debug pod needs.
-# The image is already on every node (node-exporter) and has a shell.
+# Check the node actually went down (talosctl stops answering within ~10 s).
+# If it keeps answering on the same boot ID, the crash never happened:
+# kubectl -n kube-system logs <the node-debugger pod> says why.
 # Delete the debugger pod NOW, while the node is hung: after a crash the
 # kubelet can lose its record that the pod already ran, and would run it,
 # and panic the node, again.
@@ -88,6 +95,9 @@ kubectl uncordon $node
 Expected time from T0 to the node answering again:
 
 - **CM5:** the reset comes within about 15 s of the panic plus the boot.
+  Measured on a CM5 Lite scratch worker on 2026-10-23, twice: the kernel of
+  the new boot started 15 s after the crash, and Talos answered again 31 to
+  37 s after it; Talos re-armed the watchdog about 5 s into the new boot.
   The SoC watchdog's hardware limit is about 15 s, and the kernel's watchdog
   core pings it between machined's pings; a panicked kernel pings nothing,
   so the hardware fires at its own limit, before Talos's two minutes. Then a
@@ -108,7 +118,9 @@ Expected time from T0 to the node answering again:
 
 Pass also needs the node's own report of why it reset. On a CM5,
 `talosctl -n $ip read /proc/device-tree/chosen/bootloader/rsts | xxd -p`
-reads `00000020` (a watchdog-driven reset; a power loss reads `00001000`). On
+has bit `0x20` set (a watchdog-driven reset; a power loss reads `00001000`).
+Test the bit, not the value: the first watchdog reset after a cold start read
+`00001020`, the power-on bit still set beside it, and the next one `00000020`. On
 the VM there is no such report: `iTCO_wdt` always reports a `bootstatus` of 0
 (the driver hard-codes it), so the pass there is the new boot time landing
 inside the expected window with no reboot asked for. (If the class ever
