@@ -335,14 +335,27 @@ has been proven. Turn Wake-on-LAN on only after a test from S5.
    - Check that `kubectl -n zagreus-waker exec deploy/zagreus-waker --
      python3 /opt/waker/waker.py amt-status zag-amd64-02` prints `8`.
    - Then run `... amt-on zag-amd64-02`, and time it to Ready.
-   - Until this passes, AMT is only presumed to work from S5.
+   - **Passed, 23 Oct 2026, 16:56–16:58 AEDT** (Alex's go). The run used
+     the waker's own AMT client and the item's credentials:
+     - `talosctl shutdown` as `os:operator` was accepted;
+     - Ready went False after 7 s, and the kubelet Lease stopped;
+     - AMT reported 8 (S5) 36 s after the shutdown;
+     - 30 s later, `RequestPowerStateChange(2)` was accepted;
+     - AMT reported on after 19 s, and the node was Ready 51 s after the
+       power-on.
+     - Talos uncordoned the node itself, and the evicted idle light runner
+       came back on the arm builder.
 4. **Deploy the asn-infra side:** the recording rule, the alert change and
    the Vector timing tweak. They must be live before step 6.
 5. **`caps` mode** for a day. The caps track the nodes as they are, and
    cordoning a node by hand drops them. This is the waker-level proof that
    `maxRunners` 0 keeps jobs off sleeping nodes (see "Test plan").
-6. **`full` mode**, once Alex has answered three open questions: the idle
-   timeout, whether core joins, and whether arm64 stays always-on.
+6. **`full` mode.** Alex answered the three open questions on 23 Oct 2026:
+   - the idle timeout stays at 60 minutes;
+   - core does not join as core (if the box becomes a cluster node, it joins
+     under a new name, and gets listed in `waker.conf` then);
+   - arm64 stays always-on, which means the waker manages the amd64 nodes
+     only, as built.
 
 **Rollback.** An Argo sync can't do this part. With `RespectIgnoreDifferences`,
 every sync, manual ones included, keeps the live `maxRunners`. If you leave
