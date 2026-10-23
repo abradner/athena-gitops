@@ -1,0 +1,342 @@
+# The node waker (README.md): one pod on the control plane. It reads GitHub's
+# queue, the nodes and the scale sets, patches the scale sets' maxRunners,
+# cordons and powers the amd64 runner nodes, and publishes which nodes it has
+# put to sleep for the log alerts.
+#
+# Pinned to the control plane like everything else here that holds a
+# credential (cluster/zagreus/README.md, "The rule that places everything"):
+# it carries an AMT password and a Talos os:operator certificate, and a
+# worker's kubelet can never read its Secret.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zagreus-waker
+  namespace: zagreus-waker
+---
+# Nodes: read, cordon/uncordon and annotate. Pods: list, to tell an idle node
+# from a busy one.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zagreus-waker
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zagreus-waker
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: zagreus-waker}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
+# The scale sets it drives, by name; their runners, to count claims.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zagreus-waker
+  namespace: arc-runners
+rules:
+  - apiGroups: [actions.github.com]
+    resources: [autoscalingrunnersets]
+    resourceNames: [zagreus-ci, zagreus-ci-x64]
+    verbs: [get, patch]
+  - apiGroups: [actions.github.com]
+    resources: [ephemeralrunners]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zagreus-waker
+  namespace: arc-runners
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zagreus-waker
+  namespace: arc-builders
+rules:
+  - apiGroups: [actions.github.com]
+    resources: [autoscalingrunnersets]
+    resourceNames: [zagreus-docker-amd64]
+    verbs: [get, patch]
+  - apiGroups: [actions.github.com]
+    resources: [ephemeralrunners]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zagreus-waker
+  namespace: arc-builders
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
+# The ceilings: each set's maxRunners as written in its Application.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zagreus-waker
+  namespace: argocd
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications]
+    resourceNames: [zagreus-spritz-ci, zagreus-spritz-ci-x64, zagreus-spritz-docker-amd64]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zagreus-waker
+  namespace: argocd
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
+# The asleep list the heartbeat pod relays (core/kmsg-heartbeat.yaml). Create
+# cannot be narrowed by name; the waker creates it on first use, so Argo does
+# not own it and never reverts it. Its names are checked twice before they
+# reach a kernel log: here (waker.py) and in the heartbeat loop.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zagreus-waker
+  namespace: log-heartbeat
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [waker-asleep]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  # The heartbeat pod on a woken node must be Ready before the node goes
+  # back on the expected list.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zagreus-waker
+  namespace: log-heartbeat
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
+# Its own events log (wake latency, awake time): kubectl -n zagreus-waker get
+# cm waker-events -o jsonpath='{.data.events}'.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zagreus-waker-events
+  namespace: zagreus-waker
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [waker-events]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zagreus-waker-events
+  namespace: zagreus-waker
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker-events}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
+# Credentials, from the CI-only vault (core/external-secrets.yaml). The
+# 1Password item `zagreus-waker` holds:
+#   github_token  a fine-grained token: repository abradner/spritz only,
+#                 Actions: read, nothing else. It lists queued runs and jobs.
+#   amt_user, amt_password
+#                 the ProDesks' AMT admin login (HTTP digest, port 16992).
+#   amt_hosts     node=address pairs, comma-separated: where each node's AMT
+#                 answers. Private addresses stay in the vault, not here.
+#   talosconfig.yaml (ATTACHED file, not a field: a field drops newlines, as
+#                 the GitHub App key's comment explains) a talosconfig for an
+#                 os:operator client of zagreus's Talos CA:
+#                 `talosctl config new --roles os:operator talosconfig.yaml`
+#                 against zagreus. os:operator may reboot and shut down any
+#                 zagreus node, and nothing beyond zagreus.
+# Missing item or field: the sync fails and the pod runs without it (every
+# reference below is optional); observe mode needs none of it.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: zagreus-waker
+  namespace: zagreus-waker
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: 24h # 1Password rate limits (AGENTS.md, Snapshot Learnings 1)
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-ci
+  target:
+    name: zagreus-waker
+    creationPolicy: Owner
+  data:
+    - secretKey: github_token
+      remoteRef: {key: zagreus-waker/github_token}
+    - secretKey: amt_user
+      remoteRef: {key: zagreus-waker/amt_user}
+    - secretKey: amt_password
+      remoteRef: {key: zagreus-waker/amt_password}
+    - secretKey: amt_hosts
+      remoteRef: {key: zagreus-waker/amt_hosts}
+    - secretKey: talosconfig
+      remoteRef: {key: zagreus-waker/talosconfig.yaml}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zagreus-waker
+  namespace: zagreus-waker
+spec:
+  replicas: 1
+  # Never two wakers: two would race each other's cordons and power calls.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: zagreus-waker}
+  template:
+    metadata:
+      labels: {app: zagreus-waker}
+    spec:
+      serviceAccountName: zagreus-waker
+      enableServiceLinks: false
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      # A sleep in progress is cordon -> publish -> shutdown; a stop between
+      # steps is recovered on the next start (README, "Restarts").
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # talosctl comes from Sidero's own image, mounted as an image volume
+        # and copied out, so this needs no image of our own. Copied rather
+        # than run in place: an image volume is read-only and may be
+        # mounted noexec.
+        - name: talosctl
+          image: &python python:3.13.17-alpine3.24@sha256:fa0bb0d0cd7c7d6cef30a69094d32ac2b71c7304c87c6107fec100e1ee4eda02
+          command:
+            - python3
+            - -c
+            - |
+              import os, shutil
+              shutil.copyfile("/talosctl-image/talosctl", "/tools/talosctl")
+              os.chmod("/tools/talosctl", 0o755)
+          securityContext: &sc
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 64Mi}
+          volumeMounts:
+            - {name: talosctl-image, mountPath: /talosctl-image, readOnly: true}
+            - {name: tools, mountPath: /tools}
+      containers:
+        - name: waker
+          image: *python
+          command: [python3, -u, /opt/waker/waker.py]
+          env:
+            - {name: WAKER_CONFIG, value: /opt/waker/waker.conf}
+            - {name: TALOSCTL, value: /tools/talosctl}
+            - {name: TALOSCONFIG, value: /secrets/talosconfig}
+            - {name: HOME, value: /tmp}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: GITHUB_TOKEN
+              valueFrom: {secretKeyRef: {name: zagreus-waker, key: github_token, optional: true}}
+            - name: AMT_USER
+              valueFrom: {secretKeyRef: {name: zagreus-waker, key: amt_user, optional: true}}
+            - name: AMT_PASSWORD
+              valueFrom: {secretKeyRef: {name: zagreus-waker, key: amt_password, optional: true}}
+            - name: AMT_HOSTS
+              valueFrom: {secretKeyRef: {name: zagreus-waker, key: amt_hosts, optional: true}}
+          securityContext: *sc
+          resources:
+            requests: {cpu: 10m, memory: 48Mi}
+            limits: {memory: 160Mi}
+          volumeMounts:
+            - {name: code, mountPath: /opt/waker, readOnly: true}
+            - {name: tools, mountPath: /tools, readOnly: true}
+            - {name: secrets, mountPath: /secrets, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: code
+          configMap: {name: zagreus-waker-code}
+        - name: talosctl-image
+          image:
+            # Keep in step with the nodes' Talos version.
+            reference: ghcr.io/siderolabs/talosctl:v1.14.4@sha256:b3233234327350f20ed194f3fad83d90a64344c1940f839c7b0c0abef50c8c33
+            pullPolicy: IfNotPresent
+        - name: tools
+          emptyDir: {sizeLimit: 256Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}
+        - name: secrets
+          secret:
+            secretName: zagreus-waker
+            optional: true
+            items: [{key: talosconfig, path: talosconfig}]
+---
+# What the waker may reach: the API server, cluster DNS, the nodes' Talos API,
+# GitHub (443 anywhere outside the cluster) and AMT (16992, private addresses
+# only; the router admits only the control plane to the out-of-band network).
+# Nothing reaches it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: zagreus-waker
+  namespace: zagreus-waker
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  endpointSelector:
+    matchLabels: {app: zagreus-waker}
+  ingress:
+    - fromEntities: [host]
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+    - toEntities: [remote-node]
+      toPorts:
+        - ports: [{port: "50000", protocol: TCP}]
+    - toEntities: [world]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+    - toCIDR: [10.0.0.0/8]
+      toPorts:
+        - ports: [{port: "16992", protocol: TCP}]

@@ -1,0 +1,29 @@
+---
+# The node waker (waker/README.md): powers the amd64 runner nodes on and off
+# and drives the scale sets' maxRunners. Its own Application, rather than part
+# of zagreus-core, because it is kustomize (waker.py and config.json are real
+# files under test) and core is plain manifests.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-waker
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/zagreus/waker
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: zagreus-waker
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,13 @@
+# The node waker (README.md). Kustomize only to carry waker.py and
+# waker.conf as real files (tests run against them); the name hash rolls the
+# pod whenever either changes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - waker.yaml
+configMapGenerator:
+  - name: zagreus-waker-code
+    namespace: zagreus-waker
+    files:
+      - waker.py
+      - waker.conf

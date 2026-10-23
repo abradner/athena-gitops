@@ -39,6 +39,9 @@ spec:
     # The kernel-log heartbeat (core/kmsg-heartbeat.yaml).
     - server: 'https://kubernetes.default.svc'
       namespace: log-heartbeat
+    # The node waker (waker/).
+    - server: 'https://kubernetes.default.svc'
+      namespace: zagreus-waker
   # This cluster runs only what this repo puts on it: cluster-scoped kinds
   # (Namespaces, PriorityClasses, CRDs, ClusterRoles, the ClusterSecretStore)
   # are allowed.
