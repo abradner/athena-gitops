@@ -50,9 +50,13 @@ spec:
           envFrom:
             - secretRef:
                 name: kaff-app
+          # Readiness checks the database (/healthz: 200 ok / 503), so a DB
+          # outage pulls the pod out of the Service. Liveness stays on /up
+          # (process-only): a DB outage must not restart-loop the single
+          # replica.
           readinessProbe:
             httpGet:
-              path: /up
+              path: /healthz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
