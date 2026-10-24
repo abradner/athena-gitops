@@ -82,7 +82,8 @@ class FakeKube:
         self.on_write = None
         for s in cfg["sets"]:
             self.ars[(s["namespace"], s["name"])] = {
-                "spec": {"maxRunners": 0, "runnerScaleSetLabels": SET_LABELS[s["name"]]}}
+                "spec": {"maxRunners": 0, "runnerScaleSetLabels": SET_LABELS[s["name"]],
+                         "template": {"spec": copy.deepcopy(TEMPLATES[s["name"]])}}}
             self.apps[s["application"]] = {
                 "spec": {"source": {"helm": {"valuesObject": {"maxRunners": CEILINGS[s["name"]]}}}}}
             self.ers[s["namespace"]] = []
@@ -93,14 +94,16 @@ class FakeKube:
             self.pods.append({
                 "metadata": {"name": f"coredns-{i}", "namespace": "kube-system", "labels": {"k8s-app": "kube-dns"},
                              "ownerReferences": [{"kind": "ReplicaSet", "name": "coredns-x"}]},
-                "spec": {"nodeName": cfg["nodes"][0]["name"]},
+                "spec": {"nodeName": cfg["nodes"][0]["name"],
+                         "containers": [{"name": "coredns", "resources": {"requests": {"cpu": "100m", "memory": "70Mi"}}}]},
                 "status": {"phase": "Running"}})
 
     def add_node(self, name, ready):
         self.nodes[name] = {
             "metadata": {"name": name, "annotations": {}},
             "spec": {},
-            "status": {"conditions": [{"type": "Ready", "status": "True" if ready else "False",
+            "status": {"allocatable": dict(ALLOCATABLE.get(name, {"cpu": "8", "memory": "16Gi"})),
+                       "conditions": [{"type": "Ready", "status": "True" if ready else "False",
                                        "lastTransitionTime": iso(self.clock() - 86400)}],
                        "addresses": [{"type": "InternalIP", "address": f"192.0.2.{len(self.nodes) + 10}"}]},
         }
@@ -120,13 +123,18 @@ class FakeKube:
             cond["lastTransitionTime"] = iso(self.clock())
 
     def add_runner_pod(self, node, set_name, phase="Running", name=None):
+        spec = copy.deepcopy(TEMPLATES.get(set_name, HEAVY))
+        spec["nodeName"] = node
         self.pods.append({
             "metadata": {"name": name or f"{set_name}-runner-{len(self.pods)}", "namespace": "arc-runners",
                          "labels": {w.SCALE_SET_LABEL: set_name},
                          "ownerReferences": [{"kind": "EphemeralRunner", "name": "x"}]},
-            "spec": {"nodeName": node},
+            "spec": spec,
             "status": {"phase": phase},
         })
+
+    def taint(self, node, key, effect="NoSchedule"):
+        self.nodes[node]["spec"].setdefault("taints", []).append({"key": key, "effect": effect})
 
     # --- API
 
@@ -247,6 +255,22 @@ SET_LABELS = {
     "zagreus-docker-amd64": ["self-hosted", "linux", "X64", "docker-amd64"],
 }
 CEILINGS = {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1}
+# As on the live cluster (23 Oct 2026): the runner pod templates' requests
+# (the builder's dind is a native sidecar, so it counts in full) and the
+# amd64 nodes' allocatable.
+HEAVY = {"containers": [{"name": "runner", "resources": {"requests": {"cpu": "1500m", "memory": "6Gi"}}}],
+         "initContainers": [{"name": "bundle-seed", "resources": {"requests": {"cpu": "100m", "memory": "64Mi"}}}]}
+TEMPLATES = {
+    "zagreus-ci": HEAVY,
+    "zagreus-ci-x64": HEAVY,
+    "zagreus-docker-amd64": {
+        "containers": [{"name": "runner", "resources": {"requests": {"cpu": "250m", "memory": "768Mi"}}}],
+        "initContainers": [{"name": "init-dind-externals"},
+                           {"name": "dind", "restartPolicy": "Always",
+                            "resources": {"requests": {"cpu": "1", "memory": "3Gi"}}}]},
+}
+ALLOCATABLE = {"zag-amd64-01": {"cpu": "7950m", "memory": "23562480Ki"},
+               "zag-amd64-02": {"cpu": "7950m", "memory": "15200576Ki"}}
 
 
 class FakeGitHub:
@@ -441,9 +465,11 @@ class Caps(unittest.TestCase):
             "zag-amd64-01": {}, "zag-amd64-02": {"ready": False, "asleep": True}}))
         self.assertTrue(all(v > 0 for v in caps.values()), caps)
 
-    def test_the_ceiling_bounds_and_an_unknown_ceiling_only_lowers(self):
+    def test_the_ceiling_bounds_and_an_unknown_ceiling_holds_the_live_value(self):
+        # Held both ways: raising could pass the ceiling, and lowering alone
+        # would ratchet the cap down for good (review of #238, LOW 1).
         self.assertEqual(w.bound_caps({"a": 5, "b": 5, "c": 1}, {"a": 2, "b": 2, "c": 2},
-                                      {"a": 3, "b": None, "c": None}), {"a": 3, "b": 2, "c": 1})
+                                      {"a": 3, "b": None, "c": None}), {"a": 3, "b": 2, "c": 2})
 
     def test_configured_slots_fit_the_nodes(self):
         """The arithmetic in waker.conf, checked: each node's slots, plus
@@ -876,6 +902,95 @@ class CodexFindings(unittest.TestCase):
         self.assertNotIn("unschedulable", r.kube.nodes["zag-amd64-02"]["spec"])
         self.assertNotIn("zag-amd64-02", r.kube.asleep())
         self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+
+
+class CapsCodexFindings(unittest.TestCase):
+    """Codex on #238 (439b185): caps mode must not offer a slot that cannot
+    schedule."""
+
+    def test_p2_1_another_sets_runner_on_the_surviving_node_takes_its_room(self):
+        # 01 is gone; an x64 job (6 Gi) is running on 02. 02 has room for one
+        # more heavy pod, not two: zagreus-ci may be offered one.
+        r = Rig(mode="caps")
+        r.kube.set_ready("zag-amd64-01", False)
+        r.kube.dead.add("zag-amd64-01")
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci-x64")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+        self.assertEqual(r.kube.caps()["zagreus-ci-x64"], 1)  # its own running job
+
+    def test_p2_1_a_builder_on_the_surviving_node_takes_its_room(self):
+        # The builder (3.75 Gi with dind) running on 02 leaves room for one
+        # heavy pod there, not two.
+        r = Rig(mode="caps")
+        r.kube.set_ready("zag-amd64-01", False)
+        r.kube.dead.add("zag-amd64-01")
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-docker-amd64")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_p2_2_an_untolerated_noschedule_taint_takes_the_node_out(self):
+        r = Rig(mode="caps")
+        r.kube.taint("zag-amd64-01", "node.kubernetes.io/disk-pressure")
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
+
+    def test_a_prefer_noschedule_taint_does_not(self):
+        r = Rig(mode="caps")
+        r.kube.taint("zag-amd64-01", "example.com/soft", effect="PreferNoSchedule")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps(), CEILINGS)
+
+
+class CapsReviewLows(unittest.TestCase):
+    """The three LOWs of the subagent read of #238."""
+
+    def test_low1_an_unreadable_ceiling_does_not_ratchet_the_cap_down(self):
+        r = Rig(mode="caps")
+        r.tick()
+        del r.kube.apps["zagreus-spritz-ci"]  # renamed, say
+        r.kube.set_ready("zag-amd64-02", False)
+        r.kube.dead.add("zag-amd64-02")
+        r.tick(advance=60)
+        r.tick(advance=60)
+        r.kube.set_ready("zag-amd64-02", True)
+        r.kube.dead.discard("zag-amd64-02")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+
+    def test_low1_no_sleep_while_a_ceiling_is_unreadable(self):
+        r = Rig()
+        r.tick()
+        del r.kube.apps["zagreus-spritz-ci"]
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, [])
+
+    def test_low2_one_failed_lease_read_at_start_does_not_flap(self):
+        r = Rig(mode="caps")
+        for (ns, name), live in {("arc-runners", "zagreus-ci"): 3, ("arc-runners", "zagreus-ci-x64"): 1,
+                                 ("arc-builders", "zagreus-docker-amd64"): 1}.items():
+            r.kube.ars[(ns, name)]["spec"]["maxRunners"] = live
+        r.kube.lease_fail.add("zag-amd64-01")  # the first pass after a start
+        r.tick()
+        r.kube.lease_fail.clear()
+        r.tick(advance=30)
+        self.assertFalse([x for x in r.kube.writes if "autoscalingrunnersets" in x[1]])
+
+    def test_low3_a_leftover_asleep_list_does_not_hold_a_ready_node_out_in_caps(self):
+        r = Rig(mode="caps")
+        r.kube.cms[("log-heartbeat", "waker-asleep")] = {"data": {
+            "asleep": "zag-amd64-02", "renewed": str(int(T0)), "emitter": "cp1"}}
+        r.tick()
+        self.assertEqual(r.kube.caps(), CEILINGS)
+
+    def test_a_repeated_wish_is_logged_once(self):
+        r = Rig(mode="observe")
+        r.tick()
+        with self.assertLogs("waker", level="INFO") as logs:
+            for i in range(5):
+                r.tick(advance=61 * 60 if i == 0 else 30)
+        self.assertEqual(sum("would sleep" in m for m in logs.output), 1)
 
 
 class LeaseFindings(unittest.TestCase):

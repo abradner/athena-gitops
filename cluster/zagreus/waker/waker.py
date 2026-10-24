@@ -119,6 +119,9 @@ DEFAULTS = {
     "heartbeat": {"namespace": "log-heartbeat", "label": "app=kmsg-heartbeat"},
     "applicationsNamespace": "argocd",
     "evictableNamespaces": ["kube-system"],
+    # Taint keys the runner pods tolerate (none do today). Any other
+    # NoSchedule or NoExecute taint takes a node out of the caps.
+    "toleratedTaintKeys": [],
 }
 
 
@@ -222,27 +225,104 @@ def node_awake(node_state):
     return node_state["ready"] and not node_state["unschedulable"] and not node_state["asleep"]
 
 
-def compute_caps(cfg, node_states):
-    """base + the slots of every awake node, per driven set (no ceiling)."""
+def parse_qty(value):
+    """A Kubernetes quantity to a float (bytes, or cores for cpu)."""
+    v = str(value).strip()
+    units = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40,
+             "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "m": 1e-3}
+    for suffix in sorted(units, key=len, reverse=True):
+        if v.endswith(suffix):
+            return float(v[:-len(suffix)]) * units[suffix]
+    return float(v)
+
+
+def pod_requests(spec):
+    """(cpu cores, memory bytes) the scheduler reserves for a pod spec:
+    containers plus native sidecars (init containers with restartPolicy
+    Always, such as the builder's dind), or the largest plain init
+    container if that is bigger."""
+    def req(c, key):
+        return parse_qty(((c.get("resources") or {}).get("requests") or {}).get(key, "0"))
+    out = []
+    for key in ("cpu", "memory"):
+        sidecars = sum(req(c, key) for c in spec.get("initContainers") or []
+                       if c.get("restartPolicy") == "Always")
+        main = sum(req(c, key) for c in spec.get("containers") or []) + sidecars
+        plain = max([req(c, key) for c in spec.get("initContainers") or []
+                     if c.get("restartPolicy") != "Always"] or [0])
+        out.append(max(main, plain))
+    return tuple(out)
+
+
+def untolerated_taint(node, tolerated_keys=()):
+    """The first NoSchedule or NoExecute taint the runner pods do not
+    tolerate (they tolerate none), or None. PreferNoSchedule does not stop
+    scheduling."""
+    for t in (node.get("spec") or {}).get("taints") or []:
+        if t.get("effect") in ("NoSchedule", "NoExecute") and t.get("key") not in tolerated_keys:
+            return t.get("key")
+    return None
+
+
+def compute_caps(cfg, node_states, set_requests=None):
+    """base + what each awake node can still take, per driven set (no
+    ceiling).
+
+    With set_requests (each set's pod requests) and each node's free room
+    (allocatable minus every pod already on it), a node offers a set no more
+    than its configured slots, less the set's pods already there, and no
+    more than still fits beside whatever else runs there, another set's
+    runner included. Sets are filled in waker.conf order, so the builder
+    (listed first: it preempts CI pods) gets its room before CI does. A
+    set's own runners on an awake node count towards its cap: they hold
+    claims already. Without set_requests: the configured slots, as
+    written."""
     caps = {s["name"]: int(s.get("base", 0)) for s in cfg["sets"]}
     for n in cfg["nodes"]:
         st = node_states.get(n["name"])
-        if st is None or not node_awake(st):
+        if st is None:
             continue
-        for set_name, slots in n.get("slots", {}).items():
-            caps[set_name] += int(slots)
+        own = st.get("own") or {}
+        if not node_awake(st):
+            # Its runners, if any, are not counted: on a node that is gone
+            # they may be ghosts the API has not cleaned up, and ARC never
+            # stops a busy runner because its set's cap went down.
+            continue
+        if set_requests is not None:
+            for set_name in caps:
+                caps[set_name] += own.get(set_name, 0)
+        if set_requests is None or "free" not in st:
+            for set_name, slots in n.get("slots", {}).items():
+                caps[set_name] += int(slots)
+            continue
+        free_cpu, free_mem = st["free"]
+        for s in cfg["sets"]:
+            name = s["name"]
+            room = int(n.get("slots", {}).get(name, 0)) - own.get(name, 0)
+            cpu, mem = set_requests.get(name, (0, 0))
+            fit = room
+            if cpu > 0:
+                fit = min(fit, int(free_cpu // cpu))
+            if mem > 0:
+                fit = min(fit, int(free_mem // mem))
+            fit = max(0, fit)
+            free_cpu -= fit * cpu
+            free_mem -= fit * mem
+            caps[name] += fit
     return caps
 
 
 def bound_caps(wanted, live, ceilings):
-    """Apply each set's ceiling. With no ceiling known, only lowering is safe."""
+    """Apply each set's ceiling. With no ceiling known, hold the live value:
+    raising could pass the ceiling, and lowering alone would ratchet the cap
+    down for good, since it could never come back up."""
     out = {}
     for name, want in wanted.items():
         ceiling = ceilings.get(name)
         if ceiling is not None:
             out[name] = min(want, ceiling)
         elif name in live and live[name] is not None:
-            out[name] = min(want, live[name])
+            out[name] = live[name]
         elif name in live:
             # The set has no maxRunners at all, which ARC reads as unlimited:
             # the slot sum is the only bound there is, so write it.
@@ -737,6 +817,9 @@ class Waker:
         self.last_wake_at = 0.0
         self.pending_first_job = {}  # node -> wake start (s)
         self.on_since = {}  # listed-asleep node -> when AMT first said it was on
+        self.lower_streak = {}  # set -> passes in a row that wanted a lower cap
+        self.lease_uncertain = set()  # nodes whose Lease this pass could not read, with no history
+        self.last_wish = None  # last "would wake/sleep" logged, to log changes only
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -816,6 +899,7 @@ class Waker:
 
     def observe(self):
         cfg = self.cfg
+        driven = {s["name"] for s in cfg["sets"]}
         asleep = set(self.read_asleep())
         pods = self.kube.get("/api/v1/pods").get("items", [])
         by_node = {}
@@ -825,24 +909,43 @@ class Waker:
         states = {}
         ips = {}
         now = self.clock()
+        self.lease_uncertain = set()
         for n in cfg["nodes"]:
             node = self.kube.get(f"/api/v1/nodes/{n['name']}")
             if node is None:
                 continue
             ann = node["metadata"].get("annotations", {}) or {}
             ready = node_fresh_ready(node, now, self._lease_age(n["name"]))
+            taint = untolerated_taint(node, cfg["toleratedTaintKeys"])
+            node_pods = [p for p in by_node.get(n["name"], [])
+                         if p.get("status", {}).get("phase") not in ("Succeeded", "Failed")]
+            alloc = (node.get("status") or {}).get("allocatable") or {}
+            used = [pod_requests(p.get("spec") or {}) for p in node_pods]
+            own = {}
+            for p in node_pods:
+                set_name = (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL)
+                if set_name in driven:
+                    own[set_name] = own.get(set_name, 0) + 1
             states[n["name"]] = {
                 "ready": ready,
                 "slept_at": ann.get(ANNOTATION_SLEPT_AT),
                 "retry": ann.get(ANNOTATION_STATE) in RETRY_STATES,
-                "unschedulable": bool(node.get("spec", {}).get("unschedulable")),
+                "unschedulable": bool(node.get("spec", {}).get("unschedulable")) or taint is not None,
+                "taint": taint,
                 "waker_cordon": ann.get(ANNOTATION_CORDON) == "true",
-                "asleep": n["name"] in asleep,
+                # Only the full mode keeps the list: in observe or caps a
+                # leftover list (say, after stepping back from full) must
+                # not hold a Ready node out of the caps.
+                "asleep": n["name"] in asleep and self.may_power,
+                "own": own,
                 "busy": any(pod_holds_node(p, cfg["evictableNamespaces"]) for p in by_node.get(n["name"], [])),
             }
+            if alloc.get("cpu") and alloc.get("memory"):
+                states[n["name"]]["free"] = (parse_qty(alloc["cpu"]) - sum(u[0] for u in used),
+                                             parse_qty(alloc["memory"]) - sum(u[1] for u in used))
             ips[n["name"]] = node_ip(node)
 
-        live, labels, ceilings, runners, unstarted, unplaced = {}, {}, {}, {}, {}, {}
+        live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
         for s in cfg["sets"]:
             ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
             if ars is None:
@@ -852,6 +955,7 @@ class Waker:
             if mr is None:
                 LOG.warning("%s has no maxRunners, which ARC reads as unlimited", s["name"])
             labels[s["name"]] = ars["spec"].get("runnerScaleSetLabels", []) or []
+            requests[s["name"]] = pod_requests(((ars["spec"].get("template") or {}).get("spec")) or {})
             app = self.kube.get(APP.format(ns=cfg["applicationsNamespace"], name=s["application"]))
             try:
                 ceilings[s["name"]] = int(app["spec"]["source"]["helm"]["valuesObject"]["maxRunners"])
@@ -869,7 +973,9 @@ class Waker:
 
         return {"states": states, "ips": ips, "pods_by_node": by_node, "live": live,
                 "labels": labels, "ceilings": ceilings, "runners": runners,
-                "unstarted": unstarted, "unplaced": unplaced}
+                "unstarted": unstarted, "unplaced": unplaced,
+                "uncertain": bool(self.lease_uncertain),
+                "requests": requests if len(requests) == len(live) else None}
 
     def demand(self, labels):
         now = dt.datetime.now(dt.timezone.utc)
@@ -880,15 +986,30 @@ class Waker:
 
     # ----- caps
 
-    def apply_caps(self, snap, states=None):
-        wanted = compute_caps(self.cfg, states or snap["states"])
+    def apply_caps(self, snap, states=None, force=False):
+        """Raise at once. Lower at once too, unless this pass could not read
+        some node's Lease and had no earlier reading to go on (the first
+        pass after a start, say): then only if the next pass still wants
+        it, so one failed read does not flap the listeners. A Lease read
+        and found stale is not uncertain, and lowers at once. force: lower
+        now (the sleep procedure, before a cordon)."""
+        wanted = compute_caps(self.cfg, states or snap["states"], snap.get("requests"))
         target = bound_caps(wanted, snap["live"], snap["ceilings"])
         changed = {}
         for s in self.cfg["sets"]:
             name = s["name"]
             want = target.get(name)
             if want is None or name not in snap["live"] or snap["live"][name] == want:
+                self.lower_streak.pop(name, None)
                 continue
+            live = snap["live"][name]
+            if live is not None and want < live and not force and snap.get("uncertain"):
+                self.lower_streak[name] = self.lower_streak.get(name, 0) + 1
+                if self.lower_streak[name] < 2:
+                    LOG.info("%s maxRunners %s -> %s wanted; lowering on the next pass if still so",
+                             name, live, want)
+                    continue
+            self.lower_streak.pop(name, None)
             changed[name] = (snap["live"][name], want)  # old may be None (unlimited)
             if self.may_patch_caps:
                 self.kube.merge_patch(ARS.format(ns=s["namespace"], name=name),
@@ -1022,18 +1143,28 @@ class Waker:
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
             wake = choose_wake(self.cfg, unmet, states, self.backoff_until, now)
         if wake:
-            LOG.info("would wake %s for %s", wake, {k: v for k, v in unmet.items() if v})
+            self._wish("wake", wake, f"for {dict((k, v) for k, v in unmet.items() if v)}")
             if self.may_power:
                 self.wake(wake, snap)
             return
 
         sleep = choose_sleep(self.cfg, states, self.idle_since, unmet, self.backoff_until, now,
                              wakeable=self.wakeable(), unplaced=sum(snap["unplaced"].values()))
+        if not wake and not sleep:
+            self.last_wish = None
         if sleep:
-            LOG.info("would sleep %s (idle since %s)", sleep,
-                     dt.datetime.fromtimestamp(self.idle_since[sleep], dt.timezone.utc).isoformat())
+            self._wish("sleep", sleep, "(idle since %s)" % dt.datetime.fromtimestamp(
+                self.idle_since[sleep], dt.timezone.utc).isoformat())
             if self.may_power:
                 self.put_to_sleep(sleep, snap)
+
+    def _wish(self, kind, node, detail):
+        """Log a wake or sleep the waker wants, once per change: in observe
+        and caps it never acts, so the same wish would repeat every pass."""
+        key = (kind, node)
+        level = logging.INFO if key != self.last_wish else logging.DEBUG
+        LOG.log(level, "would %s %s %s", kind, node, detail)
+        self.last_wish = key
 
     def note_first_jobs(self, snap):
         driven = {s["name"] for s in self.cfg["sets"]}
@@ -1117,12 +1248,18 @@ class Waker:
 
     def put_to_sleep(self, node, snap):
         cfg = self.cfg
+        unknown = sorted(n for n, c in snap["ceilings"].items() if c is None)
+        if unknown:
+            # bound_caps holds a cap whose ceiling it cannot read, so the
+            # caps would not drop for this node: not sleeping it.
+            LOG.error("not sleeping %s: no ceiling readable for %s", node, unknown)
+            return False
         st = snap["states"][node]
         # 1. Lower the caps as if the node were gone, so no set can claim a
         #    job this node's slots would have run.
         without = {k: dict(v) for k, v in snap["states"].items()}
         without[node]["unschedulable"] = True
-        self.apply_caps(snap, without)
+        self.apply_caps(snap, without, force=True)
         self._pause(cfg["listenerSettleSeconds"])
         # 2. Cordon, then look again: a pod may have landed between the idle
         #    check and the cordon.
@@ -1281,6 +1418,8 @@ class Waker:
             # Held only while the renewal it describes is under LEASE_HOLD_S
             # old: bounded by the kubelet's last renewal, not our last read.
             last = self.lease_last.get(node)
+            if last is None:
+                self.lease_uncertain.add(node)
             if last and last[1] + (now - last[0]) <= LEASE_HOLD_S:
                 return last[1]
             return None
