@@ -1078,6 +1078,29 @@ class CapsReviewLows(unittest.TestCase):
         r.tick(advance=60)
         self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
 
+    def test_a_scale_set_unreadable_mid_sleep_aborts_it(self):
+        # Delta review of cf7d2f9: after the cordon, a runner waits unplaced
+        # and its set's ARS GET fails; the re-check must not read that as
+        # "nothing unplaced".
+        r = Rig()
+        r.tick()
+
+        def after_cordon(verb, path, body):
+            if path == "/api/v1/nodes/zag-amd64-02" and body.get("spec", {}).get("unschedulable"):
+                r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                                  "status": {}})
+                r.kube.fail_get.append(r"autoscalingrunnersets/zagreus-ci$")
+        r.kube.on_write = after_cordon
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, [])
+
+    def test_a_degraded_pass_still_bounds_an_unlimited_set(self):
+        r = Rig(mode="caps")
+        del r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"]
+        r.kube.fail_get.append(r"autoscalingrunnersets/zagreus-docker-amd64$")
+        r.tick()
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+
     def test_demand_for_a_set_whose_runners_are_unreadable_wakes_nothing(self):
         r = Rig()
         r.put_all_to_sleep()

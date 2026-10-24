@@ -1056,7 +1056,7 @@ class Waker:
                 self.lower_streak.pop(name, None)
                 continue
             live = snap["live"][name]
-            if snap.get("degraded") and (live is None or want > live):
+            if snap.get("degraded") and live is not None and want > live:
                 continue
             if live is not None and want < live and not force and snap.get("uncertain"):
                 self.lower_streak[name] = self.lower_streak.get(name, 0) + 1
@@ -1398,8 +1398,10 @@ class Waker:
             return False
 
     def _unplaced(self):
+        """Mid-sleep re-check. A degraded re-observe (a scale set unreadable)
+        cannot see that set's runners at all, so it counts as unplaced."""
         snap = self.observe()
-        return sum(snap["unplaced"].values()) > 0
+        return bool(snap.get("degraded")) or sum(snap["unplaced"].values()) > 0
 
     def _busy(self, node):
         q = urllib.parse.urlencode({"fieldSelector": f"spec.nodeName={node}"})
