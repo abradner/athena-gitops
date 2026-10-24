@@ -111,6 +111,24 @@ because the drain moves them. On 23 Oct both coredns replicas sat on
 zag-amd64-01. `../core/coredns-pdb.yaml` makes the drain move one at a time.
 A node idle for `idleMinutes` (60) is a candidate for sleep.
 
+**Caps go down at once and up at once.** There is one exception, the
+first pass after a start. If that pass can't read a node's Lease and has
+no earlier reading to fall back on, it waits one pass before lowering, so
+a single failed read doesn't make the listeners flap.
+
+**If a ceiling can't be read,** the waker uses the last one it read. If
+it has never read one, it only lowers caps, never raises them, and won't
+put a node to sleep. Under-offering only sends jobs to the classic runners;
+over-offering strands them.
+
+**One pod with a request the waker can't parse,** or a node with no
+allocatable, makes that node offer no new slots. The pass carries on
+rather than stopping the controller.
+
+**In observe and caps modes, the asleep list is ignored.** Only full mode
+maintains it, so a list left over from a step back must not hold a Ready
+node out of the caps.
+
 **Alive** means Ready *and* a kubelet Lease renewed in the last 25 s. The
 renewal time is taken from the API server's stamp on the kubelet's update
 (`metadata.managedFields[].time`), not `spec.renewTime`. renewTime comes
@@ -219,6 +237,31 @@ A heavy pod requests 6 GiB. The builder requests 3 GiB plus its 768 MiB dind.
 - zag-amd64-02 alone carries two heavy pods: 12 + 2.25 = 14.25 GiB of 14.5.
   The builder's slot belongs to 01, so it never lands on 02 when 02 is the
   only node awake.
+
+The configured slots are an upper bound, not a promise. Each pass, the
+waker also checks how much room each awake node has left, and offers a set
+only what still fits. It counts:
+
+- **Room:** the node's allocatable, less the requests of every pod already
+  there (Codex on #238). That catches another set's runner taking the room.
+  For example, with zag-amd64-01 gone and an e2e job on 02, `zagreus-ci`
+  is offered one slot there, not two.
+- **Requests:** each set's pod requests come from its AutoscalingRunnerSet
+  template, with native sidecars counted in full (the builder's dind is
+  one: 3.75 GiB).
+- **Order:** sets fill in `waker.conf` order. The builder is listed first,
+  because it preempts CI pods.
+- **Own runners:** a set's runners already on an awake node count towards
+  its cap.
+- **Claimed but unbound runners:** a runner the set has already claimed
+  but whose pod isn't on a node yet holds room too (Codex on #238). Before
+  anything is offered, it is placed on paper on an awake node it fits.
+- **Taints:** a node with a NoSchedule or NoExecute taint the runners
+  don't tolerate counts nothing. That covers disk pressure, memory
+  pressure and a cordon (Codex on #238).
+
+On 24 Oct, with two CI jobs running, this gave 3/1/1, the same as the
+static table.
 
 `tests/test_waker.py` (`test_configured_slots_fit_the_nodes`) checks these
 sums. Re-check whenever a request, a DaemonSet or a node changes. A node is
