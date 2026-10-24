@@ -280,8 +280,8 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
     node yet. Each will need its requests somewhere, so before anything is
     offered it is placed, on paper, on an awake node it fits (one where its
     set has slots first): it then counts as that set's own runner there and
-    its room is taken. One that fits nowhere still counts towards its set's
-    cap (it is a claim), and takes no room.
+    its room is taken. One that fits nowhere adds nothing: a cap raised for
+    it would point at room that does not exist.
 
     Sets are filled in waker.conf order, so the builder (listed first: it
     preempts CI pods) gets its room before CI does. Without set_requests:
@@ -321,7 +321,7 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
                 order = sorted(room_nodes, key=lambda x: -int(x[0].get("slots", {}).get(name, 0)))
                 spot = next((x for x in order if fits(x[2], req)), None)
                 if spot is None:
-                    caps[name] += 1
+                    # Fits nowhere: offering it a slot could only strand it.
                     continue
                 spot[1][name] = spot[1].get(name, 0) + 1
                 spot[2][0] -= req[0]
@@ -1041,7 +1041,8 @@ class Waker:
                          if (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL) == s["name"]
                          and p.get("spec", {}).get("nodeName")
                          and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"))
-            unplaced[s["name"]] = max(0, len(ers) - placed)
+            live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
+            unplaced[s["name"]] = max(0, len(live_ers) - placed)
 
         return {"states": states, "ips": ips, "pods_by_node": by_node, "live": live,
                 "labels": labels, "ceilings": ceilings, "runners": runners,

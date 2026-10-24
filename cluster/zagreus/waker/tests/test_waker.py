@@ -947,6 +947,28 @@ class CapsCodexFindings(unittest.TestCase):
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
         self.assertEqual(r.kube.caps()["zagreus-ci-x64"], 1)  # its claim
 
+    def test_a_claim_that_fits_nowhere_raises_no_cap(self):
+        # Delta review of 1f2fee4: 01 gone, 02 full; an unbound x64 claim (or
+        # the artificial one for unreadable runners) must not raise x64.
+        r = Rig(mode="caps")
+        r.kube.set_ready("zag-amd64-01", False)
+        r.kube.dead.add("zag-amd64-01")
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci-x64"}},
+                                          "status": {}})
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci-x64"], 0)
+
+    def test_a_finished_runner_is_not_an_unbound_claim(self):
+        r = Rig(mode="caps")
+        r.kube.set_ready("zag-amd64-01", False)
+        r.kube.dead.add("zag-amd64-01")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci-x64"}},
+                                          "status": {"phase": "Succeeded"}})
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 2)  # no room held for a finished runner
+
     def test_p2_2_an_untolerated_noschedule_taint_takes_the_node_out(self):
         r = Rig(mode="caps")
         r.kube.taint("zag-amd64-01", "node.kubernetes.io/disk-pressure")
