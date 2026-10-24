@@ -1,0 +1,71 @@
+---
+# ClusterIssuers, verbatim from the primary's cluster/core/cert-manager/
+# letsencrypt-issuers.yaml. Both are kept so issuance can be pointed at the
+# staging endpoint while iterating without editing the Certificates.
+#
+# WAVE 2, AFTER THE TOKEN SECRETS AT WAVE 1, AND KEEP THE SKIP-DRY-RUN
+# ANNOTATION. An issuer synced before its solver's secret exists sits
+# unready, the Certificates at wave 3 wait on it, and the whole core
+# Application deadlocks — the primary has had that incident and this ordering
+# is the fix. Each cluster gets its own ACME account key (the Secret named in
+# privateKeySecretRef is created here on first use); nothing is shared with
+# the primary.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  acme:
+    email: alex+letsencrypt@asn.casa
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+      - selector:
+          dnsZones:
+            - "simplytics.ai"
+            - "spritz.events"
+            - "chuvar.ai"
+        dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token-simplytics
+              key: api-token
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  acme:
+    email: alex+letsencrypt@asn.casa
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+      - selector:
+          dnsZones:
+            - "simplytics.ai"
+            - "spritz.events"
+            - "chuvar.ai"
+        dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token-simplytics
+              key: api-token
