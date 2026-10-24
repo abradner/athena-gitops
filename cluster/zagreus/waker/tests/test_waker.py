@@ -71,6 +71,7 @@ class FakeKube:
         self.lease_skew = {}  # node -> seconds its (worker) clock is off by
         self.lease_fail = set()  # nodes whose Lease GET errors
         self.lease_extra_fields = {}  # node -> other managers' managedFields entries
+        self.fail_get = []  # regexes: a GET of a matching path raises (403/5xx)
         self.writes = []  # (verb, path, body) in order
         self.asleep_writes = []  # (time, asleep) for every write of the asleep list
         self.nodes = {}
@@ -139,6 +140,9 @@ class FakeKube:
     # --- API
 
     def get(self, path):
+        for pat in self.fail_get:
+            if re.search(pat, path):
+                raise RuntimeError(f"GET {path}: 403 forbidden")
         u = urllib.parse.urlparse(path)
         q = urllib.parse.parse_qs(u.query)
         p = u.path
@@ -1014,6 +1018,41 @@ class CapsReviewLows(unittest.TestCase):
         r.tick()
         self.assertLessEqual(r.kube.caps()["zagreus-ci"], 3)
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1 + 0 + 1)  # 01's slot + 02 (full, own 1)
+
+    def test_a_forbidden_application_still_lets_caps_follow_the_nodes(self):
+        # Delta review of 0507bac: a 403/5xx on the Application (not only a
+        # 404) must fall back to the last ceiling, not stop the pass.
+        r = Rig(mode="caps")
+        r.tick()
+        r.kube.fail_get.append(r"applications/zagreus-spritz-ci$")
+        r.kube.set_ready("zag-amd64-02", False)
+        r.kube.dead.add("zag-amd64-02")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_one_bad_template_costs_only_its_own_set(self):
+        # Delta review of 0507bac: an unparseable builder template (filled
+        # first) turned every node's free room into NaN and every set to 0.
+        r = Rig(mode="caps")
+        r.kube.ars[("arc-builders", "zagreus-docker-amd64")]["spec"]["template"]["spec"]["containers"][0][
+            "resources"]["requests"]["memory"] = "768 bogus"
+        r.tick()
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 0})
+
+    def test_an_unreadable_node_costs_only_that_node(self):
+        r = Rig(mode="caps")
+        r.tick()
+        r.kube.fail_get.append(r"/api/v1/nodes/zag-amd64-02$")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 1, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1})
+
+    def test_an_unreadable_runner_list_costs_only_that_set_and_blocks_sleep(self):
+        r = Rig()
+        r.tick()
+        r.kube.fail_get.append(r"arc-builders/ephemeralrunners")
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, [])
+        self.assertEqual(r.kube.caps(), CEILINGS)
 
     def test_a_lease_never_readable_does_not_delay_lowering_for_another_node(self):
         # Delta review of 22f122a, LOW 4: 02's Lease is unreadable from the

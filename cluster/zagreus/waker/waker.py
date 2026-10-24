@@ -309,8 +309,9 @@ def compute_caps(cfg, node_states, set_requests=None):
                 if mem > 0:
                     fit = min(fit, int(max(0.0, free_mem) // mem))
             fit = max(0, fit)
-            free_cpu -= fit * cpu
-            free_mem -= fit * mem
+            if fit:
+                free_cpu -= fit * cpu
+                free_mem -= fit * mem
             caps[name] += fit
     return caps
 
@@ -918,7 +919,13 @@ class Waker:
         now = self.clock()
         self.lease_uncertain = set()
         for n in cfg["nodes"]:
-            node = self.kube.get(f"/api/v1/nodes/{n['name']}")
+            try:
+                node = self.kube.get(f"/api/v1/nodes/{n['name']}")
+            except Exception as e:
+                # That node counts for nothing this pass (under-offer); the
+                # others are still judged.
+                LOG.error("%s: node unreadable (%s); counting it out this pass", n["name"], e)
+                continue
             if node is None:
                 continue
             ann = node["metadata"].get("annotations", {}) or {}
@@ -960,7 +967,11 @@ class Waker:
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
         for s in cfg["sets"]:
-            ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
+            try:
+                ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
+            except Exception as e:
+                LOG.error("%s: scale set unreadable (%s); not touching it this pass", s["name"], e)
+                continue
             if ars is None:
                 continue
             mr = ars["spec"].get("maxRunners")
@@ -973,10 +984,10 @@ class Waker:
             except (ValueError, TypeError) as e:
                 LOG.error("%s: template requests unreadable (%s); offering it no new slots", s["name"], e)
                 requests[s["name"]] = (float("inf"), float("inf"))
-            app = self.kube.get(APP.format(ns=cfg["applicationsNamespace"], name=s["application"]))
             try:
+                app = self.kube.get(APP.format(ns=cfg["applicationsNamespace"], name=s["application"]))
                 ceilings[s["name"]] = int(app["spec"]["source"]["helm"]["valuesObject"]["maxRunners"])
-            except (TypeError, KeyError, ValueError):
+            except Exception:  # 404 (None), 403, 5xx, a reshaped spec: all the same here
                 ceilings[s["name"]] = self.last_ceiling.get(s["name"])
                 LOG.error("%s: ceiling unreadable from Application %s; using %s",
                           s["name"], s["application"],
@@ -984,7 +995,16 @@ class Waker:
             else:
                 self.last_ceiling[s["name"]] = ceilings[s["name"]]
             q = urllib.parse.urlencode({"labelSelector": f"{SCALE_SET_LABEL}={s['name']}"})
-            ers = self.kube.get(ERS.format(ns=s["namespace"]) + "?" + q).get("items", [])
+            try:
+                ers = self.kube.get(ERS.format(ns=s["namespace"]) + "?" + q).get("items", [])
+            except Exception as e:
+                # Unknown claims: no spare (so its demand can still wake),
+                # and an unplaced runner assumed (so nothing sleeps on a guess).
+                LOG.error("%s: runners unreadable (%s)", s["name"], e)
+                runners[s["name"]] = live[s["name"]] or 0
+                unstarted[s["name"]] = 0
+                unplaced[s["name"]] = 1
+                continue
             runners[s["name"]] = len(ers)
             unstarted[s["name"]] = sum(1 for e in ers if not e.get("status", {}).get("jobRequestId"))
             placed = sum(1 for p in pods
