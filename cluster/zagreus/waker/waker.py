@@ -228,8 +228,9 @@ def node_awake(node_state):
 def parse_qty(value):
     """A Kubernetes quantity to a float (bytes, or cores for cpu)."""
     v = str(value).strip()
-    units = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40,
-             "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "m": 1e-3}
+    units = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Pi": 2**50, "Ei": 2**60,
+             "n": 1e-9, "u": 1e-6, "m": 1e-3,
+             "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18}
     for suffix in sorted(units, key=len, reverse=True):
         if v.endswith(suffix):
             return float(v[:-len(suffix)]) * units[suffix]
@@ -288,23 +289,25 @@ def compute_caps(cfg, node_states, set_requests=None):
             # they may be ghosts the API has not cleaned up, and ARC never
             # stops a busy runner because its set's cap went down.
             continue
-        if set_requests is not None:
-            for set_name in caps:
-                caps[set_name] += own.get(set_name, 0)
         if set_requests is None or "free" not in st:
             for set_name, slots in n.get("slots", {}).items():
                 caps[set_name] += int(slots)
             continue
+        for set_name in caps:
+            caps[set_name] += own.get(set_name, 0)
         free_cpu, free_mem = st["free"]
         for s in cfg["sets"]:
             name = s["name"]
             room = int(n.get("slots", {}).get(name, 0)) - own.get(name, 0)
             cpu, mem = set_requests.get(name, (0, 0))
             fit = room
-            if cpu > 0:
-                fit = min(fit, int(free_cpu // cpu))
-            if mem > 0:
-                fit = min(fit, int(free_mem // mem))
+            if cpu == float("inf") or mem == float("inf"):
+                fit = 0
+            else:
+                if cpu > 0:
+                    fit = min(fit, int(max(0.0, free_cpu) // cpu))
+                if mem > 0:
+                    fit = min(fit, int(max(0.0, free_mem) // mem))
             fit = max(0, fit)
             free_cpu -= fit * cpu
             free_mem -= fit * mem
@@ -313,16 +316,18 @@ def compute_caps(cfg, node_states, set_requests=None):
 
 
 def bound_caps(wanted, live, ceilings):
-    """Apply each set's ceiling. With no ceiling known, hold the live value:
-    raising could pass the ceiling, and lowering alone would ratchet the cap
-    down for good, since it could never come back up."""
+    """Apply each set's ceiling (the caller passes the last one it read
+    when the Application is unreadable now). With no ceiling ever read,
+    only lower: over-offering strands jobs, under-offering only sends them
+    to the classic runners, and the cap comes back up once a ceiling can be
+    read."""
     out = {}
     for name, want in wanted.items():
         ceiling = ceilings.get(name)
         if ceiling is not None:
             out[name] = min(want, ceiling)
         elif name in live and live[name] is not None:
-            out[name] = live[name]
+            out[name] = min(want, live[name])
         elif name in live:
             # The set has no maxRunners at all, which ARC reads as unlimited:
             # the slot sum is the only bound there is, so write it.
@@ -818,6 +823,8 @@ class Waker:
         self.pending_first_job = {}  # node -> wake start (s)
         self.on_since = {}  # listed-asleep node -> when AMT first said it was on
         self.lower_streak = {}  # set -> passes in a row that wanted a lower cap
+        self.last_ceiling = {}  # set -> last ceiling read from its Application
+        self.first_pass = True
         self.lease_uncertain = set()  # nodes whose Lease this pass could not read, with no history
         self.last_wish = None  # last "would wake/sleep" logged, to log changes only
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
@@ -920,7 +927,15 @@ class Waker:
             node_pods = [p for p in by_node.get(n["name"], [])
                          if p.get("status", {}).get("phase") not in ("Succeeded", "Failed")]
             alloc = (node.get("status") or {}).get("allocatable") or {}
-            used = [pod_requests(p.get("spec") or {}) for p in node_pods]
+            try:
+                used = [pod_requests(p.get("spec") or {}) for p in node_pods]
+                free = (parse_qty(alloc["cpu"]) - sum(u[0] for u in used),
+                        parse_qty(alloc["memory"]) - sum(u[1] for u in used))
+            except (KeyError, ValueError, TypeError) as e:
+                # Under-offer, never crash the pass: this node offers nothing new.
+                LOG.error("%s: requests or allocatable unreadable (%s); offering no new slots there",
+                          n["name"], e)
+                free = (0.0, 0.0)
             own = {}
             for p in node_pods:
                 set_name = (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL)
@@ -940,9 +955,7 @@ class Waker:
                 "own": own,
                 "busy": any(pod_holds_node(p, cfg["evictableNamespaces"]) for p in by_node.get(n["name"], [])),
             }
-            if alloc.get("cpu") and alloc.get("memory"):
-                states[n["name"]]["free"] = (parse_qty(alloc["cpu"]) - sum(u[0] for u in used),
-                                             parse_qty(alloc["memory"]) - sum(u[1] for u in used))
+            states[n["name"]]["free"] = free
             ips[n["name"]] = node_ip(node)
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
@@ -955,12 +968,21 @@ class Waker:
             if mr is None:
                 LOG.warning("%s has no maxRunners, which ARC reads as unlimited", s["name"])
             labels[s["name"]] = ars["spec"].get("runnerScaleSetLabels", []) or []
-            requests[s["name"]] = pod_requests(((ars["spec"].get("template") or {}).get("spec")) or {})
+            try:
+                requests[s["name"]] = pod_requests(((ars["spec"].get("template") or {}).get("spec")) or {})
+            except (ValueError, TypeError) as e:
+                LOG.error("%s: template requests unreadable (%s); offering it no new slots", s["name"], e)
+                requests[s["name"]] = (float("inf"), float("inf"))
             app = self.kube.get(APP.format(ns=cfg["applicationsNamespace"], name=s["application"]))
             try:
                 ceilings[s["name"]] = int(app["spec"]["source"]["helm"]["valuesObject"]["maxRunners"])
             except (TypeError, KeyError, ValueError):
-                ceilings[s["name"]] = None
+                ceilings[s["name"]] = self.last_ceiling.get(s["name"])
+                LOG.error("%s: ceiling unreadable from Application %s; using %s",
+                          s["name"], s["application"],
+                          "the last one read" if ceilings[s["name"]] is not None else "none (lowering only)")
+            else:
+                self.last_ceiling[s["name"]] = ceilings[s["name"]]
             q = urllib.parse.urlencode({"labelSelector": f"{SCALE_SET_LABEL}={s['name']}"})
             ers = self.kube.get(ERS.format(ns=s["namespace"]) + "?" + q).get("items", [])
             runners[s["name"]] = len(ers)
@@ -1111,6 +1133,7 @@ class Waker:
     def tick(self):
         now = self.clock()
         snap = self.observe()
+        self.first_pass = False
         states = snap["states"]
         if self.may_power:
             self.reconcile_ready_nodes(snap)
@@ -1250,9 +1273,9 @@ class Waker:
         cfg = self.cfg
         unknown = sorted(n for n, c in snap["ceilings"].items() if c is None)
         if unknown:
-            # bound_caps holds a cap whose ceiling it cannot read, so the
-            # caps would not drop for this node: not sleeping it.
-            LOG.error("not sleeping %s: no ceiling readable for %s", node, unknown)
+            # No ceiling has ever been read for a set: keep things as they
+            # are until one can be.
+            LOG.error("not sleeping %s: no ceiling known for %s", node, unknown)
             return False
         st = snap["states"][node]
         # 1. Lower the caps as if the node were gone, so no set can claim a
@@ -1418,7 +1441,7 @@ class Waker:
             # Held only while the renewal it describes is under LEASE_HOLD_S
             # old: bounded by the kubelet's last renewal, not our last read.
             last = self.lease_last.get(node)
-            if last is None:
+            if last is None and self.first_pass:
                 self.lease_uncertain.add(node)
             if last and last[1] + (now - last[0]) <= LEASE_HOLD_S:
                 return last[1]

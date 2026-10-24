@@ -116,9 +116,14 @@ first pass after a start. If that pass can't read a node's Lease and has
 no earlier reading to fall back on, it waits one pass before lowering, so
 a single failed read doesn't make the listeners flap.
 
-**If a ceiling can't be read,** the waker holds that set's live value and
-won't sleep a node. If it lowered instead, the cap could never come back
-up.
+**If a ceiling can't be read,** the waker uses the last one it read. If
+it has never read one, it only lowers caps, never raises them, and won't
+put a node to sleep. Under-offering only sends jobs to the classic runners;
+over-offering strands them.
+
+**One pod with a request the waker can't parse,** or a node with no
+allocatable, makes that node offer no new slots. The pass carries on
+rather than stopping the controller.
 
 **In observe and caps modes, the asleep list is ignored.** Only full mode
 maintains it, so a list left over from a step back must not hold a Ready

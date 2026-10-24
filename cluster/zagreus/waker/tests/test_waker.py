@@ -465,11 +465,12 @@ class Caps(unittest.TestCase):
             "zag-amd64-01": {}, "zag-amd64-02": {"ready": False, "asleep": True}}))
         self.assertTrue(all(v > 0 for v in caps.values()), caps)
 
-    def test_the_ceiling_bounds_and_an_unknown_ceiling_holds_the_live_value(self):
-        # Held both ways: raising could pass the ceiling, and lowering alone
-        # would ratchet the cap down for good (review of #238, LOW 1).
+    def test_the_ceiling_bounds_and_an_unknown_ceiling_only_lowers(self):
+        # Under-offering only sends jobs to classic runners; over-offering
+        # strands them (delta review of 22f122a). The caller passes the last
+        # ceiling read, so None means none was ever read.
         self.assertEqual(w.bound_caps({"a": 5, "b": 5, "c": 1}, {"a": 2, "b": 2, "c": 2},
-                                      {"a": 3, "b": None, "c": None}), {"a": 3, "b": 2, "c": 2})
+                                      {"a": 3, "b": None, "c": None}), {"a": 3, "b": 2, "c": 1})
 
     def test_configured_slots_fit_the_nodes(self):
         """The arithmetic in waker.conf, checked: each node's slots, plus
@@ -946,23 +947,39 @@ class CapsCodexFindings(unittest.TestCase):
 class CapsReviewLows(unittest.TestCase):
     """The three LOWs of the subagent read of #238."""
 
-    def test_low1_an_unreadable_ceiling_does_not_ratchet_the_cap_down(self):
+    def test_low1_an_unreadable_ceiling_uses_the_last_one_read(self):
+        # Delta review of 22f122a: holding the live value froze the cap in
+        # the unsafe direction. With a ceiling read before, the caps still
+        # follow the nodes both ways.
         r = Rig(mode="caps")
         r.tick()
         del r.kube.apps["zagreus-spritz-ci"]  # renamed, say
         r.kube.set_ready("zag-amd64-02", False)
         r.kube.dead.add("zag-amd64-02")
         r.tick(advance=60)
-        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
         r.kube.set_ready("zag-amd64-02", True)
         r.kube.dead.discard("zag-amd64-02")
         r.tick(advance=60)
         self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
 
-    def test_low1_no_sleep_while_a_ceiling_is_unreadable(self):
-        r = Rig()
-        r.tick()
+    def test_low1_with_no_ceiling_ever_read_caps_only_go_down(self):
+        r = Rig(mode="caps")
+        r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"] = 3
         del r.kube.apps["zagreus-spritz-ci"]
+        r.kube.set_ready("zag-amd64-02", False)
+        r.kube.dead.add("zag-amd64-02")
+        r.tick()
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+        r.kube.set_ready("zag-amd64-02", True)
+        r.kube.dead.discard("zag-amd64-02")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)  # held down, never raised blind
+
+    def test_low1_no_sleep_while_no_ceiling_was_ever_read(self):
+        r = Rig()
+        del r.kube.apps["zagreus-spritz-ci"]
+        r.tick()
         r.tick(advance=61 * 60)
         self.assertEqual(r.talos.calls, [])
 
@@ -976,6 +993,40 @@ class CapsReviewLows(unittest.TestCase):
         r.kube.lease_fail.clear()
         r.tick(advance=30)
         self.assertFalse([x for x in r.kube.writes if "autoscalingrunnersets" in x[1]])
+
+    def test_every_quantity_suffix_parses(self):
+        for v, want in (("500n", 5e-7), ("1u", 1e-6), ("100m", 0.1), ("1", 1.0), ("0.5", 0.5),
+                        ("1k", 1e3), ("1Ki", 1024.0), ("2Gi", 2 * 2**30), ("1P", 1e15),
+                        ("1Pi", 2**50), ("1E", 1e18), ("1Ei", 2**60)):
+            self.assertAlmostEqual(w.parse_qty(v), want, msg=v)
+
+    def test_an_unparseable_pod_offers_nothing_new_on_its_node_and_does_not_stop_the_pass(self):
+        r = Rig(mode="caps")
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci-x64")
+        r.kube.pods[-1]["spec"]["containers"][0]["resources"]["requests"]["memory"] = "6 bogus"
+        r.tick()
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)  # 01's slot; 02 offers nothing new
+
+    def test_a_node_without_allocatable_does_not_count_its_own_runner_twice(self):
+        r = Rig(mode="caps")
+        del r.kube.nodes["zag-amd64-02"]["status"]["allocatable"]
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        self.assertLessEqual(r.kube.caps()["zagreus-ci"], 3)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1 + 0 + 1)  # 01's slot + 02 (full, own 1)
+
+    def test_a_lease_never_readable_does_not_delay_lowering_for_another_node(self):
+        # Delta review of 22f122a, LOW 4: 02's Lease is unreadable from the
+        # start. When 01 then dies (its Lease read and found stale), the
+        # drop must not wait a pass because of 02.
+        r = Rig(mode="caps")
+        r.kube.lease_fail.add("zag-amd64-02")
+        r.tick()
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 1, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1})
+        r.kube.last_renew["zag-amd64-01"] = r.clock()
+        r.kube.dead.add("zag-amd64-01")  # Ready stays True: only the Lease knows
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
 
     def test_low3_a_leftover_asleep_list_does_not_hold_a_ready_node_out_in_caps(self):
         r = Rig(mode="caps")
