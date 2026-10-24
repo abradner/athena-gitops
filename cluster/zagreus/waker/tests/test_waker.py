@@ -1054,6 +1054,38 @@ class CapsReviewLows(unittest.TestCase):
         self.assertEqual(r.talos.calls, [])
         self.assertEqual(r.kube.caps(), CEILINGS)
 
+    def test_an_unreadable_scale_set_degrades_the_pass_no_sleep_no_raise(self):
+        # Delta review of 5995bf1: a skipped set's room is unknown, and a
+        # sleep could not lower its cap first.
+        r = Rig()
+        r.tick()
+        r.kube.fail_get.append(r"autoscalingrunnersets/zagreus-docker-amd64$")
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.talos.calls, [])
+
+    def test_a_degraded_pass_lowers_but_never_raises(self):
+        r = Rig(mode="caps")
+        r.kube.set_ready("zag-amd64-02", False)
+        r.kube.dead.add("zag-amd64-02")
+        r.tick()
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+        r.kube.fail_get.append(r"autoscalingrunnersets/zagreus-docker-amd64$")
+        r.kube.set_ready("zag-amd64-02", True)
+        r.kube.dead.discard("zag-amd64-02")
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)  # held: not raised blind
+        r.kube.fail_get.clear()
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+
+    def test_demand_for_a_set_whose_runners_are_unreadable_wakes_nothing(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.fail_get.append(r"arc-builders/ephemeralrunners")
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertNotIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
     def test_a_lease_never_readable_does_not_delay_lowering_for_another_node(self):
         # Delta review of 22f122a, LOW 4: 02's Lease is unreadable from the
         # start. When 01 then dies (its Lease read and found stale), the

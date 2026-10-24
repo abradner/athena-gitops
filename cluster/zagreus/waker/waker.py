@@ -966,11 +966,14 @@ class Waker:
             ips[n["name"]] = node_ip(node)
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
+        degraded, blind = set(), set()
         for s in cfg["sets"]:
             try:
                 ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
             except Exception as e:
-                LOG.error("%s: scale set unreadable (%s); not touching it this pass", s["name"], e)
+                LOG.error("%s: scale set unreadable (%s); degraded pass: lowering only, no sleep",
+                          s["name"], e)
+                degraded.add(s["name"])
                 continue
             if ars is None:
                 continue
@@ -1000,7 +1003,8 @@ class Waker:
             except Exception as e:
                 # Unknown claims: no spare (so its demand can still wake),
                 # and an unplaced runner assumed (so nothing sleeps on a guess).
-                LOG.error("%s: runners unreadable (%s)", s["name"], e)
+                LOG.error("%s: runners unreadable (%s); its demand wakes nothing this pass", s["name"], e)
+                blind.add(s["name"])
                 runners[s["name"]] = live[s["name"]] or 0
                 unstarted[s["name"]] = 0
                 unplaced[s["name"]] = 1
@@ -1017,6 +1021,13 @@ class Waker:
                 "labels": labels, "ceilings": ceilings, "runners": runners,
                 "unstarted": unstarted, "unplaced": unplaced,
                 "uncertain": bool(self.lease_uncertain),
+                # Sets whose scale set could not be read: they are missing
+                # from every dict above, so the room they hold is unknown.
+                # The pass may lower caps but never raise one, and nothing
+                # sleeps (the sleep could not lower that set's cap first).
+                "degraded": degraded,
+                # Sets whose runners could not be read: claims unknown.
+                "blind": blind,
                 "requests": requests if len(requests) == len(live) else None}
 
     def demand(self, labels):
@@ -1045,6 +1056,8 @@ class Waker:
                 self.lower_streak.pop(name, None)
                 continue
             live = snap["live"][name]
+            if snap.get("degraded") and (live is None or want > live):
+                continue
             if live is not None and want < live and not force and snap.get("uncertain"):
                 self.lower_streak[name] = self.lower_streak.get(name, 0) + 1
                 if self.lower_streak[name] < 2:
@@ -1179,6 +1192,8 @@ class Waker:
             LOG.warning("GitHub demand unreadable, holding: %s", e)
             return
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
+        for name in snap.get("blind", ()):
+            unmet[name] = 0
         if any(demand.values()):
             LOG.info("demand %s unmet %s runners %s caps %s", demand, unmet, snap["runners"], snap["live"])
 
@@ -1191,7 +1206,8 @@ class Waker:
                 self.wake(wake, snap)
             return
 
-        sleep = choose_sleep(self.cfg, states, self.idle_since, unmet, self.backoff_until, now,
+        sleep = None if snap.get("degraded") else choose_sleep(
+                             self.cfg, states, self.idle_since, unmet, self.backoff_until, now,
                              wakeable=self.wakeable(), unplaced=sum(snap["unplaced"].values()))
         if not wake and not sleep:
             self.last_wish = None
@@ -1291,7 +1307,7 @@ class Waker:
 
     def put_to_sleep(self, node, snap):
         cfg = self.cfg
-        unknown = sorted(n for n, c in snap["ceilings"].items() if c is None)
+        unknown = sorted(n for n, c in snap["ceilings"].items() if c is None) + sorted(snap.get("degraded", ()))
         if unknown:
             # No ceiling has ever been read for a set: keep things as they
             # are until one can be.
