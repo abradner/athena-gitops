@@ -253,6 +253,9 @@ only what still fits. It counts:
   because it preempts CI pods.
 - **Own runners:** a set's runners already on an awake node count towards
   its cap.
+- **Claimed but unbound runners:** a runner the set has already claimed
+  but whose pod isn't on a node yet holds room too (Codex on #238). Before
+  anything is offered, it is placed on paper on an awake node it fits.
 - **Taints:** a node with a NoSchedule or NoExecute taint the runners
   don't tolerate counts nothing. That covers disk pressure, memory
   pressure and a cordon (Codex on #238).

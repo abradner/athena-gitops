@@ -934,6 +934,19 @@ class CapsCodexFindings(unittest.TestCase):
         r.tick(advance=60)
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
 
+    def test_p2_3_a_claimed_runner_not_yet_bound_holds_its_room(self):
+        # Codex on e341ef3: 01 is gone and an already-claimed x64 runner has
+        # no pod bound yet. It will need 6 Gi somewhere, so 02 can take one
+        # zagreus-ci, not two.
+        r = Rig(mode="caps")
+        r.kube.set_ready("zag-amd64-01", False)
+        r.kube.dead.add("zag-amd64-01")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci-x64"}},
+                                          "status": {}})
+        r.tick(advance=60)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+        self.assertEqual(r.kube.caps()["zagreus-ci-x64"], 1)  # its claim
+
     def test_p2_2_an_untolerated_noschedule_taint_takes_the_node_out(self):
         r = Rig(mode="caps")
         r.kube.taint("zag-amd64-01", "node.kubernetes.io/disk-pressure")

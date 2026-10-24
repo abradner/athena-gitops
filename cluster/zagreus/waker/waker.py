@@ -265,7 +265,7 @@ def untolerated_taint(node, tolerated_keys=()):
     return None
 
 
-def compute_caps(cfg, node_states, set_requests=None):
+def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
     """base + what each awake node can still take, per driven set (no
     ceiling).
 
@@ -273,18 +273,24 @@ def compute_caps(cfg, node_states, set_requests=None):
     (allocatable minus every pod already on it), a node offers a set no more
     than its configured slots, less the set's pods already there, and no
     more than still fits beside whatever else runs there, another set's
-    runner included. Sets are filled in waker.conf order, so the builder
-    (listed first: it preempts CI pods) gets its room before CI does. A
-    set's own runners on an awake node count towards its cap: they hold
-    claims already. Without set_requests: the configured slots, as
-    written."""
+    runner included. A set's runners on an awake node count towards its cap:
+    they hold claims already.
+
+    unplaced (per set): runners already claimed whose pod is not bound to a
+    node yet. Each will need its requests somewhere, so before anything is
+    offered it is placed, on paper, on an awake node it fits (one where its
+    set has slots first): it then counts as that set's own runner there and
+    its room is taken. One that fits nowhere still counts towards its set's
+    cap (it is a claim), and takes no room.
+
+    Sets are filled in waker.conf order, so the builder (listed first: it
+    preempts CI pods) gets its room before CI does. Without set_requests:
+    the configured slots, as written."""
     caps = {s["name"]: int(s.get("base", 0)) for s in cfg["sets"]}
+    room_nodes = []  # (node config, own counts, [free cpu, free mem]) for room-aware awake nodes
     for n in cfg["nodes"]:
         st = node_states.get(n["name"])
-        if st is None:
-            continue
-        own = st.get("own") or {}
-        if not node_awake(st):
+        if st is None or not node_awake(st):
             # Its runners, if any, are not counted: on a node that is gone
             # they may be ghosts the API has not cleaned up, and ARC never
             # stops a busy runner because its set's cap went down.
@@ -293,26 +299,46 @@ def compute_caps(cfg, node_states, set_requests=None):
             for set_name, slots in n.get("slots", {}).items():
                 caps[set_name] += int(slots)
             continue
-        for set_name in caps:
-            caps[set_name] += own.get(set_name, 0)
-        free_cpu, free_mem = st["free"]
+        room_nodes.append((n, dict(st.get("own") or {}), list(st["free"])))
+
+    def fits(free, req, k=1):
+        cpu, mem = req
+        if cpu == float("inf") or mem == float("inf"):
+            return 0
+        n = k
+        if cpu > 0:
+            n = min(n, int(max(0.0, free[0]) // cpu))
+        if mem > 0:
+            n = min(n, int(max(0.0, free[1]) // mem))
+        return max(0, n)
+
+    if set_requests is not None:
+        # Claimed, unbound runners first: they hold room already.
         for s in cfg["sets"]:
             name = s["name"]
+            req = set_requests.get(name, (0, 0))
+            for _ in range(int((unplaced or {}).get(name, 0))):
+                order = sorted(room_nodes, key=lambda x: -int(x[0].get("slots", {}).get(name, 0)))
+                spot = next((x for x in order if fits(x[2], req)), None)
+                if spot is None:
+                    caps[name] += 1
+                    continue
+                spot[1][name] = spot[1].get(name, 0) + 1
+                spot[2][0] -= req[0]
+                spot[2][1] -= req[1]
+
+    for n, own, free in room_nodes:
+        for set_name in caps:
+            caps[set_name] += own.get(set_name, 0)
+        for s in cfg["sets"]:
+            name = s["name"]
+            req = set_requests.get(name, (0, 0))
             room = int(n.get("slots", {}).get(name, 0)) - own.get(name, 0)
-            cpu, mem = set_requests.get(name, (0, 0))
-            fit = room
-            if cpu == float("inf") or mem == float("inf"):
-                fit = 0
-            else:
-                if cpu > 0:
-                    fit = min(fit, int(max(0.0, free_cpu) // cpu))
-                if mem > 0:
-                    fit = min(fit, int(max(0.0, free_mem) // mem))
-            fit = max(0, fit)
+            fit = fits(free, req, room) if room > 0 else 0
             if fit:
-                free_cpu -= fit * cpu
-                free_mem -= fit * mem
-            caps[name] += fit
+                free[0] -= fit * req[0]
+                free[1] -= fit * req[1]
+                caps[name] += fit
     return caps
 
 
@@ -1046,7 +1072,7 @@ class Waker:
         it, so one failed read does not flap the listeners. A Lease read
         and found stale is not uncertain, and lowers at once. force: lower
         now (the sleep procedure, before a cordon)."""
-        wanted = compute_caps(self.cfg, states or snap["states"], snap.get("requests"))
+        wanted = compute_caps(self.cfg, states or snap["states"], snap.get("requests"), snap.get("unplaced"))
         target = bound_caps(wanted, snap["live"], snap["ceilings"])
         changed = {}
         for s in self.cfg["sets"]:
