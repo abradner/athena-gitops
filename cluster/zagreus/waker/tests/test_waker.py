@@ -637,6 +637,33 @@ class WakeProcedure(unittest.TestCase):
         r.tick(advance=300)
         self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
 
+    def test_github_blind_for_long_lets_sleeping_nodes_alert(self):
+        # Full-mode review, finding 1: with GitHub unreadable the waker held
+        # for ever and kept vouching for sleeping nodes, so nothing woke and
+        # nothing alerted. Past demandBlindSeconds it stops renewing.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.github.fail = True
+        for _ in range(30):
+            r.tick(advance=60)
+        renewed = int(r.kube.cms[("log-heartbeat", "waker-asleep")]["data"]["renewed"])
+        # The relay drops an assertion older than its TTL, so the nodes alert.
+        self.assertGreater(r.clock() - renewed, r.cfg["assertTtlSeconds"])
+
+    def test_a_claimed_runner_with_no_room_wakes_a_node(self):
+        # Full-mode review, finding 2: an unbound claim set unmet to 0, so it
+        # never woke the node that could run it.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                       "creationTimestamp": iso(r.clock())},
+                                          "status": {}})
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=30)  # just created: a pod normally binds within seconds
+        self.assertNotIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+        r.tick(advance=60)  # unbound past the grace: no room anywhere awake
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
     def test_a_young_shared_label_job_wakes_nothing(self):
         r = Rig()
         r.put_all_to_sleep()

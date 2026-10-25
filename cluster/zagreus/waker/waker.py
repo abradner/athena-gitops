@@ -106,6 +106,10 @@ DEFAULTS = {
     # The heartbeat pod stops asserting "asleep" when the waker has not
     # renewed it for this long, so a dead waker makes sleeping nodes alert.
     "assertTtlSeconds": 300,
+    # GitHub unreadable this long: the waker can no longer see demand, so
+    # it stops vouching for sleeping nodes (they alert) rather than leave
+    # them asleep and silent while jobs that name a set wait for ever.
+    "demandBlindSeconds": 900,
     "powerOnTimeoutSeconds": 90,
     "readyTimeoutSeconds": 600,
     "heartbeatPodTimeoutSeconds": 120,
@@ -854,6 +858,7 @@ class Waker:
         self.first_pass = True
         self.lease_uncertain = set()  # nodes whose Lease this pass could not read, with no history
         self.last_wish = None  # last "would wake/sleep" logged, to log changes only
+        self.last_demand_ok = clock()
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -993,6 +998,7 @@ class Waker:
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
         degraded, blind = set(), set()
+        stuck = {}
         for s in cfg["sets"]:
             try:
                 ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
@@ -1046,10 +1052,17 @@ class Waker:
                          and p.get("spec", {}).get("nodeName")
                          and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"))
             unplaced[s["name"]] = max(0, len(live_ers) - placed)
+            # Claims unbound past the grace: a runner's pod normally binds
+            # within seconds, so only these say "no room anywhere awake".
+            aged = sum(1 for e in live_ers
+                       if (now - parse_time(e["metadata"]["creationTimestamp"]).timestamp())
+                       > cfg["saturationGraceSeconds"]) if all(
+                (e.get("metadata") or {}).get("creationTimestamp") for e in live_ers) else len(live_ers)
+            stuck[s["name"]] = max(0, aged - placed)
 
         return {"states": states, "ips": ips, "pods_by_node": by_node, "live": live,
                 "labels": labels, "ceilings": ceilings, "runners": runners,
-                "unstarted": unstarted, "unplaced": unplaced,
+                "unstarted": unstarted, "unplaced": unplaced, "stuck": stuck,
                 "uncertain": bool(self.lease_uncertain),
                 # Sets whose scale set could not be read: they are missing
                 # from every dict above, so the room they hold is unknown.
@@ -1201,7 +1214,11 @@ class Waker:
         if self.may_power:
             self.reconcile_ready_nodes(snap)
             self.audit_asleep_list(snap, now)
-            self._renew()  # or the heartbeat pod stops asserting
+            if now - self.last_demand_ok <= self.cfg["demandBlindSeconds"]:
+                self._renew()  # or the heartbeat pod stops asserting
+            elif self.read_asleep():
+                LOG.error("GitHub unreadable for %ss: no longer vouching for sleeping nodes, "
+                          "so their heartbeat alerts fire", int(now - self.last_demand_ok))
 
         # Idle and awake clocks.
         for name, st in states.items():
@@ -1221,15 +1238,24 @@ class Waker:
             # Demand unknown: neither wake nor sleep on a guess.
             LOG.warning("GitHub demand unreadable, holding: %s", e)
             return
+        self.last_demand_ok = now
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         for name in snap.get("blind", ()):
             unmet[name] = 0
         if any(demand.values()):
             LOG.info("demand %s unmet %s runners %s caps %s", demand, unmet, snap["runners"], snap["live"])
 
+        # A set with a claimed runner that is not on a node needs room too:
+        # its job counts as claimed, so unmet alone would never wake the
+        # node that could run it (full-mode review). Not for sets whose
+        # runners could not be read (their unplaced count is a guess).
+        hungry = dict(unmet)
+        for name, u in snap.get("stuck", {}).items():
+            if u and name not in snap.get("blind", ()):
+                hungry[name] = max(hungry.get(name, 0), u)
         wake = None
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
-            wake = choose_wake(self.cfg, unmet, states, self.backoff_until, now)
+            wake = choose_wake(self.cfg, hungry, states, self.backoff_until, now)
         if wake:
             self._wish("wake", wake, f"for {dict((k, v) for k, v in unmet.items() if v)}")
             if self.may_power:
