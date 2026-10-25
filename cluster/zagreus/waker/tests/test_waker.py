@@ -1731,6 +1731,49 @@ class ReofferFindings(unittest.TestCase):
         self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
         self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
 
+    def test_one_free_slot_does_not_orphan_a_backlog(self):
+        # Delta review of 4073dead, P2: a runner finished and, for a poll,
+        # its set showed one free slot; every old job behind it was
+        # orphaned for good. Spare must last heldForSeconds first, and then
+        # only as many jobs as there are free slots.
+        r = Rig()
+        r.tick()
+        for i in range(2):
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                              "status": {"jobRequestId": 100 + i}})
+        for _ in range(4):
+            r.job(["zagreus-ci"], age_seconds=28 * 60)
+        r.tick(advance=30)
+        self.assertEqual(r.waker.orphans, set())
+        for _ in range(r.cfg["heldForSeconds"] // 30 + 2):
+            r.tick(advance=30)
+        self.assertLessEqual(len(r.waker.orphans), 1)
+
+    def test_spare_just_raised_is_not_spare_yet(self):
+        # Delta review of 4073dead, P3: a raise restarts the listener and
+        # GitHub holds turned-down jobs ~10 min; spare that new is on paper.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        r.tick(advance=300)  # wakes 01, raises zagreus-ci
+        r.tick(advance=30)
+        self.assertEqual(r.waker.orphans, set())
+
+    def test_a_raise_restarts_the_spare_clock(self):
+        # Spare seen for ten minutes, then a raise (02 uncordoned by hand):
+        # the listener restarted, so the old spare no longer counts.
+        r = Rig()
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")  # keeps 02 out of the sleep choice
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        for _ in range(20):
+            r.tick(advance=30)  # ten minutes of spare on 01
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = False
+        for _ in range(12):
+            r.tick(advance=30)  # six minutes after the raise
+        self.assertEqual(r.waker.orphans, set())
+
     def test_a_job_queued_long_while_its_set_was_full_is_not_an_orphan(self):
         # Waiting behind busy runners is not orphaned: no spare was seen.
         r = Rig()

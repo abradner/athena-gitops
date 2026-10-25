@@ -903,6 +903,8 @@ class Waker:
         self.held = {}  # per set: queued jobs older than heldAfterSeconds
         self.jobs = []  # the last demand read, orphans excluded
         self.orphans = set()  # job ids seen queued past the held window beside spare
+        self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
+        self.orphaned_for = {}  # per set: the orphan ids charged to its spare
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -1123,6 +1125,7 @@ class Waker:
         for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
             jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
         self.orphans &= {j.get("id") for j in jobs}  # forget those no longer queued
+        self.orphaned_for = {k: v & self.orphans for k, v in self.orphaned_for.items()}
         jobs = [j for j in jobs if j.get("id") not in self.orphans]
         self.jobs = jobs
         # Jobs queued past heldAfterSeconds: where the set shows spare,
@@ -1162,6 +1165,9 @@ class Waker:
                              name, live, want)
                     continue
             self.lower_streak.pop(name, None)
+            # A changed cap restarts the listener: spare from it is on paper
+            # until GitHub has had its ~10 min to offer held jobs again.
+            self.spare_since.pop(name, None)
             changed[name] = (snap["live"][name], want)  # old may be None (unlimited)
             if self.may_patch_caps:
                 self.kube.merge_patch(ARS.format(ns=s["namespace"], name=name),
@@ -1391,27 +1397,39 @@ class Waker:
     # ----- wake
 
     def mark_orphans(self, snap):
-        """A job still queued past the held window while a set it matches
-        had spare was offered room and never took it: it is not coming.
-        Left in demand it wakes a node every time the nodes sleep (Codex on
-        dc38d10d). Remembered by id until the waker restarts."""
+        """A job still queued past the held window, beside a free slot its
+        set has shown unbroken for heldForSeconds (no cap change since), was
+        offered room and never took it: it is not coming. Left in demand it
+        wakes a node every time the nodes sleep (Codex on dc38d10d). At most
+        as many jobs, in all, as there are free slots, oldest first: a backlog behind
+        full runners is not orphaned by one runner finishing (delta review
+        of 4073dead). Remembered by id until the waker restarts."""
         limit = self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"]
         now = dt.datetime.now(dt.timezone.utc)
+        t = self.clock()
         new = set()
-        for job in self.jobs:
-            if (now - job["created_at"]).total_seconds() < limit:
+        for s in self.cfg["sets"]:
+            name = s["name"]
+            cap = snap["live"].get(name)
+            spare = 0 if (cap is None or name in snap.get("blind", ()) or snap.get("degraded")) \
+                else cap - snap["runners"].get(name, 0)
+            if spare <= 0:
+                self.spare_since.pop(name, None)
                 continue
-            for s in self.cfg["sets"]:
-                if job["repo"].lower() != s["repo"].lower():
-                    continue
-                if not job_match(job["labels"], s["name"], snap["labels"].get(s["name"], []))[0]:
-                    continue
-                cap = snap["live"].get(s["name"])
-                if s["name"] in snap.get("blind", ()) or snap.get("degraded"):
-                    continue
-                if cap is not None and cap > snap["runners"].get(s["name"], 0):
-                    new.add(job.get("id"))
-        new.discard(None)
+            since = self.spare_since.setdefault(name, t)
+            if t - since < self.cfg["heldForSeconds"]:
+                continue
+            old = sorted((j for j in self.jobs
+                          if j.get("id") is not None and j["id"] not in new
+                          and j["repo"].lower() == s["repo"].lower()
+                          and (now - j["created_at"]).total_seconds() >= limit
+                          and job_match(j["labels"], name, snap["labels"].get(name, []))[0]),
+                         key=lambda j: j["created_at"])
+            # Never more orphans charged to a set than it has free slots.
+            budget = spare - len(self.orphaned_for.get(name, set()))
+            take = {j["id"] for j in old[:max(0, budget)]}
+            self.orphaned_for.setdefault(name, set()).update(take)
+            new |= take
         if new:
             LOG.warning("ignoring queued jobs %s: past the held window beside spare slots", sorted(new))
             self.orphans |= new
