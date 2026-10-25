@@ -1,5 +1,8 @@
 # The zagreus node waker
 
+A guided tour of the source and its behaviour, with diagrams, is in
+`walkthrough.html` beside this file.
+
 One pod on the control plane. It keeps zagreus's amd64 runner nodes asleep
 until the classic runners can't keep up, wakes them through Intel AMT, and
 puts them back to sleep after an idle hour. It also sets each zagreus scale
