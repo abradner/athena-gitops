@@ -1035,13 +1035,16 @@ class Waker:
                 unstarted[s["name"]] = 0
                 unplaced[s["name"]] = 1
                 continue
-            runners[s["name"]] = len(ers)
-            unstarted[s["name"]] = sum(1 for e in ers if not e.get("status", {}).get("jobRequestId"))
+            # Finished runners (Succeeded/Failed, not yet cleaned up) hold no
+            # claim: counting one as unstarted would hide a queued job's
+            # demand (athena-gitops#239).
+            live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
+            runners[s["name"]] = len(live_ers)
+            unstarted[s["name"]] = sum(1 for e in live_ers if not e.get("status", {}).get("jobRequestId"))
             placed = sum(1 for p in pods
                          if (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL) == s["name"]
                          and p.get("spec", {}).get("nodeName")
                          and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"))
-            live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
             unplaced[s["name"]] = max(0, len(live_ers) - placed)
 
         return {"states": states, "ips": ips, "pods_by_node": by_node, "live": live,

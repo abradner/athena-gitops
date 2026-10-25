@@ -625,6 +625,18 @@ class SleepProcedure(unittest.TestCase):
 
 
 class WakeProcedure(unittest.TestCase):
+    def test_a_failed_runner_does_not_hide_demand_issue_239(self):
+        # athena-gitops#239: a runner that Failed before taking a job counted
+        # as an unstarted claim, so it absorbed a queued job's demand and
+        # nothing woke.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.ers["arc-builders"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-docker-amd64"}},
+                                           "status": {"phase": "Failed"}})
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
     def test_a_young_shared_label_job_wakes_nothing(self):
         r = Rig()
         r.put_all_to_sleep()

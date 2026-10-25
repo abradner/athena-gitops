@@ -395,7 +395,11 @@ has been proven. Turn Wake-on-LAN on only after a test from S5.
 5. **`caps` mode** for a day. The caps track the nodes as they are, and
    cordoning a node by hand drops them. This is the waker-level proof that
    `maxRunners` 0 keeps jobs off sleeping nodes (see "Test plan").
-6. **`full` mode.** Alex answered the three open questions on 23 Oct 2026:
+6. **`full` mode** (Alex, 25 Oct 2026: "let's have it shut down nodes when it's been quiet for more than an hour and spin them up as load increases"). Pre-flight checks that day:
+   - the waker pod's `os:operator` talosconfig reaches the Talos API on both nodes;
+   - a dummy name written to the asleep list reached `talos:waker_asleep_by_node` in obs-metrics within 170 s, inside the 180 s publish lead.
+
+   Alex answered the three open questions on 23 Oct 2026:
    - the idle timeout stays at 60 minutes;
    - core does not join as core (if the box becomes a cluster node, it joins
      under a new name, and gets listed in `waker.conf` then);
