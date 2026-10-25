@@ -100,6 +100,10 @@ DEFAULTS = {
     # 2026). One still queued this long beside spare slots is taken to be
     # held: it keeps the nodes that can run it awake.
     "heldAfterSeconds": 180,
+    # ...and only for this long after that: GitHub offers it again in about
+    # ten minutes, and a queued job that never dispatches (an orphan the
+    # 72 h lookback still reads) must not keep nodes awake for days.
+    "heldForSeconds": 900,
     "listenerSettleSeconds": 15,
     "drainRecheckSeconds": 30,
     # Time between publishing "asleep" and shutting the node down, so the
@@ -190,13 +194,16 @@ def parse_time(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def demand_by_set(cfg, jobs, set_labels, now):
-    """Queued jobs per driven set that have waited past their grace.
+def demand_by_set(cfg, jobs, set_labels, now, max_age=None):
+    """Queued jobs per driven set that have waited past their grace (and,
+    with max_age, no longer than that).
 
     jobs: dicts with repo, labels, created_at (aware datetime)."""
     out = {s["name"]: 0 for s in cfg["sets"]}
     for job in jobs:
         age = (now - job["created_at"]).total_seconds()
+        if max_age is not None and age >= max_age:
+            continue
         for s in cfg["sets"]:
             if job["repo"].lower() != s["repo"].lower():
                 continue
@@ -373,15 +380,28 @@ def bound_caps(wanted, live, ceilings):
     return out
 
 
-def choose_wakes(cfg, unmet, node_states, backoff_until, now_s):
+def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
     """Sleeping nodes, in configured order, until their slots cover every
     set's unmet demand (or none is left to wake).
 
     All of them wake together and the caps rise once: every maxRunners
     change restarts the set's listener, and a job turned down for want of
     room is held about ten minutes before it is offered again, so raising
-    0 -> 1 -> 3 node by node strands the second job (26 Oct 2026)."""
-    need = {name: u for name, u in unmet.items() if u > 0}
+    0 -> 1 -> 3 node by node strands the second job (26 Oct 2026).
+
+    room(nodes): the caps those nodes would add, per set, once awake (the
+    caller's compute_caps, so sets sharing a node share its room). Without
+    it, each node's configured slots."""
+    if room is None:
+        def room(nodes):
+            out = {}
+            for n in cfg["nodes"]:
+                if n["name"] in nodes:
+                    for s, k in n.get("slots", {}).items():
+                        out[s] = out.get(s, 0) + int(k)
+            return out
+    want = {name: u for name, u in unmet.items() if u > 0}
+    need = dict(want)
     out = []
     for n in cfg["nodes"]:
         if not need:
@@ -399,10 +419,8 @@ def choose_wakes(cfg, unmet, node_states, backoff_until, now_s):
         if not any(int(slots.get(s, 0)) > 0 for s in need):
             continue
         out.append(n["name"])
-        for s in list(need):
-            need[s] -= int(slots.get(s, 0))
-            if need[s] <= 0:
-                del need[s]
+        got = room(out)
+        need = {s: u - got.get(s, 0) for s, u in want.items() if u - got.get(s, 0) > 0}
     return out
 
 
@@ -1107,7 +1125,8 @@ class Waker:
         self.held = demand_by_set(dict(self.cfg, namedGraceSeconds=self.cfg["heldAfterSeconds"],
                                        saturationGraceSeconds=max(self.cfg["heldAfterSeconds"],
                                                                   self.cfg["saturationGraceSeconds"])),
-                                  jobs, labels, now)
+                                  jobs, labels, now,
+                                  max_age=self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"])
         return demand_by_set(self.cfg, jobs, labels, now)
 
     # ----- caps
@@ -1292,7 +1311,8 @@ class Waker:
                 hungry[name] = max(hungry.get(name, 0), u)
         wakes = []
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
-            wakes = choose_wakes(self.cfg, hungry, states, self.backoff_until, now)
+            wakes = choose_wakes(self.cfg, hungry, states, self.backoff_until, now,
+                                 room=lambda nodes: self._room_if_awake(snap, nodes))
         if wakes:
             self._wish("wake", ", ".join(wakes), f"for {dict((k, v) for k, v in hungry.items() if v)}")
             woke = self.wake_many(wakes, snap) if self.may_power else []
@@ -1343,6 +1363,15 @@ class Waker:
 
     # ----- wake
 
+    def _room_if_awake(self, snap, nodes):
+        """Caps the nodes would add once awake, from their room on paper."""
+        states = snap["states"]
+        hyp = {k: (dict(v, ready=True, asleep=False, unschedulable=v.get("taint") is not None)
+                   if k in nodes else v) for k, v in states.items()}
+        before = compute_caps(self.cfg, states, snap.get("requests"), snap.get("unplaced"))
+        after = compute_caps(self.cfg, hyp, snap.get("requests"), snap.get("unplaced"))
+        return {s: after[s] - before.get(s, 0) for s in after}
+
     def wake(self, node, snap):
         return node in self.wake_many([node], snap)
 
@@ -1354,8 +1383,8 @@ class Waker:
         self.last_wake_at = start
         powered, woke, ready_s = [], [], {}
         for node in nodes:
-            self.set_state_annotation(node, "waking")
             try:
+                self.set_state_annotation(node, "waking")
                 self._power_on(node)
                 powered.append(node)
             except Exception as e:

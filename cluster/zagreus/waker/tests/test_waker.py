@@ -1573,6 +1573,60 @@ class ReofferFindings(unittest.TestCase):
         r.tick(advance=1)
         self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
 
+    def test_sets_sharing_a_node_share_its_room_when_choosing_wakes(self):
+        # Review of 27905470, P2: slots were counted per set, but the
+        # builder and a CI runner share 01's memory. With room for only the
+        # builder there, 02 must wake in the same pass, not a pass later.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.nodes["zag-amd64-01"]["status"]["allocatable"]["memory"] = "8Gi"
+        r.kube.writes.clear()
+        r.amt.calls.clear()
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        self.assertEqual(len(self.ci_patches(r)), 1)
+        self.assertGreaterEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_a_job_queued_for_ever_stops_holding_nodes_awake(self):
+        # Review of 27905470, P2: an orphaned queued job the lookback still
+        # reads must not pin nodes awake for 72 h.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+
+    def test_a_node_never_ready_does_not_stop_the_other_raising_caps(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        real = r.amt.request_power
+
+        def never_boots(node, state):
+            real(node, state)
+            if node == "zag-amd64-02":
+                r.kube.boots[node] = r.clock() + 10 ** 6
+        r.amt.request_power = never_boots
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(self.ci_patches(r), [1])  # 01's slot, raised once
+        self.assertGreater(r.waker.backoff_until.get("zag-amd64-02", 0), r.clock())
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())  # so its alert fires
+
+    def test_the_ready_deadline_runs_from_the_first_power_on(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.boot_seconds = 10 ** 6  # neither ever Ready
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        start = r.clock()
+        r.tick(advance=300)
+        spent = r.clock() - start - 300
+        self.assertLess(spent, r.cfg["readyTimeoutSeconds"] + r.cfg["powerOnTimeoutSeconds"] + 120)
+
     def test_a_young_job_with_spare_does_not_hold_nodes_awake(self):
         r = Rig()
         r.tick()

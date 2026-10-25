@@ -162,9 +162,12 @@ the set's listener, and a job the set turned down for want of room is held
 about ten minutes before GitHub offers it again. Waking one node at a time
 (0 to 1, then 1 to 3) left a second job queued for 14 minutes beside two
 idle slots (26 Oct 2026). A job still queued after `heldAfterSeconds`
-(180 s) while its set has spare is taken to be held: it keeps the nodes that
-can run it awake, but wakes nothing, since a raise would not bring it back
-sooner. The steps, for each node:
+(180 s) while its set has spare is taken to be held: for the next
+`heldForSeconds` (900 s) it keeps the nodes that can run it awake, but wakes
+nothing, since a raise would not bring it back sooner. Past that it is taken
+to be an orphan and holds nothing. Nodes are counted by their room on paper
+(`compute_caps`), so sets sharing a node share its memory when the waker
+works out how many nodes to wake. The steps, for each node:
 
 1. AMT `RequestPowerStateChange(2)` over WS-MAN (HTTP digest, port 16992).
    Wake-on-LAN is the fallback when it is configured (see "Wake-on-LAN").
