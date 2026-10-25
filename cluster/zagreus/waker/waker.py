@@ -1313,6 +1313,10 @@ class Waker:
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
             wakes = choose_wakes(self.cfg, hungry, states, self.backoff_until, now,
                                  room=lambda nodes: self._room_if_awake(snap, nodes))
+            # Stuck claims alone are a guess (a bad template never binds):
+            # one node per episode, as before batching (Codex on 27905470).
+            if not any(u > 0 for u in unmet.values()):
+                wakes = wakes[:1]
         if wakes:
             self._wish("wake", ", ".join(wakes), f"for {dict((k, v) for k, v in hungry.items() if v)}")
             woke = self.wake_many(wakes, snap) if self.may_power else []

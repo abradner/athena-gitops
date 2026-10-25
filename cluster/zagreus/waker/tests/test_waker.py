@@ -1627,6 +1627,39 @@ class ReofferFindings(unittest.TestCase):
         spent = r.clock() - start - 300
         self.assertLess(spent, r.cfg["readyTimeoutSeconds"] + r.cfg["powerOnTimeoutSeconds"] + 120)
 
+    def test_codex_two_stuck_claims_still_wake_one_node_per_episode(self):
+        # Codex on 27905470: stuck claims with no unmet demand are a guess
+        # (three here: with room on paper, 01 alone seems to cover two)
+        # (a bad template never schedules), so batching must not wake both.
+        r = Rig()
+        r.put_all_to_sleep()
+        for _ in range(3):
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                           "creationTimestamp": iso(r.clock() - 3600)},
+                                              "status": {}})
+        for _ in range(40):
+            r.tick(advance=60)
+        self.assertEqual(sum(1 for _, st in r.amt.calls if st == w.POWER_ON), 1)
+
+    def test_codex_a_failed_annotation_for_one_node_does_not_abandon_the_other(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        orig = r.kube.merge_patch
+
+        def fail_02_waking(path, body):
+            if path == "/api/v1/nodes/zag-amd64-02" and body.get("metadata", {}).get(
+                    "annotations", {}).get(w.ANNOTATION_STATE) == "waking":
+                raise RuntimeError("apiserver hiccup")
+            return orig(path, body)
+        r.kube.merge_patch = fail_02_waking
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(self.ci_patches(r), [1])
+        self.assertNotIn("zag-amd64-01", r.kube.asleep())
+        self.assertGreater(r.waker.backoff_until.get("zag-amd64-02", 0), r.clock())
+
     def test_a_young_job_with_spare_does_not_hold_nodes_awake(self):
         r = Rig()
         r.tick()
