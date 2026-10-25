@@ -1169,7 +1169,7 @@ class Waker:
             if st["waker_cordon"]:
                 self.cordon(name, False)
                 st["waker_cordon"] = False
-                st["unschedulable"] = False
+                st["unschedulable"] = st.get("taint") is not None
 
     def audit_asleep_list(self, snap, now):
         """The list must name only nodes that are really off. Names no longer
@@ -1181,7 +1181,7 @@ class Waker:
         keep = [n for n in listed if n in configured]
         for name in keep:
             st = snap["states"].get(name)
-            if st is None or st["ready"] or not self.amt.available(name):
+            if (st is not None and st["ready"]) or not self.amt.available(name):
                 self.on_since.pop(name, None)
                 continue
             try:
@@ -1197,7 +1197,8 @@ class Waker:
                 LOG.error("%s is listed asleep, AMT says on, and it has not come Ready for %ss: "
                           "taking it off the list so its alert fires", name, int(now - since))
                 keep.remove(name)
-                st["asleep"] = False
+                if st is not None:
+                    st["asleep"] = False
                 self.on_since.pop(name, None)
                 self.set_state_annotation(name, "on-not-ready")
                 self.backoff_until[name] = now + self.cfg["failureBackoffSeconds"]
@@ -1332,8 +1333,14 @@ class Waker:
                 LOG.error("could not clear %s from the asleep list: %s", node, e2)
             self.record_event("wake-failed", node, error=str(e)[:200])
             return False
-        snap["states"][node].update({"asleep": False, "unschedulable": False, "ready": True, "busy": False})
-        self.apply_caps(snap)
+        # Raise caps from a fresh look, not the snapshot taken while the node
+        # was asleep: uncordoning does not lift a taint (Codex on #242).
+        try:
+            snap.update(self.observe())
+        except Exception as e:
+            LOG.warning("re-observe after waking %s failed (%s); caps follow next pass", node, e)
+        else:
+            self.apply_caps(snap)
         self.pending_first_job[node] = start
         self.idle_since[node] = self.clock()
         self.awake_since[node] = start
@@ -1416,7 +1423,20 @@ class Waker:
             LOG.warning("talosctl shutdown of %s: %s; checking whether it is going down anyway", node, e)
             if not self._wait_off(node, 120):
                 if not self.amt.available(node) or self._amt_on(node):
-                    return self._abort_sleep(node, snap, f"talosctl shutdown failed: {e}", unassert=True)
+                    if not self.amt.available(node):
+                        return self._abort_sleep(node, snap, f"talosctl shutdown failed: {e}", unassert=True)
+                    # AMT says still on, but an accepted shutdown may yet
+                    # finish (Codex on #242): stay cordoned and out of the
+                    # caps, keep the slept-at stamp (so it is not taken back
+                    # until it has stayed up past STALE_READY_LIMIT_S), and
+                    # come off the asleep list so its alert judges it.
+                    LOG.warning("talosctl shutdown of %s failed (%s) and it is still on: "
+                                "left cordoned and out of the caps", node, e)
+                    self.mark_asleep(node, False)
+                    self.set_state_annotation(node, "sleep-unconfirmed")
+                    self.backoff_until[node] = self.clock() + cfg["failureBackoffSeconds"]
+                    self.record_event("sleep-unconfirmed", node, reason=str(e)[:200])
+                    return False
                 off = False  # AMT unreadable: fall through to the hard-off below
             else:
                 off = True
