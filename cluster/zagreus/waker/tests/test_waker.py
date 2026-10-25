@@ -697,6 +697,47 @@ class WakeProcedure(unittest.TestCase):
             r.tick(advance=60)
         self.assertEqual(sum(1 for _, st in r.amt.calls if st == w.POWER_ON), 1)
 
+    def test_a_failed_wake_does_not_spend_the_stuck_episode(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                       "creationTimestamp": iso(r.clock() - 3600)},
+                                          "status": {}})
+        r.tick(advance=60)  # 01 refuses
+        r.tick(advance=r.cfg["wakeCooldownSeconds"] + 60)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_a_new_stuck_episode_can_wake_again(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        stuck = {"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                              "creationTimestamp": iso(r.clock() - 3600)}, "status": {}}
+        r.kube.ers["arc-runners"].append(stuck)
+        r.tick(advance=60)  # wakes 01 for it
+        r.kube.ers["arc-runners"].clear()
+        r.tick(advance=60)  # episode over
+        r.kube.ers["arc-runners"].append(dict(stuck))
+        for _ in range(2):  # 01 full: two running ci runners (their own ERs), no room left awake
+            r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                           "creationTimestamp": iso(r.clock() - 3600)},
+                                              "status": {"jobRequestId": 1}})
+        r.amt.calls.clear()
+        r.tick(advance=r.cfg["wakeCooldownSeconds"] + 60)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_reconcile_keeps_a_tainted_node_out_of_the_caps(self):
+        r = Rig(mode="full")
+        r.put_all_to_sleep()
+        r.tick(advance=120)
+        r.amt.state["zag-amd64-02"] = w.POWER_ON
+        r.kube.set_ready("zag-amd64-02", True)
+        r.kube.dead.discard("zag-amd64-02")
+        r.kube.taint("zag-amd64-02", "example.com/maintenance")
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 0)
+
     def test_healthy_github_keeps_the_asleep_list_renewed(self):
         r = Rig()
         r.put_all_to_sleep()

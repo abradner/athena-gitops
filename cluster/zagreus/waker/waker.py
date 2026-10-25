@@ -1265,12 +1265,14 @@ class Waker:
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
             wake = choose_wake(self.cfg, hungry, states, self.backoff_until, now)
         if wake:
-            for name, u in snap.get("stuck", {}).items():
-                if u and not unmet.get(name):
-                    self.stuck_woke.add(name)  # this wake is for the stuck claim
             self._wish("wake", wake, f"for {dict((k, v) for k, v in hungry.items() if v)}")
-            if self.may_power:
-                self.wake(wake, snap)
+            if self.may_power and self.wake(wake, snap):
+                # The episode is spent only by a wake that worked, and only
+                # for sets the woken node has slots for.
+                slots = next((n.get("slots", {}) for n in self.cfg["nodes"] if n["name"] == wake), {})
+                for name, u in snap.get("stuck", {}).items():
+                    if u and not unmet.get(name) and int(slots.get(name, 0)) > 0:
+                        self.stuck_woke.add(name)
             return
 
         sleep = None if snap.get("degraded") else choose_sleep(
