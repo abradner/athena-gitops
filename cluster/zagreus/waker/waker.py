@@ -859,6 +859,7 @@ class Waker:
         self.lease_uncertain = set()  # nodes whose Lease this pass could not read, with no history
         self.last_wish = None  # last "would wake/sleep" logged, to log changes only
         self.last_demand_ok = clock()
+        self.stuck_woke = set()  # sets that already woke a node for a stuck claim
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -1249,15 +1250,24 @@ class Waker:
         # its job counts as claimed, so unmet alone would never wake the
         # node that could run it (full-mode review). Not for sets whose
         # runners could not be read (their unplaced count is a guess).
+        # One wake per stuck episode: a claim that can never schedule (a bad
+        # template, a taint nothing tolerates) would otherwise wake every
+        # node in turn and pin them all on. The episode ends when the set
+        # has no stuck claim left.
         hungry = dict(unmet)
         for name, u in snap.get("stuck", {}).items():
-            if u and name not in snap.get("blind", ()):
+            if not u:
+                self.stuck_woke.discard(name)
+            elif name not in self.stuck_woke:
                 hungry[name] = max(hungry.get(name, 0), u)
         wake = None
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
             wake = choose_wake(self.cfg, hungry, states, self.backoff_until, now)
         if wake:
-            self._wish("wake", wake, f"for {dict((k, v) for k, v in unmet.items() if v)}")
+            for name, u in snap.get("stuck", {}).items():
+                if u and not unmet.get(name):
+                    self.stuck_woke.add(name)  # this wake is for the stuck claim
+            self._wish("wake", wake, f"for {dict((k, v) for k, v in hungry.items() if v)}")
             if self.may_power:
                 self.wake(wake, snap)
             return

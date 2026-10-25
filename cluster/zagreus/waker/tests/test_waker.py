@@ -650,6 +650,26 @@ class WakeProcedure(unittest.TestCase):
         # The relay drops an assertion older than its TTL, so the nodes alert.
         self.assertGreater(r.clock() - renewed, r.cfg["assertTtlSeconds"])
 
+    def test_a_claim_that_never_schedules_wakes_one_node_not_all(self):
+        # Delta review of e37ba73: a claim that can never bind woke every
+        # node in turn and pinned them all on.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                       "creationTimestamp": iso(r.clock() - 3600)},
+                                          "status": {}})
+        for _ in range(40):
+            r.tick(advance=60)
+        self.assertEqual(sum(1 for _, st in r.amt.calls if st == w.POWER_ON), 1)
+
+    def test_healthy_github_keeps_the_asleep_list_renewed(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        for _ in range(30):  # 30 min, past demandBlindSeconds, GitHub fine
+            r.tick(advance=60)
+        renewed = int(r.kube.cms[("log-heartbeat", "waker-asleep")]["data"]["renewed"])
+        self.assertLessEqual(r.clock() - renewed, 60)
+
     def test_a_claimed_runner_with_no_room_wakes_a_node(self):
         # Full-mode review, finding 2: an unbound claim set unmet to 0, so it
         # never woke the node that could run it.

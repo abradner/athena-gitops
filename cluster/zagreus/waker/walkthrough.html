@@ -220,7 +220,7 @@ flowchart TD
 <p>Finished runners (Succeeded or Failed but not yet cleaned up) are left out of <code>runners</code> and <code>claimed</code>, so they can't hide demand (athena-gitops#239).</p>
 
 <h2 id="wake">Wake</h2>
-<p>A wake happens when a set has unmet demand and a sleeping node has a slot for it. It picks the first such node in <code>waker.conf</code> order, wakes one node at a time, and then waits a 180 s cooldown. A node whose last wake failed is retried after a 30 min backoff.</p>
+<p>A wake happens when a set has unmet demand, or a runner it has claimed has been waiting more than 60 s with no room on any awake node, and a sleeping node has a slot for it. It picks the first such node in <code>waker.conf</code> order, wakes one node at a time, and then waits a 180 s cooldown. A node whose last wake failed is retried after a 30 min backoff.</p>
 <pre class="mermaid">
 sequenceDiagram
   participant W as waker
@@ -276,7 +276,7 @@ sequenceDiagram
 <div class="frame"><table>
   <thead><tr><th>Can't read</th><th>What the pass does</th></tr></thead>
   <tbody>
-    <tr><td>GitHub (an error, or rate-limited until the reset)</td><td>Holds: no wake, no sleep. Caps still follow the nodes.</td></tr>
+    <tr><td>GitHub (an error, or rate-limited until the reset)</td><td>Holds: no wake, no sleep. Caps still follow the nodes. After 15 minutes without a good read, it stops renewing the asleep list, so sleeping nodes alert instead of waiting silently while jobs queue.</td></tr>
     <tr><td>One node</td><td>That node counts for nothing this pass.</td></tr>
     <tr><td>One scale set</td><td>The pass is degraded: caps may go down, never up, and nothing sleeps.</td></tr>
     <tr><td>A set's runner list</td><td>Its demand wakes nothing, and an unplaced runner is assumed, which blocks sleep.</td></tr>
@@ -322,7 +322,7 @@ kubectl -n zagreus-waker exec deploy/zagreus-waker -c waker -- python3 /opt/wake
 </ol>
 
 <h2 id="tests">How it is tested</h2>
-<p>98 unit tests run against fakes of the API server, GitHub, AMT and talosctl, which record every write in order. That lets a test check what happened <em>before</em> the power went, not only that it went. The fakes keep a shut-down node Ready for about 45 s, the way the API server does, and stamp Leases with the control plane's clock. Each guard was proven by mutation: remove it, watch its test fail, restore it.</p>
+<p>100 unit tests run against fakes of the API server, GitHub, AMT and talosctl, which record every write in order. That lets a test check what happened <em>before</em> the power went, not only that it went. The fakes keep a shut-down node Ready for about 45 s, the way the API server does, and stamp Leases with the control plane's clock. Each guard was proven by mutation: remove it, watch its test fail, restore it.</p>
 <div class="frame"><table>
   <thead><tr><th>Test class</th><th>What it covers</th></tr></thead>
   <tbody>
