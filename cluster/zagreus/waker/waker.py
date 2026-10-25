@@ -901,6 +901,8 @@ class Waker:
         self.last_demand_ok = clock()
         self.stuck_woke = set()  # sets that already woke a node for a stuck claim
         self.held = {}  # per set: queued jobs older than heldAfterSeconds
+        self.jobs = []  # the last demand read, orphans excluded
+        self.orphans = set()  # job ids seen queued past the held window beside spare
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -1120,6 +1122,9 @@ class Waker:
         jobs = []
         for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
             jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
+        self.orphans &= {j.get("id") for j in jobs}  # forget those no longer queued
+        jobs = [j for j in jobs if j.get("id") not in self.orphans]
+        self.jobs = jobs
         # Jobs queued past heldAfterSeconds: where the set shows spare,
         # these were turned down and are waiting to be offered again.
         self.held = demand_by_set(dict(self.cfg, namedGraceSeconds=self.cfg["heldAfterSeconds"],
@@ -1290,6 +1295,9 @@ class Waker:
             return
         self.last_demand_ok = now
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
+        if self.mark_orphans(snap):
+            demand = demand_by_set(self.cfg, self.jobs, snap["labels"], dt.datetime.now(dt.timezone.utc))
+            unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         for name in snap.get("blind", ()):
             unmet[name] = 0
         if any(demand.values()):
@@ -1378,6 +1386,34 @@ class Waker:
                     break
 
     # ----- wake
+
+    def mark_orphans(self, snap):
+        """A job still queued past the held window while a set it matches
+        had spare was offered room and never took it: it is not coming.
+        Left in demand it wakes a node every time the nodes sleep (Codex on
+        dc38d10d). Remembered by id until the waker restarts."""
+        limit = self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"]
+        now = dt.datetime.now(dt.timezone.utc)
+        new = set()
+        for job in self.jobs:
+            if (now - job["created_at"]).total_seconds() < limit:
+                continue
+            for s in self.cfg["sets"]:
+                if job["repo"].lower() != s["repo"].lower():
+                    continue
+                if not job_match(job["labels"], s["name"], snap["labels"].get(s["name"], []))[0]:
+                    continue
+                cap = snap["live"].get(s["name"])
+                if s["name"] in snap.get("blind", ()) or snap.get("degraded"):
+                    continue
+                if cap is not None and cap > snap["runners"].get(s["name"], 0):
+                    new.add(job.get("id"))
+        new.discard(None)
+        if new:
+            LOG.warning("ignoring queued jobs %s: past the held window beside spare slots", sorted(new))
+            self.orphans |= new
+            self.jobs = [j for j in self.jobs if j.get("id") not in new]
+        return bool(new)
 
     def _room_if_awake(self, snap, nodes):
         """Caps the nodes would add once awake, from their room on paper."""

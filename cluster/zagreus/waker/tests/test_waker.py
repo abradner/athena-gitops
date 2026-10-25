@@ -1704,6 +1704,27 @@ class ReofferFindings(unittest.TestCase):
         self.assertNotIn("zag-amd64-01", r.kube.asleep())
         self.assertGreater(r.waker.backoff_until.get("zag-amd64-02", 0), r.clock())
 
+    def test_codex_an_orphan_job_seen_beside_spare_stops_counting_as_demand(self):
+        # Codex on dc38d10d: a queued job that never dispatches, once past
+        # the held window, still counted as demand: the nodes slept, their
+        # caps went to 0, the orphan became unmet and woke one, and so on.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        for _ in range(8 * 60):
+            r.tick(advance=60)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+
+    def test_a_job_queued_long_while_its_set_was_full_is_not_an_orphan(self):
+        # Waiting behind busy runners is not orphaned: no spare was seen.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
     def test_a_young_job_with_spare_does_not_hold_nodes_awake(self):
         r = Rig()
         r.tick()
