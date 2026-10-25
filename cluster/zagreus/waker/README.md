@@ -166,8 +166,13 @@ idle slots (26 Oct 2026). A job still queued after `heldAfterSeconds`
 `heldForSeconds` (900 s) it keeps the nodes that can run it awake, but wakes
 nothing, since a raise would not bring it back sooner. Past that the held rule lets go. A job still queued past both
 windows while its set had spare was offered room and never took it: the
-waker ignores it by id from then on (until it restarts), so an orphaned job
-cannot wake a node every time the nodes sleep. Nodes are counted by their room on paper
+waker sets it aside by id for `orphanForSeconds` (6 h) or until it
+restarts, a free slot's worth of jobs a pass. A slot that stays free for
+15 min beside waiting jobs means GitHub is not dispatching them to that set,
+and more room would not help. After the 6 h the jobs count again, so a
+backlog set aside while dispatch was broken comes back and can wake a node.
+A true orphan costs one wake and about an idle hour every 6 h, instead of a
+wake every idle cycle. Nodes are counted by their room on paper
 (`compute_caps`), so sets sharing a node share its memory when the waker
 works out how many nodes to wake. The steps, for each node:
 

@@ -1726,12 +1726,12 @@ class ReofferFindings(unittest.TestCase):
         r = Rig()
         r.tick()
         r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
-        for _ in range(8 * 60):
+        for _ in range(5 * 60):  # inside orphanForSeconds
             r.tick(advance=60)
         self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
         self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
 
-    def test_one_free_slot_does_not_orphan_a_backlog(self):
+    def test_a_brief_free_slot_does_not_orphan_a_backlog(self):
         # Delta review of 4073dead, P2: a runner finished and, for a poll,
         # its set showed one free slot; every old job behind it was
         # orphaned for good. Spare must last heldForSeconds first, and then
@@ -1744,12 +1744,27 @@ class ReofferFindings(unittest.TestCase):
         for _ in range(4):
             r.job(["zagreus-ci"], age_seconds=28 * 60)
         r.tick(advance=30)
-        self.assertEqual(r.waker.orphans, set())
+        self.assertEqual(set(r.waker.orphans), set())
         # Once the free slot has lasted, one job a pass, oldest first.
-        while not r.waker.orphans:
+        for _ in range(r.cfg["heldForSeconds"] // 30 + 4):
+            if r.waker.orphans:
+                break
             r.tick(advance=30)
-        self.assertEqual(r.waker.orphans, {min(j["id"] for j in r.github.jobs
+        self.assertEqual(set(r.waker.orphans), {min(j["id"] for j in r.github.jobs
                                                if j["created_at"] == min(x["created_at"] for x in r.github.jobs))})
+
+    def test_an_orphan_counts_again_after_its_window(self):
+        # Delta review of 87a21ed9: a backlog set aside while dispatch was
+        # broken must come back, or once the nodes sleep it wakes nothing.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(3 * 60):
+            r.tick(advance=60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+        r.amt.calls.clear()
+        r.tick(advance=r.cfg["orphanForSeconds"])
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
 
     def test_more_orphans_than_slots_still_let_the_nodes_sleep(self):
         # Delta review of 015feee4, P2: orphans were charged to a set for
@@ -1758,7 +1773,7 @@ class ReofferFindings(unittest.TestCase):
         r.tick()
         for _ in range(12):
             r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
-        for _ in range(8 * 60):
+        for _ in range(5 * 60):  # inside orphanForSeconds
             r.tick(advance=60)
         self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
         self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
@@ -1776,7 +1791,7 @@ class ReofferFindings(unittest.TestCase):
             r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
         r.tick(advance=300)
         self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
-        self.assertEqual(r.waker.orphans, set())
+        self.assertEqual(set(r.waker.orphans), set())
 
     def test_spare_just_raised_is_not_spare_yet(self):
         # Delta review of 4073dead, P3: a raise restarts the listener and
@@ -1786,7 +1801,7 @@ class ReofferFindings(unittest.TestCase):
         r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
         r.tick(advance=300)  # wakes 01, raises zagreus-ci
         r.tick(advance=30)
-        self.assertEqual(r.waker.orphans, set())
+        self.assertEqual(set(r.waker.orphans), set())
 
     def test_a_raise_restarts_the_spare_clock(self):
         # Spare seen for ten minutes, then a raise (02 uncordoned by hand):
@@ -1801,7 +1816,7 @@ class ReofferFindings(unittest.TestCase):
         r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = False
         for _ in range(12):
             r.tick(advance=30)  # six minutes after the raise
-        self.assertEqual(r.waker.orphans, set())
+        self.assertEqual(set(r.waker.orphans), set())
 
     def test_a_job_queued_long_while_its_set_was_full_is_not_an_orphan(self):
         # Waiting behind busy runners is not orphaned: no spare was seen.

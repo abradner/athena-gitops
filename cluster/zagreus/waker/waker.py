@@ -104,6 +104,11 @@ DEFAULTS = {
     # ten minutes, and a queued job that never dispatches (an orphan the
     # 72 h lookback still reads) must not keep nodes awake for days.
     "heldForSeconds": 900,
+    # A job set aside as an orphan counts as demand again after this long:
+    # if dispatch to the set was broken rather than the job abandoned, it
+    # comes back (and can wake a node) once dispatch may have recovered.
+    # A true orphan costs one wake and about an idle period per window.
+    "orphanForSeconds": 21600,
     "listenerSettleSeconds": 15,
     "drainRecheckSeconds": 30,
     # Time between publishing "asleep" and shutting the node down, so the
@@ -902,7 +907,7 @@ class Waker:
         self.stuck_woke = set()  # sets that already woke a node for a stuck claim
         self.held = {}  # per set: queued jobs older than heldAfterSeconds
         self.jobs = []  # the last demand read, orphans excluded
-        self.orphans = set()  # job ids seen queued past the held window beside spare
+        self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
@@ -1123,7 +1128,9 @@ class Waker:
         jobs = []
         for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
             jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
-        self.orphans &= {j.get("id") for j in jobs}  # forget those no longer queued
+        queued, t = {j.get("id") for j in jobs}, self.clock()
+        self.orphans = {i: at for i, at in self.orphans.items()
+                        if i in queued and t - at < self.cfg["orphanForSeconds"]}
         jobs = [j for j in jobs if j.get("id") not in self.orphans]
         self.jobs = jobs
         # Jobs queued past heldAfterSeconds: where the set shows spare,
@@ -1401,7 +1408,11 @@ class Waker:
         wakes a node every time the nodes sleep (Codex on dc38d10d). At most
         as many jobs a pass as there are free slots, oldest first: a backlog behind
         full runners is not orphaned by one runner finishing (delta review
-        of 4073dead). Remembered by id until the waker restarts."""
+        of 4073dead). A slot free for 15 min beside waiting jobs means GitHub
+        is not dispatching them to this set, whatever the reason, and more
+        room would not change that; so the whole backlog can be set aside,
+        a few a pass. Each is set aside for orphanForSeconds (or until the
+        waker restarts), then counts again."""
         limit = self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"]
         now = dt.datetime.now(dt.timezone.utc)
         t = self.clock()
@@ -1431,7 +1442,7 @@ class Waker:
             new |= {j["id"] for j in old[:spare]}
         if new:
             LOG.warning("ignoring queued jobs %s: past the held window beside spare slots", sorted(new))
-            self.orphans |= new
+            self.orphans.update(dict.fromkeys(new, t))
             self.jobs = [j for j in self.jobs if j.get("id") not in new]
         return bool(new)
 
