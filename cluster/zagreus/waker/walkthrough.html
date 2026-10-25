@@ -1,0 +1,350 @@
+<title>zagreus waker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a single reading column (~70ch) with a sticky contents rail on wide screens;
+   diagrams and tables scroll inside their own frames. Accent = AMT power amber. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --ink: #1d2329;
+  --muted: #5b6672;
+  --rule: #d8dde2;
+  --accent: #a8620a;        /* power amber */
+  --accent-soft: #fbefdc;
+  --steel: #2f5d7c;         /* scale sets / Kubernetes */
+  --ok: #2e7d4f;
+  --warn: #9a5b00;
+  --bad: #a3322b;
+  --code-bg: #eef1f4;
+  --display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161a; --surface: #1a2026; --ink: #e3e7eb; --muted: #9aa5b0; --rule: #2c343c;
+    --accent: #f0ad48; --accent-soft: #3a2b14; --steel: #7fb2d6;
+    --ok: #6cc28f; --warn: #e2a64a; --bad: #ef8a83; --code-bg: #222a31; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161a; --surface: #1a2026; --ink: #e3e7eb; --muted: #9aa5b0; --rule: #2c343c;
+  --accent: #f0ad48; --accent-soft: #3a2b14; --steel: #7fb2d6;
+  --ok: #6cc28f; --warn: #e2a64a; --bad: #ef8a83; --code-bg: #222a31; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font: 17px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.shell { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; padding-block: 40px 80px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 14px; }
+nav.toc h2 { font: 600 12px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+nav.toc ol { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+nav.toc a { color: var(--ink); text-decoration: none; border-left: 2px solid var(--rule); padding-left: 10px; display: block; }
+nav.toc a:hover, nav.toc a:focus-visible { border-color: var(--accent); color: var(--accent); }
+main { min-width: 0; max-width: 72ch; }
+header.hero { margin-bottom: 32px; }
+.eyebrow { font: 600 13px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+h1 { font: 700 clamp(34px, 6vw, 52px)/1.05 var(--display); margin: 10px 0 14px; text-wrap: balance; }
+h2 { font: 700 28px/1.15 var(--display); margin: 56px 0 12px; text-wrap: balance; scroll-margin-top: 24px; }
+h3 { font: 600 20px/1.25 var(--display); margin: 28px 0 8px; }
+p, li { max-width: 68ch; }
+.lede { font-size: 19px; color: var(--muted); }
+a { color: var(--steel); }
+code { font: 0.86em var(--mono); background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+pre.code { font: 13.5px/1.55 var(--mono); background: var(--code-bg); padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+.rule-box { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 16px 20px; margin: 20px 0; }
+.rule-box p { margin: 0; font-size: 18px; }
+.rule-box strong { color: var(--accent); }
+.frame { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); padding: 12px; margin: 16px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 600 13px/1.2 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.mode { display: inline-block; font: 600 12px/1 var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.mode.observe { color: var(--muted); } .mode.caps { color: var(--steel); } .mode.full { color: var(--accent); }
+.yes { color: var(--ok); font-weight: 600; } .no { color: var(--muted); }
+.timings { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 18px 0; }
+.timing { border-top: 3px solid var(--steel); background: var(--surface); padding: 10px 12px; border-radius: 0 0 8px 8px; }
+.timing.power { border-top-color: var(--accent); }
+.timing b { display: block; font: 600 22px/1.1 var(--display); font-variant-numeric: tabular-nums; }
+.timing span { font-size: 14px; color: var(--muted); }
+pre.mermaid { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; overflow-x: auto; }
+.src { font: 13px var(--mono); color: var(--muted); }
+.callout { border-left: 3px solid var(--bad); padding: 6px 14px; margin: 16px 0; background: var(--surface); border-radius: 0 8px 8px 0; }
+footer { margin-top: 64px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--rule); padding-top: 16px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 860px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-block: 24px 60px; }
+  nav.toc { position: static; }
+  nav.toc ol { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="shell">
+<nav class="toc" aria-label="Contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#why">Why maxRunners</a></li>
+    <li><a href="#modes">Modes</a></li>
+    <li><a href="#pass">One pass</a></li>
+    <li><a href="#observe">What it reads</a></li>
+    <li><a href="#caps">Caps</a></li>
+    <li><a href="#demand">Demand</a></li>
+    <li><a href="#wake">Wake</a></li>
+    <li><a href="#sleep">Sleep</a></li>
+    <li><a href="#asleep">The asleep list</a></li>
+    <li><a href="#failures">When reads fail</a></li>
+    <li><a href="#source">Source map</a></li>
+    <li><a href="#operate">Operating it</a></li>
+    <li><a href="#tests">How it is tested</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">athena-gitops · cluster/zagreus/waker</div>
+  <h1>zagreus waker</h1>
+  <p class="lede">One pod on zagreus's control plane runs this loop every 30 seconds. It keeps the two amd64 runner nodes asleep until the always-on classic runners can't keep up. It wakes them through Intel AMT when work queues, and puts them back to sleep after an hour idle. All along, it tells GitHub how many jobs each zagreus scale set may take.</p>
+</header>
+
+<h2 id="why">Why maxRunners, not only power</h2>
+<p>GitHub offers an ARC scale set as many jobs as its <code>maxRunners</code> allows, whether or not its pods can schedule. A job a set claims is bound to that set. Probes on spritz on 23 Oct 2026 showed it:</p>
+<div class="frame"><table>
+  <thead><tr><th>Run</th><th>Scale set</th><th>What happened</th></tr></thead>
+  <tbody>
+    <tr><td class="src">39882337983</td><td><code>maxRunners: 1</code>, no node it could schedule on</td><td>Claimed a job. The job waited on a Pending pod while an idle classic runner sat beside it.</td></tr>
+    <tr><td class="src">39883352061</td><td><code>maxRunners: 0</code></td><td>Offered nothing. Every job went to the classic runner.</td></tr>
+    <tr><td class="src">39883642252</td><td>raised to <code>1</code> on the live set</td><td>Listener restarted in about 8 s and claims resumed.</td></tr>
+  </tbody>
+</table></div>
+<div class="rule-box"><p><strong>The rule:</strong> live <code>maxRunners</code> = what the awake, schedulable nodes can actually run, never above the ceiling written in the set's Argo Application. While the nodes sleep, it is 0.</p></div>
+<p>Argo ignores <code>spec.maxRunners</code> on the three driven sets (<code>zagreus-ci</code>, <code>zagreus-ci-x64</code>, <code>zagreus-docker-amd64</code>), with <code>RespectIgnoreDifferences</code>, so a sync never writes the ceiling back over the waker's value.</p>
+
+<h2 id="modes">Modes</h2>
+<p>One line in <code>waker.conf</code> chooses how far it may act. A change rolls the pod, because the ConfigMap's name carries a hash.</p>
+<div class="frame"><table>
+  <thead><tr><th>Mode</th><th>Reads everything</th><th>Writes maxRunners</th><th>Cordons, publishes asleep, powers nodes</th><th>Live</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mode observe">observe</span></td><td class="yes">yes</td><td class="no">logs "would"</td><td class="no">no</td><td>23–24 Oct</td></tr>
+    <tr><td><span class="mode caps">caps</span></td><td class="yes">yes</td><td class="yes">yes</td><td class="no">no</td><td>from 24 Oct 19:06</td></tr>
+    <tr><td><span class="mode full">full</span></td><td class="yes">yes</td><td class="yes">yes</td><td class="yes">yes</td><td>with the full-mode PR</td></tr>
+  </tbody>
+</table></div>
+
+<div class="timings" aria-label="Key timings">
+  <div class="timing"><b>30 s</b><span>one pass</span></div>
+  <div class="timing"><b>60 s</b><span>queued before a shared-label job counts as demand</span></div>
+  <div class="timing"><b>25 s</b><span>kubelet Lease age beyond which a node counts as gone</span></div>
+  <div class="timing power"><b>60 min</b><span>idle before a node sleeps</span></div>
+  <div class="timing power"><b>180 s</b><span>"asleep" published before shutdown</span></div>
+  <div class="timing power"><b>300 s</b><span>asleep list lapses without renewal</span></div>
+</div>
+
+<h2 id="pass">One pass</h2>
+<p><code>Waker.tick()</code> runs every <code>pollSeconds</code> (30). It is single-threaded, and a wake or a sleep runs inside the pass that chose it, so there is never more than one at a time.</p>
+<pre class="mermaid">
+flowchart TD
+  A[observe: nodes, Leases, pods, scale sets, Applications, runners, asleep list] --> B{mode full?}
+  B -- yes --> C[take back Ready nodes left asleep or cordoned; audit the asleep list; renew it]
+  B -- no --> D
+  C --> D[update idle and awake clocks]
+  D --> E[apply_caps: write maxRunners to what the awake nodes can run]
+  E --> F[read GitHub: queued spritz jobs]
+  F -- unreadable --> H[hold: no wake, no sleep]
+  F --> G[unmet demand per set]
+  G --> W{a sleeping node has room for unmet demand?}
+  W -- yes, not in cooldown --> WK[wake it - full mode only]
+  W -- no --> S{a node idle 60 min, nothing unmet it serves, no unplaced runner?}
+  S -- yes --> SL[put it to sleep - full mode only]
+  S -- no --> Z[next pass]
+</pre>
+<p class="src">waker.py: Waker.tick (line 1196), observe (934), apply_caps (1072)</p>
+
+<h2 id="observe">What it reads</h2>
+<p>Every pass starts from the cluster as it is. Nothing the waker relies on lives only in its own memory.</p>
+<ul>
+  <li><strong>Each configured node:</strong>
+    <ul>
+      <li><em>Ready</em> is the Ready condition, the kubelet's Lease renewed in the last 25 s, and Ready since any shutdown the waker stamped (<code>node_fresh_ready</code>).</li>
+      <li>The Lease time is the API server's own stamp on the kubelet's update (<code>managedFields[].time</code>), from the control plane's clock, so a worker's skewed clock can't fool it.</li>
+      <li><em>Unschedulable</em> is a cordon or any NoSchedule/NoExecute taint the runners don't tolerate.</li>
+      <li>It also reads the node's free room, allocatable less every pod's requests, and the driven-set runners already on it.</li>
+    </ul>
+  </li>
+  <li><strong>Each driven scale set:</strong> its live <code>maxRunners</code>, its labels, and its pod requests from the template (the builder's dind sidecar counts in full). Its ceiling comes from the Argo Application, falling back to the last ceiling read. It also reads its EphemeralRunners: how many, how many haven't started a job, and how many aren't on a node yet.</li>
+  <li><strong>The asleep list</strong> is the ConfigMap <code>log-heartbeat/waker-asleep</code>. Only full mode reads it.</li>
+</ul>
+
+<h2 id="caps">Caps</h2>
+<p><code>compute_caps</code> gives each set the room it can actually use, then <code>bound_caps</code> holds it under the ceiling.</p>
+<ol>
+  <li><strong>Claimed but unbound runners first.</strong> A runner a set has claimed whose pod isn't on a node yet still needs room. It is placed on paper on an awake node it fits, preferring one where its set has slots. If it fits nowhere, it adds nothing.</li>
+  <li><strong>Each awake node,</strong> for each set in <code>waker.conf</code> order:
+    <ul>
+      <li>the set's own runners there count;</li>
+      <li>then it gets no more than its configured slots minus those runners, and no more than fits in what is left of the node.</li>
+    </ul>
+    The builder is listed first because it preempts CI pods.</li>
+  <li><strong>The ceiling.</strong> If no ceiling has ever been read, caps only go down.</li>
+</ol>
+<div class="frame"><table>
+  <thead><tr><th>Node</th><th class="num">Allocatable</th><th class="num">zagreus-docker-amd64</th><th class="num">zagreus-ci</th><th class="num">zagreus-ci-x64</th></tr></thead>
+  <tbody>
+    <tr><td>zag-amd64-01</td><td class="num">22.5 GiB</td><td class="num">1</td><td class="num">1</td><td class="num">1</td></tr>
+    <tr><td>zag-amd64-02</td><td class="num">14.5 GiB</td><td class="num">0</td><td class="num">2</td><td class="num">0</td></tr>
+    <tr><td><strong>both</strong> (the ceilings)</td><td></td><td class="num"><strong>1</strong></td><td class="num"><strong>3</strong></td><td class="num"><strong>1</strong></td></tr>
+  </tbody>
+</table></div>
+<h3>Two worked examples</h3>
+<ul>
+  <li><strong>01 gone, an e2e job (6 GiB) running on 02.</strong> 02 has room for one more heavy pod, so <code>zagreus-ci</code> gets 1 and <code>zagreus-ci-x64</code> keeps 1 for its running job. Before room counting, it would have offered ci 2, and one of those two jobs would have been stranded.</li>
+  <li><strong>02 cordoned by hand</strong> (live, 24 Oct 21:46). <code>zagreus-ci maxRunners 3 -&gt; 1</code> was written 18 s later and held for 3 h. It went back to 3 within 32 s of 02 being Ready again.</li>
+</ul>
+<p>Lowering is immediate. The one exception is the first pass after a start: if that pass can't read a node's Lease and has nothing earlier to go on, it waits a pass before lowering, so one failed read doesn't make the listeners flap.</p>
+
+<h2 id="demand">Demand</h2>
+<p>The waker lists queued jobs in spritz's queued and in-progress runs, using ETags (GitHub doesn't charge a 304 against the rate limit) and reading every page. A job is demand for a set when the set carries every label the job asks for.</p>
+<ul>
+  <li>A job that names a set (<code>runs-on: zagreus-ci</code>) counts at once: no classic runner carries a set's name.</li>
+  <li>A shared-label job counts after 60 s queued. An idle classic runner with those labels takes a job within seconds, so one still waiting means no classic runner is free.</li>
+</ul>
+<pre class="code">unmet = demand − claimed − spare
+  claimed = min(runners not yet running a job, demand)   # GitHub still lists them as queued
+  spare   = maxRunners − runners                          # GitHub fills this within seconds</pre>
+<p>Finished runners (Succeeded or Failed but not yet cleaned up) are left out of <code>runners</code> and <code>claimed</code>, so they can't hide demand (athena-gitops#239).</p>
+
+<h2 id="wake">Wake</h2>
+<p>A wake happens when a set has unmet demand, or a runner it has claimed has been waiting more than 60 s with no room on any awake node, and a sleeping node has a slot for it. It picks the first such node in <code>waker.conf</code> order, wakes one node at a time, and then waits a 180 s cooldown. A node whose last wake failed is retried after a 30 min backoff.</p>
+<pre class="mermaid">
+sequenceDiagram
+  participant W as waker
+  participant A as AMT (port 16992)
+  participant K as API server
+  participant L as asleep list
+  W->>K: annotate waking
+  W->>A: RequestPowerStateChange(2)
+  A-->>W: PowerState 2
+  W->>K: wait: Ready, fresh Lease (up to 10 min)
+  W->>K: wait: heartbeat pod Ready
+  W->>L: remove the node
+  W->>K: uncordon
+  W->>K: raise maxRunners
+</pre>
+<p>If any step fails, the node comes off the asleep list, so its silent heartbeat raises <code>ZagreusNodeKmsgGone</code>. It is annotated <code>wake-failed</code> and retried later.</p>
+<p>The AMT proof on 23 Oct 2026: zag-amd64-02 went from shutdown to S5 in 36 s, from power-on to AMT on in 19 s, and from power-on to Ready in 51 s.</p>
+<p class="src">waker.py: wake (line 1270), _power_on (1307)</p>
+
+<h2 id="sleep">Sleep</h2>
+<p>A sleep happens to the last node in order that has been idle for 60 minutes, while no set it serves has unmet demand, no runner is waiting for a node, every ceiling is known, and the pass isn't degraded. The node must also be one the waker can wake again (AMT, or Wake-on-LAN). "Idle" means no pod other than DaemonSets, static pods and <code>kube-system</code>. An idle warm runner still holds its node.</p>
+<pre class="mermaid">
+sequenceDiagram
+  participant W as waker
+  participant K as API server
+  participant L as asleep list
+  participant T as Talos API
+  participant A as AMT
+  W->>K: lower caps as if the node were gone; wait 15 s
+  W->>K: cordon; wait 30 s; any pod landed? abort
+  W->>L: add the node; wait 180 s; any pod? abort
+  W->>K: stamp waker-slept-at
+  W->>T: shutdown (os:operator)
+  W->>A: wait for PowerState 8 (5 min)
+  Note over W,A: still on: AMT hard off; still unconfirmed: back on the list, backoff
+  W->>K: annotate asleep
+</pre>
+<p>A failed <code>talosctl</code> call isn't treated as "still on" by itself: the node may be going down anyway. Only AMT reporting it on aborts the sleep. Without AMT, "off" means the kubelet's Lease has stopped, plus a 30 s margin, and a Lease that can't be read never counts as off.</p>
+<p class="src">waker.py: put_to_sleep (line 1338), _abort_sleep (1414), _wait_off (1441)</p>
+
+<h2 id="asleep">The asleep list and the alerts</h2>
+<p><code>ZagreusNodeKmsgGone</code> fires for any zagreus node whose kernel-log heartbeat goes quiet. A node the waker puts to sleep must leave that alert's expected list <em>before</em> its power goes. zagreus has one road to the log store, Talos's kernel-log sender, so the list travels on it:</p>
+<ol>
+  <li>The waker writes <code>log-heartbeat/waker-asleep</code>, with <code>asleep</code>, <code>emitter</code> (its own node) and <code>renewed</code>. It renews it every pass, and every 30 s inside a long wake or sleep.</li>
+  <li>On the emitter node only, the heartbeat DaemonSet writes <code>log-pipeline asleep &lt;node&gt;</code> into the kernel log each minute. It does this only while <code>renewed</code> is under 5 minutes old, and only for names that are DNS labels (globbing off, at most 8).</li>
+  <li>asn-infra records those lines from cp1 only, as <code>talos:waker_asleep_by_node</code>. The receiver sets <code>node</code> from the connection, so no other node can vouch for one. Both alerts leave out a node asserted in the last 150 s.</li>
+</ol>
+<p>Measured on 25 Oct: a dummy name took 170 s from the ConfigMap to obs-metrics, inside the 180 s publish lead.</p>
+<div class="callout"><p>If the waker dies, renewals stop. The relay goes quiet after 5 minutes, and every sleeping node starts alerting. A dead waker can't leave nodes silently unwatched.</p></div>
+
+<h2 id="failures">When reads fail</h2>
+<p>Every guess goes the safe way. Under-offering only sends jobs to the classic runners; over-offering strands them.</p>
+<div class="frame"><table>
+  <thead><tr><th>Can't read</th><th>What the pass does</th></tr></thead>
+  <tbody>
+    <tr><td>GitHub (an error, or rate-limited until the reset)</td><td>Holds: no wake, no sleep. Caps still follow the nodes. After 15 minutes without a good read, it stops renewing the asleep list, so sleeping nodes alert instead of waiting silently while jobs queue.</td></tr>
+    <tr><td>One node</td><td>That node counts for nothing this pass.</td></tr>
+    <tr><td>One scale set</td><td>The pass is degraded: caps may go down, never up, and nothing sleeps.</td></tr>
+    <tr><td>A set's runner list</td><td>Its demand wakes nothing, and an unplaced runner is assumed, which blocks sleep.</td></tr>
+    <tr><td>An Application (the ceiling)</td><td>Uses the last ceiling read. With none ever read, caps only go down and nothing sleeps.</td></tr>
+    <tr><td>A pod's or template's requests</td><td>That node or set offers no new slots.</td></tr>
+    <tr><td>A node's Lease</td><td>Reuses the last good reading for up to 60 s from the renewal it describes, then the node counts as gone. During a sleep's off-wait, an unreadable Lease is never "off".</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="source">Source map</h2>
+<p>Line numbers are as of the full-mode PR. <code>waker.py</code> uses the Python standard library only, plus the <code>talosctl</code> binary copied from Sidero's image by the init container.</p>
+<div class="frame"><table>
+  <thead><tr><th>Part</th><th>Where</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>Config</td><td class="src">DEFAULTS 83, load_config 128</td><td>Merges <code>waker.conf</code> over the defaults and validates it.</td></tr>
+    <tr><td>Demand</td><td class="src">job_match 166, demand_by_set 184, unmet_by_set 203</td><td>Pure functions over queued jobs and runner counts.</td></tr>
+    <tr><td>Caps</td><td class="src">pod_requests 240, untolerated_taint 258, compute_caps 268, bound_caps 345</td><td>Room-aware caps, the ceiling, and the lower-only rule.</td></tr>
+    <tr><td>Choices</td><td class="src">choose_wake 367, pod_holds_node 388, choose_sleep 410</td><td>Which node to wake, and which (if any) to sleep.</td></tr>
+    <tr><td>Liveness</td><td class="src">node_fresh_ready 515, lease_stamp 550</td><td>Ready, a fresh Lease, and Ready since the shutdown stamp.</td></tr>
+    <tr><td>Clients</td><td class="src">Kube 454, GitHub 575, AMT 727, Talos 799</td><td>API server over the service account; GitHub with ETags; WS-MAN with digest auth; <code>talosctl shutdown</code>.</td></tr>
+    <tr><td>Controller</td><td class="src">Waker 834, observe 934, apply_caps 1072, tick 1196</td><td>One pass, as in the flow above.</td></tr>
+    <tr><td>Full mode</td><td class="src">reconcile_ready_nodes 1126, audit_asleep_list 1160, wake 1270, put_to_sleep 1338</td><td>Power and the asleep list.</td></tr>
+    <tr><td>Waiting</td><td class="src">_pause 1466, _renew 1479, _lease_age 1492, _wait 1521</td><td>Waits that keep the asleep list renewed.</td></tr>
+    <tr><td>Heartbeat relay</td><td class="src">heartbeat_lines 437; core/kmsg-heartbeat.yaml</td><td>The Python model of the shell loop, and the loop itself.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="operate">Operating it</h2>
+<pre class="code"># what it is doing
+kubectl -n zagreus-waker logs deploy/zagreus-waker -c waker --tail=50
+# wakes, sleeps and their timings
+kubectl -n zagreus-waker get cm waker-events -o jsonpath='{.data.events}'
+# what it has put to sleep
+kubectl -n log-heartbeat get cm waker-asleep -o yaml
+# power by hand, with the pod's own credentials
+kubectl -n zagreus-waker exec deploy/zagreus-waker -c waker -- python3 /opt/waker/waker.py amt-status zag-amd64-02
+kubectl -n zagreus-waker exec deploy/zagreus-waker -c waker -- python3 /opt/waker/waker.py amt-on zag-amd64-02</pre>
+<p><strong>Rollback:</strong></p>
+<ol>
+  <li>Set <code>mode</code> back to <code>caps</code> or <code>observe</code> and merge.</li>
+  <li>Power any sleeping node on (<code>amt-on</code>) and uncordon it.</li>
+  <li>If the waker is going away entirely, patch each set's <code>maxRunners</code> back to its ceiling by hand. With <code>RespectIgnoreDifferences</code>, an Argo sync keeps the live value. The exact commands are in the README.</li>
+</ol>
+
+<h2 id="tests">How it is tested</h2>
+<p>100 unit tests run against fakes of the API server, GitHub, AMT and talosctl, which record every write in order. That lets a test check what happened <em>before</em> the power went, not only that it went. The fakes keep a shut-down node Ready for about 45 s, the way the API server does, and stamp Leases with the control plane's clock. Each guard was proven by mutation: remove it, watch its test fail, restore it.</p>
+<div class="frame"><table>
+  <thead><tr><th>Test class</th><th>What it covers</th></tr></thead>
+  <tbody>
+    <tr><td class="src">Caps, CapsCodexFindings</td><td>Sleeping nodes count nothing; room from live requests; taints; unbound claims.</td></tr>
+    <tr><td class="src">SleepProcedure, WakeProcedure</td><td>Order of operations, aborts, retries, cooldown, a node that never comes Ready.</td></tr>
+    <tr><td class="src">ReviewFindings, CodexFindings, LeaseFindings</td><td>Stale Ready, a failed talosctl call, Lease clocks and read failures.</td></tr>
+    <tr><td class="src">CapsReviewLows</td><td>Ceilings, degraded passes, read isolation, quantity parsing.</td></tr>
+    <tr><td class="src">GitHubClient</td><td>Paging, ETags, the rate-limit hold.</td></tr>
+    <tr><td class="src">Modes</td><td>observe writes nothing; caps never powers.</td></tr>
+    <tr><td class="src">Heartbeat</td><td>Runs the real shell loop from <code>kmsg-heartbeat.yaml</code> against the Python model.</td></tr>
+  </tbody>
+</table></div>
+<p>Live evidence:</p>
+<ul>
+  <li>a day in observe mode, with every decision correct;</li>
+  <li>caps mode on a manual power-off;</li>
+  <li>AMT power-on from S5;</li>
+  <li>the asleep relay end to end.</li>
+</ul>
+
+<footer>
+  <p>Checked in as <code>cluster/zagreus/waker/walkthrough.html</code> beside the code it describes. The design rationale is in <code>README.md</code> in the same directory. Published copy: https://claude.ai/artifact/HEzpEZbmboy5whhyGHqfbx</p>
+</footer>
+</main>
+</div>

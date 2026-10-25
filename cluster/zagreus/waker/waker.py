@@ -106,6 +106,10 @@ DEFAULTS = {
     # The heartbeat pod stops asserting "asleep" when the waker has not
     # renewed it for this long, so a dead waker makes sleeping nodes alert.
     "assertTtlSeconds": 300,
+    # GitHub unreadable this long: the waker can no longer see demand, so
+    # it stops vouching for sleeping nodes (they alert) rather than leave
+    # them asleep and silent while jobs that name a set wait for ever.
+    "demandBlindSeconds": 900,
     "powerOnTimeoutSeconds": 90,
     "readyTimeoutSeconds": 600,
     "heartbeatPodTimeoutSeconds": 120,
@@ -854,6 +858,8 @@ class Waker:
         self.first_pass = True
         self.lease_uncertain = set()  # nodes whose Lease this pass could not read, with no history
         self.last_wish = None  # last "would wake/sleep" logged, to log changes only
+        self.last_demand_ok = clock()
+        self.stuck_woke = set()  # sets that already woke a node for a stuck claim
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -993,6 +999,7 @@ class Waker:
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
         degraded, blind = set(), set()
+        stuck = {}
         for s in cfg["sets"]:
             try:
                 ars = self.kube.get(ARS.format(ns=s["namespace"], name=s["name"]))
@@ -1035,18 +1042,28 @@ class Waker:
                 unstarted[s["name"]] = 0
                 unplaced[s["name"]] = 1
                 continue
-            runners[s["name"]] = len(ers)
-            unstarted[s["name"]] = sum(1 for e in ers if not e.get("status", {}).get("jobRequestId"))
+            # Finished runners (Succeeded/Failed, not yet cleaned up) hold no
+            # claim: counting one as unstarted would hide a queued job's
+            # demand (athena-gitops#239).
+            live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
+            runners[s["name"]] = len(live_ers)
+            unstarted[s["name"]] = sum(1 for e in live_ers if not e.get("status", {}).get("jobRequestId"))
             placed = sum(1 for p in pods
                          if (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL) == s["name"]
                          and p.get("spec", {}).get("nodeName")
                          and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"))
-            live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
             unplaced[s["name"]] = max(0, len(live_ers) - placed)
+            # Claims unbound past the grace: a runner's pod normally binds
+            # within seconds, so only these say "no room anywhere awake".
+            aged = sum(1 for e in live_ers
+                       if (now - parse_time(e["metadata"]["creationTimestamp"]).timestamp())
+                       > cfg["saturationGraceSeconds"]) if all(
+                (e.get("metadata") or {}).get("creationTimestamp") for e in live_ers) else len(live_ers)
+            stuck[s["name"]] = max(0, aged - placed)
 
         return {"states": states, "ips": ips, "pods_by_node": by_node, "live": live,
                 "labels": labels, "ceilings": ceilings, "runners": runners,
-                "unstarted": unstarted, "unplaced": unplaced,
+                "unstarted": unstarted, "unplaced": unplaced, "stuck": stuck,
                 "uncertain": bool(self.lease_uncertain),
                 # Sets whose scale set could not be read: they are missing
                 # from every dict above, so the room they hold is unknown.
@@ -1152,7 +1169,7 @@ class Waker:
             if st["waker_cordon"]:
                 self.cordon(name, False)
                 st["waker_cordon"] = False
-                st["unschedulable"] = False
+                st["unschedulable"] = st.get("taint") is not None
 
     def audit_asleep_list(self, snap, now):
         """The list must name only nodes that are really off. Names no longer
@@ -1164,7 +1181,7 @@ class Waker:
         keep = [n for n in listed if n in configured]
         for name in keep:
             st = snap["states"].get(name)
-            if st is None or st["ready"] or not self.amt.available(name):
+            if (st is not None and st["ready"]) or not self.amt.available(name):
                 self.on_since.pop(name, None)
                 continue
             try:
@@ -1180,7 +1197,8 @@ class Waker:
                 LOG.error("%s is listed asleep, AMT says on, and it has not come Ready for %ss: "
                           "taking it off the list so its alert fires", name, int(now - since))
                 keep.remove(name)
-                st["asleep"] = False
+                if st is not None:
+                    st["asleep"] = False
                 self.on_since.pop(name, None)
                 self.set_state_annotation(name, "on-not-ready")
                 self.backoff_until[name] = now + self.cfg["failureBackoffSeconds"]
@@ -1198,7 +1216,11 @@ class Waker:
         if self.may_power:
             self.reconcile_ready_nodes(snap)
             self.audit_asleep_list(snap, now)
-            self._renew()  # or the heartbeat pod stops asserting
+            if now - self.last_demand_ok <= self.cfg["demandBlindSeconds"]:
+                self._renew()  # or the heartbeat pod stops asserting
+            elif self.read_asleep():
+                LOG.error("GitHub unreadable for %ss: no longer vouching for sleeping nodes, "
+                          "so their heartbeat alerts fire", int(now - self.last_demand_ok))
 
         # Idle and awake clocks.
         for name, st in states.items():
@@ -1218,19 +1240,39 @@ class Waker:
             # Demand unknown: neither wake nor sleep on a guess.
             LOG.warning("GitHub demand unreadable, holding: %s", e)
             return
+        self.last_demand_ok = now
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         for name in snap.get("blind", ()):
             unmet[name] = 0
         if any(demand.values()):
             LOG.info("demand %s unmet %s runners %s caps %s", demand, unmet, snap["runners"], snap["live"])
 
+        # A set with a claimed runner that is not on a node needs room too:
+        # its job counts as claimed, so unmet alone would never wake the
+        # node that could run it (full-mode review). Not for sets whose
+        # runners could not be read (their unplaced count is a guess).
+        # One wake per stuck episode: a claim that can never schedule (a bad
+        # template, a taint nothing tolerates) would otherwise wake every
+        # node in turn and pin them all on. The episode ends when the set
+        # has no stuck claim left.
+        hungry = dict(unmet)
+        for name, u in snap.get("stuck", {}).items():
+            if not u:
+                self.stuck_woke.discard(name)
+            elif name not in self.stuck_woke:
+                hungry[name] = max(hungry.get(name, 0), u)
         wake = None
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
-            wake = choose_wake(self.cfg, unmet, states, self.backoff_until, now)
+            wake = choose_wake(self.cfg, hungry, states, self.backoff_until, now)
         if wake:
-            self._wish("wake", wake, f"for {dict((k, v) for k, v in unmet.items() if v)}")
-            if self.may_power:
-                self.wake(wake, snap)
+            self._wish("wake", wake, f"for {dict((k, v) for k, v in hungry.items() if v)}")
+            if self.may_power and self.wake(wake, snap):
+                # The episode is spent only by a wake that worked, and only
+                # for sets the woken node has slots for.
+                slots = next((n.get("slots", {}) for n in self.cfg["nodes"] if n["name"] == wake), {})
+                for name, u in snap.get("stuck", {}).items():
+                    if u and not unmet.get(name) and int(slots.get(name, 0)) > 0:
+                        self.stuck_woke.add(name)
             return
 
         sleep = None if snap.get("degraded") else choose_sleep(
@@ -1293,8 +1335,14 @@ class Waker:
                 LOG.error("could not clear %s from the asleep list: %s", node, e2)
             self.record_event("wake-failed", node, error=str(e)[:200])
             return False
-        snap["states"][node].update({"asleep": False, "unschedulable": False, "ready": True, "busy": False})
-        self.apply_caps(snap)
+        # Raise caps from a fresh look, not the snapshot taken while the node
+        # was asleep: uncordoning does not lift a taint (Codex on #242).
+        try:
+            snap.update(self.observe())
+        except Exception as e:
+            LOG.warning("re-observe after waking %s failed (%s); caps follow next pass", node, e)
+        else:
+            self.apply_caps(snap)
         self.pending_first_job[node] = start
         self.idle_since[node] = self.clock()
         self.awake_since[node] = start
@@ -1377,7 +1425,20 @@ class Waker:
             LOG.warning("talosctl shutdown of %s: %s; checking whether it is going down anyway", node, e)
             if not self._wait_off(node, 120):
                 if not self.amt.available(node) or self._amt_on(node):
-                    return self._abort_sleep(node, snap, f"talosctl shutdown failed: {e}", unassert=True)
+                    if not self.amt.available(node):
+                        return self._abort_sleep(node, snap, f"talosctl shutdown failed: {e}", unassert=True)
+                    # AMT says still on, but an accepted shutdown may yet
+                    # finish (Codex on #242): stay cordoned and out of the
+                    # caps, keep the slept-at stamp (so it is not taken back
+                    # until it has stayed up past STALE_READY_LIMIT_S), and
+                    # come off the asleep list so its alert judges it.
+                    LOG.warning("talosctl shutdown of %s failed (%s) and it is still on: "
+                                "left cordoned and out of the caps", node, e)
+                    self.mark_asleep(node, False)
+                    self.set_state_annotation(node, "sleep-unconfirmed")
+                    self.backoff_until[node] = self.clock() + cfg["failureBackoffSeconds"]
+                    self.record_event("sleep-unconfirmed", node, reason=str(e)[:200])
+                    return False
                 off = False  # AMT unreadable: fall through to the hard-off below
             else:
                 off = True

@@ -625,6 +625,141 @@ class SleepProcedure(unittest.TestCase):
 
 
 class WakeProcedure(unittest.TestCase):
+    def test_a_failed_runner_does_not_hide_demand_issue_239(self):
+        # athena-gitops#239: a runner that Failed before taking a job counted
+        # as an unstarted claim, so it absorbed a queued job's demand and
+        # nothing woke.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.ers["arc-builders"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-docker-amd64"}},
+                                           "status": {"phase": "Failed"}})
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
+    def test_github_blind_for_long_lets_sleeping_nodes_alert(self):
+        # Full-mode review, finding 1: with GitHub unreadable the waker held
+        # for ever and kept vouching for sleeping nodes, so nothing woke and
+        # nothing alerted. Past demandBlindSeconds it stops renewing.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.github.fail = True
+        for _ in range(30):
+            r.tick(advance=60)
+        renewed = int(r.kube.cms[("log-heartbeat", "waker-asleep")]["data"]["renewed"])
+        # The relay drops an assertion older than its TTL, so the nodes alert.
+        self.assertGreater(r.clock() - renewed, r.cfg["assertTtlSeconds"])
+
+    def test_codex_p1_an_ambiguous_shutdown_stays_cordoned_and_out_of_the_caps(self):
+        # talosctl errors after Talos accepted the shutdown; AMT still says on
+        # after the extra wait. The node may yet go down: keep it cordoned.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        r.tick()
+
+        def lost_reply(ip):
+            raise RuntimeError("rpc error: connection reset")  # accepted, reply lost; AMT stays on
+        r.talos.shutdown = lost_reply
+        r.tick(advance=61 * 60)
+        self.assertTrue(r.kube.nodes["zag-amd64-02"]["spec"].get("unschedulable"))
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())  # its alert judges it
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
+        r.tick(advance=60)
+        self.assertTrue(r.kube.nodes["zag-amd64-02"]["spec"].get("unschedulable"))
+
+    def test_codex_p2_a_woken_node_with_a_taint_offers_nothing(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.taint("zag-amd64-01", "example.com/maintenance")
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
+
+    def test_codex_p2_a_listed_node_with_no_node_object_is_still_audited(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.tick(advance=120)
+        r.amt.state["zag-amd64-02"] = w.POWER_ON  # booting, but never registers
+        r.kube.fail_get.append(r"/api/v1/nodes/zag-amd64-02$")
+        r.tick(advance=30)
+        r.tick(advance=r.cfg["readyTimeoutSeconds"] + 60)
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+
+    def test_a_claim_that_never_schedules_wakes_one_node_not_all(self):
+        # Delta review of e37ba73: a claim that can never bind woke every
+        # node in turn and pinned them all on.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                       "creationTimestamp": iso(r.clock() - 3600)},
+                                          "status": {}})
+        for _ in range(40):
+            r.tick(advance=60)
+        self.assertEqual(sum(1 for _, st in r.amt.calls if st == w.POWER_ON), 1)
+
+    def test_a_failed_wake_does_not_spend_the_stuck_episode(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                       "creationTimestamp": iso(r.clock() - 3600)},
+                                          "status": {}})
+        r.tick(advance=60)  # 01 refuses
+        r.tick(advance=r.cfg["wakeCooldownSeconds"] + 60)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_a_new_stuck_episode_can_wake_again(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        stuck = {"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                              "creationTimestamp": iso(r.clock() - 3600)}, "status": {}}
+        r.kube.ers["arc-runners"].append(stuck)
+        r.tick(advance=60)  # wakes 01 for it
+        r.kube.ers["arc-runners"].clear()
+        r.tick(advance=60)  # episode over
+        r.kube.ers["arc-runners"].append(dict(stuck))
+        for _ in range(2):  # 01 full: two running ci runners (their own ERs), no room left awake
+            r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                           "creationTimestamp": iso(r.clock() - 3600)},
+                                              "status": {"jobRequestId": 1}})
+        r.amt.calls.clear()
+        r.tick(advance=r.cfg["wakeCooldownSeconds"] + 60)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_reconcile_keeps_a_tainted_node_out_of_the_caps(self):
+        r = Rig(mode="full")
+        r.put_all_to_sleep()
+        r.tick(advance=120)
+        r.amt.state["zag-amd64-02"] = w.POWER_ON
+        r.kube.set_ready("zag-amd64-02", True)
+        r.kube.dead.discard("zag-amd64-02")
+        r.kube.taint("zag-amd64-02", "example.com/maintenance")
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 0)
+
+    def test_healthy_github_keeps_the_asleep_list_renewed(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        for _ in range(30):  # 30 min, past demandBlindSeconds, GitHub fine
+            r.tick(advance=60)
+        renewed = int(r.kube.cms[("log-heartbeat", "waker-asleep")]["data"]["renewed"])
+        self.assertLessEqual(r.clock() - renewed, 60)
+
+    def test_a_claimed_runner_with_no_room_wakes_a_node(self):
+        # Full-mode review, finding 2: an unbound claim set unmet to 0, so it
+        # never woke the node that could run it.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                       "creationTimestamp": iso(r.clock())},
+                                          "status": {}})
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=30)  # just created: a pod normally binds within seconds
+        self.assertNotIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+        r.tick(advance=60)  # unbound past the grace: no room anywhere awake
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
     def test_a_young_shared_label_job_wakes_nothing(self):
         r = Rig()
         r.put_all_to_sleep()
@@ -760,8 +895,13 @@ class ReviewFindings(unittest.TestCase):
         self.assertIn("zag-amd64-02", r.kube.asleep())
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
 
-    def test_a_failed_talosctl_call_on_a_node_still_on_aborts(self):
+    def test_a_failed_talosctl_call_on_a_node_still_on_is_held_then_taken_back(self):
+        # Codex on #242 (P1): a failed call may still have been accepted, so
+        # the node stays cordoned and out of the caps; once it has stayed up
+        # past STALE_READY_LIMIT_S the shutdown clearly never happened and it
+        # is taken back.
         r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")  # 01 stays awake throughout
         r.tick()
 
         def refused(ip):
@@ -769,7 +909,10 @@ class ReviewFindings(unittest.TestCase):
         r.talos.shutdown = refused
         r.tick(advance=61 * 60)
         self.assertEqual(r.kube.asleep(), set())
-        self.assertEqual(r.kube.caps(), CEILINGS)
+        self.assertTrue(r.kube.nodes["zag-amd64-02"]["spec"].get("unschedulable"))
+        r.tick(advance=w.STALE_READY_LIMIT_S + 60)
+        self.assertNotIn("unschedulable", r.kube.nodes["zag-amd64-02"]["spec"])
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
 
     def test_a_failed_wake_is_retried_after_the_backoff(self):
         r = Rig()
