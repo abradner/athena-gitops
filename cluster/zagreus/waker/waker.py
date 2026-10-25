@@ -1333,20 +1333,23 @@ class Waker:
             wakes = choose_wakes(self.cfg, real, states, self.backoff_until, now, room=room)
             if guess:
                 got = room(wakes) if wakes else {}
-                still = {name: n for name, n in guess.items() if got.get(name, 0) < n}
+                # Only sets the batch gives no room at all; and one node for
+                # all of them.
+                still = {name: n for name, n in guess.items() if not got.get(name, 0)}
                 extra = [n for n in choose_wakes(self.cfg, still, states, self.backoff_until, now, room=room)
-                         if n not in wakes][:1] if still and not any(got.get(k, 0) for k in guess) else []
+                         if n not in wakes][:1] if still else []
                 wakes = wakes + extra
         if wakes:
             self._wish("wake", ", ".join(wakes), f"for {dict((k, v) for k, v in hungry.items() if v)}")
+            # Room each node gives, read before the wake updates the snapshot.
+            gives = {node: room([node]) for node in wakes} if wakes else {}
             woke = self.wake_many(wakes, snap) if self.may_power else []
             # The episode is spent only by a wake that worked, and only for
-            # sets a woken node has slots for.
-            for node in woke:
-                slots = next((n.get("slots", {}) for n in self.cfg["nodes"] if n["name"] == node), {})
-                for name, u in snap.get("stuck", {}).items():
-                    if u and not unmet.get(name) and int(slots.get(name, 0)) > 0:
-                        self.stuck_woke.add(name)
+            # sets the nodes that woke give room (not merely slots: a node
+            # woken for other demand may have none left for them).
+            for name, u in snap.get("stuck", {}).items():
+                if u and not unmet.get(name) and any(gives[n].get(name, 0) > 0 for n in woke):
+                    self.stuck_woke.add(name)
             return
 
         # A held job (turned down, waiting to be offered again) shows as

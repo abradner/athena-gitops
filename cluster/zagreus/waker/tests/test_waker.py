@@ -1663,8 +1663,9 @@ class ReofferFindings(unittest.TestCase):
         self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
 
     def test_one_stuck_claim_and_one_unmet_job_need_two_ci_slots(self):
-        # The tight case: either half of the fix alone (sum, or claims not
-        # counted as room) would leave 01 looking enough.
+        # The tight case for the sum: max(unmet, stuck) leaves 01 looking
+        # enough. (Leaving claims out of room is not pinned by a test: with
+        # two nodes, the over-count only ever mattered on the guess path.)
         r = Rig()
         r.put_all_to_sleep()
         r.amt.calls.clear()
@@ -1684,6 +1685,20 @@ class ReofferFindings(unittest.TestCase):
         r.job(["zagreus-docker-amd64"], age_seconds=1)
         r.tick(advance=300)
         self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+
+    def test_a_stuck_episode_is_not_spent_by_a_node_with_no_room_for_it(self):
+        # Delta review of dc38d10d, P3: 02 was chosen for the stuck CI claim
+        # and failed; 01 woke for the builder with no room left for CI. The
+        # CI episode must stay open, not be spent by 01's mere slot.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.nodes["zag-amd64-01"]["status"]["allocatable"]["memory"] = "8Gi"
+        r.amt.refuse_on.add("zag-amd64-02")
+        self.stuck(r, 1)
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)  # tried for the claim
+        self.assertNotIn("zagreus-ci", r.waker.stuck_woke)
 
     def test_codex_a_failed_annotation_for_one_node_does_not_abandon_the_other(self):
         r = Rig()
