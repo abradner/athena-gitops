@@ -164,7 +164,7 @@ flowchart TD
   S -- yes --> SL[put it to sleep - full mode only]
   S -- no --> Z[next pass]
 </pre>
-<p class="src">waker.py: Waker.tick (line 1196), observe (934), apply_caps (1072)</p>
+<p class="src">waker.py: Waker.tick (line 1270), observe (985), apply_caps (1142)</p>
 
 <h2 id="observe">What it reads</h2>
 <p>Every pass starts from the cluster as it is. Nothing the waker relies on lives only in its own memory.</p>
@@ -238,7 +238,7 @@ sequenceDiagram
 </pre>
 <p>If any step fails, the node comes off the asleep list, so its silent heartbeat raises <code>ZagreusNodeKmsgGone</code>. It is annotated <code>wake-failed</code> and retried later.</p>
 <p>The AMT proof on 23 Oct 2026: zag-amd64-02 went from shutdown to S5 in 36 s, from power-on to AMT on in 19 s, and from power-on to Ready in 51 s.</p>
-<p class="src">waker.py: wake (line 1270), _power_on (1307)</p>
+<p class="src">waker.py: wake_many (line 1454), _power_on (1516)</p>
 
 <h2 id="sleep">Sleep</h2>
 <p>A sleep happens to the last node in order that has been idle for 60 minutes, while no set it serves has unmet demand, no runner is waiting for a node, every ceiling is known, and the pass isn't degraded. The node must also be one the waker can wake again (AMT, or Wake-on-LAN). "Idle" means no pod other than DaemonSets, static pods and <code>kube-system</code>. An idle warm runner still holds its node.</p>
@@ -259,7 +259,7 @@ sequenceDiagram
   W->>K: annotate asleep
 </pre>
 <p>A failed <code>talosctl</code> call isn't treated as "still on" by itself: the node may be going down anyway. Only AMT reporting it on aborts the sleep. Without AMT, "off" means the kubelet's Lease has stopped, plus a 30 s margin, and a Lease that can't be read never counts as off.</p>
-<p class="src">waker.py: put_to_sleep (line 1338), _abort_sleep (1414), _wait_off (1441)</p>
+<p class="src">waker.py: put_to_sleep (line 1547), _abort_sleep (1636), _wait_off (1663)</p>
 
 <h2 id="asleep">The asleep list and the alerts</h2>
 <p><code>ZagreusNodeKmsgGone</code> fires for any zagreus node whose kernel-log heartbeat goes quiet. A node the waker puts to sleep must leave that alert's expected list <em>before</em> its power goes. zagreus has one road to the log store, Talos's kernel-log sender, so the list travels on it:</p>
@@ -291,16 +291,16 @@ sequenceDiagram
 <div class="frame"><table>
   <thead><tr><th>Part</th><th>Where</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td>Config</td><td class="src">DEFAULTS 83, load_config 128</td><td>Merges <code>waker.conf</code> over the defaults and validates it.</td></tr>
-    <tr><td>Demand</td><td class="src">job_match 166, demand_by_set 184, unmet_by_set 203</td><td>Pure functions over queued jobs and runner counts.</td></tr>
-    <tr><td>Caps</td><td class="src">pod_requests 240, untolerated_taint 258, compute_caps 268, bound_caps 345</td><td>Room-aware caps, the ceiling, and the lower-only rule.</td></tr>
-    <tr><td>Choices</td><td class="src">choose_wakes 371, pod_holds_node 388, choose_sleep 410</td><td>Which node to wake, and which (if any) to sleep.</td></tr>
-    <tr><td>Liveness</td><td class="src">node_fresh_ready 515, lease_stamp 550</td><td>Ready, a fresh Lease, and Ready since the shutdown stamp.</td></tr>
-    <tr><td>Clients</td><td class="src">Kube 454, GitHub 575, AMT 727, Talos 799</td><td>API server over the service account; GitHub with ETags; WS-MAN with digest auth; <code>talosctl shutdown</code>.</td></tr>
-    <tr><td>Controller</td><td class="src">Waker 834, observe 934, apply_caps 1072, tick 1196</td><td>One pass, as in the flow above.</td></tr>
-    <tr><td>Full mode</td><td class="src">reconcile_ready_nodes 1126, audit_asleep_list 1160, wake 1270, put_to_sleep 1338</td><td>Power and the asleep list.</td></tr>
-    <tr><td>Waiting</td><td class="src">_pause 1466, _renew 1479, _lease_age 1492, _wait 1521</td><td>Waits that keep the asleep list renewed.</td></tr>
-    <tr><td>Heartbeat relay</td><td class="src">heartbeat_lines 437; core/kmsg-heartbeat.yaml</td><td>The Python model of the shell loop, and the loop itself.</td></tr>
+    <tr><td>Config</td><td class="src">DEFAULTS 83, load_config 141</td><td>Merges <code>waker.conf</code> over the defaults and validates it.</td></tr>
+    <tr><td>Demand</td><td class="src">job_match 179, demand_by_set 197, unmet_by_set 219</td><td>Pure functions over queued jobs and runner counts.</td></tr>
+    <tr><td>Caps</td><td class="src">pod_requests 256, untolerated_taint 274, compute_caps 284, bound_caps 361</td><td>Room-aware caps, the ceiling, and the lower-only rule.</td></tr>
+    <tr><td>Choices</td><td class="src">choose_wakes 383, pod_holds_node 432, choose_sleep 454</td><td>Which node to wake, and which (if any) to sleep.</td></tr>
+    <tr><td>Liveness</td><td class="src">node_fresh_ready 559, lease_stamp 594</td><td>Ready, a fresh Lease, and Ready since the shutdown stamp.</td></tr>
+    <tr><td>Clients</td><td class="src">Kube 498, GitHub 619, AMT 771, Talos 843</td><td>API server over the service account; GitHub with ETags; WS-MAN with digest auth; <code>talosctl shutdown</code>.</td></tr>
+    <tr><td>Controller</td><td class="src">Waker 878, observe 985, apply_caps 1142, tick 1270</td><td>One pass, as in the flow above.</td></tr>
+    <tr><td>Full mode</td><td class="src">reconcile_ready_nodes 1199, audit_asleep_list 1233, wake_many 1454, mark_orphans 1399, put_to_sleep 1547</td><td>Power and the asleep list.</td></tr>
+    <tr><td>Waiting</td><td class="src">_pause 1688, _renew 1701, _lease_age 1714, _wait 1743</td><td>Waits that keep the asleep list renewed.</td></tr>
+    <tr><td>Heartbeat relay</td><td class="src">heartbeat_lines 481; core/kmsg-heartbeat.yaml</td><td>The Python model of the shell loop, and the loop itself.</td></tr>
   </tbody>
 </table></div>
 

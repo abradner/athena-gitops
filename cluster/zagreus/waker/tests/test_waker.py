@@ -1749,6 +1749,21 @@ class ReofferFindings(unittest.TestCase):
             r.tick(advance=30)
         self.assertLessEqual(len(r.waker.orphans), 1)
 
+    def test_codex_a_backlog_beside_one_awake_node_still_wakes_the_other(self):
+        # Codex on 4073dead: 01 awake, 02 asleep, four CI jobs aged past the
+        # held window; one free slot on 01 orphaned them all and 02 never
+        # woke.
+        r = Rig()
+        r.tick()
+        r.tick(advance=61 * 60)  # 02 sleeps; 01 keeps a busy pod
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-docker-amd64")
+        r.amt.calls.clear()
+        for _ in range(4):
+            r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        self.assertEqual(r.waker.orphans, set())
+
     def test_spare_just_raised_is_not_spare_yet(self):
         # Delta review of 4073dead, P3: a raise restarts the listener and
         # GitHub holds turned-down jobs ~10 min; spare that new is on paper.
