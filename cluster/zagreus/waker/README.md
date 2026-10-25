@@ -164,8 +164,9 @@ about ten minutes before GitHub offers it again. Waking one node at a time
 idle slots (26 Oct 2026). A job still queued after `heldAfterSeconds`
 (180 s) while its set has spare is taken to be held: for the next
 `heldForSeconds` (900 s) it keeps the nodes that can run it awake, but wakes
-nothing, since a raise would not bring it back sooner. Past that it is taken
-to be an orphan and holds nothing. Nodes are counted by their room on paper
+nothing, since a raise would not bring it back sooner. Past that the held rule lets go. (A queued job that never
+dispatches still counts as demand while the 72 h lookback reads it, as it
+always has: it can keep a node awake, or wake one.) Nodes are counted by their room on paper
 (`compute_caps`), so sets sharing a node share its memory when the waker
 works out how many nodes to wake. The steps, for each node:
 

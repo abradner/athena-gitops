@@ -1641,6 +1641,50 @@ class ReofferFindings(unittest.TestCase):
             r.tick(advance=60)
         self.assertEqual(sum(1 for _, st in r.amt.calls if st == w.POWER_ON), 1)
 
+    def stuck(self, r, n, set_name="zagreus-ci"):
+        ns = "arc-builders" if set_name == "zagreus-docker-amd64" else "arc-runners"
+        for _ in range(n):
+            r.kube.ers[ns].append({"metadata": {"labels": {w.SCALE_SET_LABEL: set_name},
+                                                "creationTimestamp": iso(r.clock() - 3600)},
+                                   "status": {}})
+
+    def test_stuck_claims_and_queued_jobs_add_up_when_choosing_wakes(self):
+        # Delta review of 723c5352, P2: stuck claims and queued jobs never
+        # overlap (unmet already subtracts the claims), and claims placed
+        # on paper counted as room: two claims plus four jobs woke 01 alone,
+        # and 02 a pass later, a second raise.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        self.stuck(r, 2)
+        for _ in range(4):
+            r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_one_stuck_claim_and_one_unmet_job_need_two_ci_slots(self):
+        # The tight case: either half of the fix alone (sum, or claims not
+        # counted as room) would leave 01 looking enough.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        self.stuck(r, 1)
+        for _ in range(2):
+            r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_a_stuck_only_set_beside_real_demand_adds_at_most_one_node(self):
+        # Delta review of 723c5352, P3: demand for the builder plus stuck CI
+        # claims (a bad template, say) must not wake 02 for the claims.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        self.stuck(r, 3)
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+
     def test_codex_a_failed_annotation_for_one_node_does_not_abandon_the_other(self):
         r = Rig()
         r.put_all_to_sleep()

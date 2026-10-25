@@ -1303,20 +1303,32 @@ class Waker:
         # template, a taint nothing tolerates) would otherwise wake every
         # node in turn and pin them all on. The episode ends when the set
         # has no stuck claim left.
-        hungry = dict(unmet)
+        # Stuck claims and queued jobs never overlap (unmet already
+        # subtracts the claims' jobs), so a set with both needs room for
+        # the sum. A set with stuck claims only is a guess (a bad template
+        # never binds): it may add at most one node per episode (Codex on
+        # 27905470).
+        stuck = {}
         for name, u in snap.get("stuck", {}).items():
             if not u:
                 self.stuck_woke.discard(name)
             elif name not in self.stuck_woke:
-                hungry[name] = max(hungry.get(name, 0), u)
+                stuck[name] = u
+        hungry = dict(unmet)
+        for name, u in stuck.items():
+            hungry[name] = hungry.get(name, 0) + u
         wakes = []
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
-            wakes = choose_wakes(self.cfg, hungry, states, self.backoff_until, now,
-                                 room=lambda nodes: self._room_if_awake(snap, nodes))
-            # Stuck claims alone are a guess (a bad template never binds):
-            # one node per episode, as before batching (Codex on 27905470).
-            if not any(u > 0 for u in unmet.values()):
-                wakes = wakes[:1]
+            room = lambda nodes: self._room_if_awake(snap, nodes)  # noqa: E731
+            real = {name: n for name, n in hungry.items() if unmet.get(name, 0) > 0}
+            guess = {name: n for name, n in hungry.items() if n > 0 and not unmet.get(name, 0)}
+            wakes = choose_wakes(self.cfg, real, states, self.backoff_until, now, room=room)
+            if guess:
+                got = room(wakes) if wakes else {}
+                still = {name: n for name, n in guess.items() if got.get(name, 0) < n}
+                extra = [n for n in choose_wakes(self.cfg, still, states, self.backoff_until, now, room=room)
+                         if n not in wakes][:1] if still and not any(got.get(k, 0) for k in guess) else []
+                wakes = wakes + extra
         if wakes:
             self._wish("wake", ", ".join(wakes), f"for {dict((k, v) for k, v in hungry.items() if v)}")
             woke = self.wake_many(wakes, snap) if self.may_power else []
@@ -1372,8 +1384,11 @@ class Waker:
         states = snap["states"]
         hyp = {k: (dict(v, ready=True, asleep=False, unschedulable=v.get("taint") is not None)
                    if k in nodes else v) for k, v in states.items()}
-        before = compute_caps(self.cfg, states, snap.get("requests"), snap.get("unplaced"))
-        after = compute_caps(self.cfg, hyp, snap.get("requests"), snap.get("unplaced"))
+        # Unplaced claims are need (the caller adds them), not room: placed
+        # on paper only in `after`, each would count as a slot the node may
+        # not have (delta review of 723c5352).
+        before = compute_caps(self.cfg, states, snap.get("requests"))
+        after = compute_caps(self.cfg, hyp, snap.get("requests"))
         return {s: after[s] - before.get(s, 0) for s in after}
 
     def wake(self, node, snap):
