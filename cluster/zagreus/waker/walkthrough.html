@@ -294,7 +294,7 @@ sequenceDiagram
     <tr><td>Config</td><td class="src">DEFAULTS 83, load_config 128</td><td>Merges <code>waker.conf</code> over the defaults and validates it.</td></tr>
     <tr><td>Demand</td><td class="src">job_match 166, demand_by_set 184, unmet_by_set 203</td><td>Pure functions over queued jobs and runner counts.</td></tr>
     <tr><td>Caps</td><td class="src">pod_requests 240, untolerated_taint 258, compute_caps 268, bound_caps 345</td><td>Room-aware caps, the ceiling, and the lower-only rule.</td></tr>
-    <tr><td>Choices</td><td class="src">choose_wake 367, pod_holds_node 388, choose_sleep 410</td><td>Which node to wake, and which (if any) to sleep.</td></tr>
+    <tr><td>Choices</td><td class="src">choose_wakes 371, pod_holds_node 388, choose_sleep 410</td><td>Which node to wake, and which (if any) to sleep.</td></tr>
     <tr><td>Liveness</td><td class="src">node_fresh_ready 515, lease_stamp 550</td><td>Ready, a fresh Lease, and Ready since the shutdown stamp.</td></tr>
     <tr><td>Clients</td><td class="src">Kube 454, GitHub 575, AMT 727, Talos 799</td><td>API server over the service account; GitHub with ETags; WS-MAN with digest auth; <code>talosctl shutdown</code>.</td></tr>
     <tr><td>Controller</td><td class="src">Waker 834, observe 934, apply_caps 1072, tick 1196</td><td>One pass, as in the flow above.</td></tr>

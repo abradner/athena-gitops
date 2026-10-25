@@ -810,10 +810,13 @@ class WakeProcedure(unittest.TestCase):
         r = Rig()
         r.put_all_to_sleep()
         r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
-        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
-        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
         r.tick(advance=300)  # wakes 01 at time t; the wake itself takes ~65 s
         r.amt.calls.clear()
+        # More demand than 01 can take arrives inside the cooldown.
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {"jobRequestId": 8}})
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
         r.tick(advance=30)
         self.assertEqual(r.amt.calls, [])
         r.tick(advance=200)
@@ -1510,6 +1513,72 @@ class GitHubClient(unittest.TestCase):
         clock.sleep(901)
         gh.queued_jobs("o/r", 72, now)
         self.assertGreater(len(self.calls), n)
+
+
+class ReofferFindings(unittest.TestCase):
+    """26 Oct 2026 live finding: a listener restarts whenever maxRunners
+    changes, and a job its set turned down for want of room is held about
+    ten minutes before GitHub offers it again. Waking 01 for zagreus-ci: 2
+    raised the cap to 1, the second job was turned down, and raising it to
+    3 when 02 woke three minutes later left it queued 14 minutes beside two
+    idle slots."""
+
+    def ci_patches(self, r):
+        return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes
+                if v == "PATCH" and p.endswith("/autoscalingrunnersets/zagreus-ci")]
+
+    def test_demand_beyond_one_node_wakes_every_node_it_needs_and_raises_caps_once(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        self.assertEqual(self.ci_patches(r), [3])  # one listener restart, never 0 -> 1 -> 3
+        self.assertEqual(r.kube.asleep(), set())
+
+    def test_demand_one_node_covers_wakes_only_that_node(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+
+    def test_a_node_that_fails_to_wake_does_not_stop_the_others_raising_caps(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(self.ci_patches(r), [2])  # 02's two slots, raised once
+        self.assertGreater(r.waker.backoff_until.get("zag-amd64-01", 0), r.clock())
+
+    def test_a_held_job_keeps_its_nodes_awake(self):
+        # Turned down and held: the set shows spare, so unmet is 0, but the
+        # node about to sleep is the room the job will be offered.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + 1)
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), set())
+        r.github.jobs.clear()
+        r.tick(advance=1)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+
+    def test_a_young_job_with_spare_does_not_hold_nodes_awake(self):
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
 
 
 class Modes(unittest.TestCase):

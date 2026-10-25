@@ -155,8 +155,16 @@ with mains power. No fresh Lease, no slots.
 ## Wake
 
 The trigger is unmet demand for a set, with a sleeping node that has a slot
-for it. One wake at a time, then a 180 s cooldown. Nodes are taken in
-`waker.conf` order. The steps:
+for it. The waker wakes every sleeping node it needs to cover the demand, in
+`waker.conf` order, all at once, and raises the caps once when they are up;
+then a 180 s cooldown. One raise matters: every `maxRunners` change restarts
+the set's listener, and a job the set turned down for want of room is held
+about ten minutes before GitHub offers it again. Waking one node at a time
+(0 to 1, then 1 to 3) left a second job queued for 14 minutes beside two
+idle slots (26 Oct 2026). A job still queued after `heldAfterSeconds`
+(180 s) while its set has spare is taken to be held: it keeps the nodes that
+can run it awake, but wakes nothing, since a raise would not bring it back
+sooner. The steps, for each node:
 
 1. AMT `RequestPowerStateChange(2)` over WS-MAN (HTTP digest, port 16992).
    Wake-on-LAN is the fallback when it is configured (see "Wake-on-LAN").
@@ -164,9 +172,10 @@ for it. One wake at a time, then a 180 s cooldown. Nodes are taken in
 3. Wait for that node's heartbeat pod to be Ready, then take the node off the
    asleep list. Its heartbeats are flowing by then, and the old assertion
    stays in the alert's 150 s lookback while the first ones arrive.
-4. Uncordon the node and raise the caps.
+4. Uncordon the node. Once every node in the wake is up (or has failed), raise
+   the caps once.
 
-If any step fails, the node comes off the asleep list. Its missing heartbeat
+If any step fails for a node, the others carry on, and that node comes off the asleep list. Its missing heartbeat
 then raises `ZagreusNodeKmsgGone`: a node that won't wake is a fault for a
 person to look at. The node is held in a 30 min backoff and annotated
 `zagreus.asn.casa/waker-state=wake-failed`.
