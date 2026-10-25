@@ -904,7 +904,6 @@ class Waker:
         self.jobs = []  # the last demand read, orphans excluded
         self.orphans = set()  # job ids seen queued past the held window beside spare
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
-        self.orphaned_for = {}  # per set: the orphan ids charged to its spare
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -1125,7 +1124,6 @@ class Waker:
         for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
             jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
         self.orphans &= {j.get("id") for j in jobs}  # forget those no longer queued
-        self.orphaned_for = {k: v & self.orphans for k, v in self.orphaned_for.items()}
         jobs = [j for j in jobs if j.get("id") not in self.orphans]
         self.jobs = jobs
         # Jobs queued past heldAfterSeconds: where the set shows spare,
@@ -1401,7 +1399,7 @@ class Waker:
         set has shown unbroken for heldForSeconds (no cap change since), was
         offered room and never took it: it is not coming. Left in demand it
         wakes a node every time the nodes sleep (Codex on dc38d10d). At most
-        as many jobs, in all, as there are free slots, oldest first: a backlog behind
+        as many jobs a pass as there are free slots, oldest first: a backlog behind
         full runners is not orphaned by one runner finishing (delta review
         of 4073dead). Remembered by id until the waker restarts."""
         limit = self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"]
@@ -1425,11 +1423,12 @@ class Waker:
                           and (now - j["created_at"]).total_seconds() >= limit
                           and job_match(j["labels"], name, snap["labels"].get(name, []))[0]),
                          key=lambda j: j["created_at"])
-            # Never more orphans charged to a set than it has free slots.
-            budget = spare - len(self.orphaned_for.get(name, set()))
-            take = {j["id"] for j in old[:max(0, budget)]}
-            self.orphaned_for.setdefault(name, set()).update(take)
-            new |= take
+            # At most as many per pass as there are free slots. Not charged
+            # for ever: an orphan takes no slot, and a cumulative charge
+            # pinned nodes awake once orphans outnumbered the cap (delta
+            # review of 015feee4). The lasting-spare clock is what protects
+            # a real backlog.
+            new |= {j["id"] for j in old[:spare]}
         if new:
             LOG.warning("ignoring queued jobs %s: past the held window beside spare slots", sorted(new))
             self.orphans |= new

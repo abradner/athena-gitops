@@ -1745,9 +1745,23 @@ class ReofferFindings(unittest.TestCase):
             r.job(["zagreus-ci"], age_seconds=28 * 60)
         r.tick(advance=30)
         self.assertEqual(r.waker.orphans, set())
-        for _ in range(r.cfg["heldForSeconds"] // 30 + 2):
+        # Once the free slot has lasted, one job a pass, oldest first.
+        while not r.waker.orphans:
             r.tick(advance=30)
-        self.assertLessEqual(len(r.waker.orphans), 1)
+        self.assertEqual(r.waker.orphans, {min(j["id"] for j in r.github.jobs
+                                               if j["created_at"] == min(x["created_at"] for x in r.github.jobs))})
+
+    def test_more_orphans_than_slots_still_let_the_nodes_sleep(self):
+        # Delta review of 015feee4, P2: orphans were charged to a set for
+        # good, so more of them than its cap pinned a node awake.
+        r = Rig()
+        r.tick()
+        for _ in range(12):
+            r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(8 * 60):
+            r.tick(advance=60)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
 
     def test_codex_a_backlog_beside_one_awake_node_still_wakes_the_other(self):
         # Codex on 4073dead: 01 awake, 02 asleep, four CI jobs aged past the
