@@ -810,10 +810,13 @@ class WakeProcedure(unittest.TestCase):
         r = Rig()
         r.put_all_to_sleep()
         r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
-        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
-        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
         r.tick(advance=300)  # wakes 01 at time t; the wake itself takes ~65 s
         r.amt.calls.clear()
+        # More demand than 01 can take arrives inside the cooldown.
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {"jobRequestId": 8}})
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
         r.tick(advance=30)
         self.assertEqual(r.amt.calls, [])
         r.tick(advance=200)
@@ -1510,6 +1513,326 @@ class GitHubClient(unittest.TestCase):
         clock.sleep(901)
         gh.queued_jobs("o/r", 72, now)
         self.assertGreater(len(self.calls), n)
+
+
+class ReofferFindings(unittest.TestCase):
+    """26 Oct 2026 live finding: a listener restarts whenever maxRunners
+    changes, and a job its set turned down for want of room is held about
+    ten minutes before GitHub offers it again. Waking 01 for zagreus-ci: 2
+    raised the cap to 1, the second job was turned down, and raising it to
+    3 when 02 woke three minutes later left it queued 14 minutes beside two
+    idle slots."""
+
+    def ci_patches(self, r):
+        return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes
+                if v == "PATCH" and p.endswith("/autoscalingrunnersets/zagreus-ci")]
+
+    def test_demand_beyond_one_node_wakes_every_node_it_needs_and_raises_caps_once(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        self.assertEqual(self.ci_patches(r), [3])  # one listener restart, never 0 -> 1 -> 3
+        self.assertEqual(r.kube.asleep(), set())
+
+    def test_demand_one_node_covers_wakes_only_that_node(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+
+    def test_a_node_that_fails_to_wake_does_not_stop_the_others_raising_caps(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(self.ci_patches(r), [2])  # 02's two slots, raised once
+        self.assertGreater(r.waker.backoff_until.get("zag-amd64-01", 0), r.clock())
+
+    def test_a_held_job_keeps_its_nodes_awake(self):
+        # Turned down and held: the set shows spare, so unmet is 0, but the
+        # node about to sleep is the room the job will be offered.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + 1)
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), set())
+        r.github.jobs.clear()
+        r.tick(advance=1)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+
+    def test_sets_sharing_a_node_share_its_room_when_choosing_wakes(self):
+        # Review of 27905470, P2: slots were counted per set, but the
+        # builder and a CI runner share 01's memory. With room for only the
+        # builder there, 02 must wake in the same pass, not a pass later.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.nodes["zag-amd64-01"]["status"]["allocatable"]["memory"] = "8Gi"
+        r.kube.writes.clear()
+        r.amt.calls.clear()
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        self.assertEqual(len(self.ci_patches(r)), 1)
+        self.assertGreaterEqual(r.kube.caps()["zagreus-ci"], 1)
+
+    def test_a_job_queued_for_ever_stops_holding_nodes_awake(self):
+        # Review of 27905470, P2: an orphaned queued job the lookback still
+        # reads must not pin nodes awake for 72 h.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+
+    def test_a_node_never_ready_does_not_stop_the_other_raising_caps(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        real = r.amt.request_power
+
+        def never_boots(node, state):
+            real(node, state)
+            if node == "zag-amd64-02":
+                r.kube.boots[node] = r.clock() + 10 ** 6
+        r.amt.request_power = never_boots
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(self.ci_patches(r), [1])  # 01's slot, raised once
+        self.assertGreater(r.waker.backoff_until.get("zag-amd64-02", 0), r.clock())
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())  # so its alert fires
+
+    def test_the_ready_deadline_runs_from_the_first_power_on(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.boot_seconds = 10 ** 6  # neither ever Ready
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        start = r.clock()
+        r.tick(advance=300)
+        spent = r.clock() - start - 300
+        self.assertLess(spent, r.cfg["readyTimeoutSeconds"] + r.cfg["powerOnTimeoutSeconds"] + 120)
+
+    def test_codex_two_stuck_claims_still_wake_one_node_per_episode(self):
+        # Codex on 27905470: stuck claims with no unmet demand are a guess
+        # (three here: with room on paper, 01 alone seems to cover two)
+        # (a bad template never schedules), so batching must not wake both.
+        r = Rig()
+        r.put_all_to_sleep()
+        for _ in range(3):
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"},
+                                                           "creationTimestamp": iso(r.clock() - 3600)},
+                                              "status": {}})
+        for _ in range(40):
+            r.tick(advance=60)
+        self.assertEqual(sum(1 for _, st in r.amt.calls if st == w.POWER_ON), 1)
+
+    def stuck(self, r, n, set_name="zagreus-ci"):
+        ns = "arc-builders" if set_name == "zagreus-docker-amd64" else "arc-runners"
+        for _ in range(n):
+            r.kube.ers[ns].append({"metadata": {"labels": {w.SCALE_SET_LABEL: set_name},
+                                                "creationTimestamp": iso(r.clock() - 3600)},
+                                   "status": {}})
+
+    def test_stuck_claims_and_queued_jobs_add_up_when_choosing_wakes(self):
+        # Delta review of 723c5352, P2: stuck claims and queued jobs never
+        # overlap (unmet already subtracts the claims), and claims placed
+        # on paper counted as room: two claims plus four jobs woke 01 alone,
+        # and 02 a pass later, a second raise.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        self.stuck(r, 2)
+        for _ in range(4):
+            r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_one_stuck_claim_and_one_unmet_job_need_two_ci_slots(self):
+        # The tight case for the sum: max(unmet, stuck) leaves 01 looking
+        # enough. (Leaving claims out of room is not pinned by a test: with
+        # two nodes, the over-count only ever mattered on the guess path.)
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        self.stuck(r, 1)
+        for _ in range(2):
+            r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_a_stuck_only_set_beside_real_demand_adds_at_most_one_node(self):
+        # Delta review of 723c5352, P3: demand for the builder plus stuck CI
+        # claims (a bad template, say) must not wake 02 for the claims.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        self.stuck(r, 3)
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+
+    def test_a_stuck_episode_is_not_spent_by_a_node_with_no_room_for_it(self):
+        # Delta review of dc38d10d, P3: 02 was chosen for the stuck CI claim
+        # and failed; 01 woke for the builder with no room left for CI. The
+        # CI episode must stay open, not be spent by 01's mere slot.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.nodes["zag-amd64-01"]["status"]["allocatable"]["memory"] = "8Gi"
+        r.amt.refuse_on.add("zag-amd64-02")
+        self.stuck(r, 1)
+        r.job(["zagreus-docker-amd64"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)  # tried for the claim
+        self.assertNotIn("zagreus-ci", r.waker.stuck_woke)
+
+    def test_codex_a_failed_annotation_for_one_node_does_not_abandon_the_other(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        orig = r.kube.merge_patch
+
+        def fail_02_waking(path, body):
+            if path == "/api/v1/nodes/zag-amd64-02" and body.get("metadata", {}).get(
+                    "annotations", {}).get(w.ANNOTATION_STATE) == "waking":
+                raise RuntimeError("apiserver hiccup")
+            return orig(path, body)
+        r.kube.merge_patch = fail_02_waking
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(self.ci_patches(r), [1])
+        self.assertNotIn("zag-amd64-01", r.kube.asleep())
+        self.assertGreater(r.waker.backoff_until.get("zag-amd64-02", 0), r.clock())
+
+    def test_codex_an_orphan_job_seen_beside_spare_stops_counting_as_demand(self):
+        # Codex on dc38d10d: a queued job that never dispatches, once past
+        # the held window, still counted as demand: the nodes slept, their
+        # caps went to 0, the orphan became unmet and woke one, and so on.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        for _ in range(5 * 60):  # inside orphanForSeconds
+            r.tick(advance=60)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+
+    def test_a_brief_free_slot_does_not_orphan_a_backlog(self):
+        # Delta review of 4073dead, P2: a runner finished and, for a poll,
+        # its set showed one free slot; every old job behind it was
+        # orphaned for good. Spare must last heldForSeconds first, and then
+        # only as many jobs as there are free slots.
+        r = Rig()
+        r.tick()
+        for i in range(2):
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                              "status": {"jobRequestId": 100 + i}})
+        for _ in range(4):
+            r.job(["zagreus-ci"], age_seconds=28 * 60)
+        r.tick(advance=30)
+        self.assertEqual(set(r.waker.orphans), set())
+        # Once the free slot has lasted, one job a pass, oldest first.
+        for _ in range(r.cfg["heldForSeconds"] // 30 + 4):
+            if r.waker.orphans:
+                break
+            r.tick(advance=30)
+        self.assertEqual(set(r.waker.orphans), {min(j["id"] for j in r.github.jobs
+                                               if j["created_at"] == min(x["created_at"] for x in r.github.jobs))})
+
+    def test_an_orphan_counts_again_after_its_window(self):
+        # Delta review of 87a21ed9: a backlog set aside while dispatch was
+        # broken must come back, or once the nodes sleep it wakes nothing.
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(3 * 60):
+            r.tick(advance=60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+        r.amt.calls.clear()
+        r.tick(advance=r.cfg["orphanForSeconds"])
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
+    def test_more_orphans_than_slots_still_let_the_nodes_sleep(self):
+        # Delta review of 015feee4, P2: orphans were charged to a set for
+        # good, so more of them than its cap pinned a node awake.
+        r = Rig()
+        r.tick()
+        for _ in range(12):
+            r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(5 * 60):  # inside orphanForSeconds
+            r.tick(advance=60)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [])
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+
+    def test_codex_a_backlog_beside_one_awake_node_still_wakes_the_other(self):
+        # Codex on 4073dead: 01 awake, 02 asleep, four CI jobs aged past the
+        # held window; one free slot on 01 orphaned them all and 02 never
+        # woke.
+        r = Rig()
+        r.tick()
+        r.tick(advance=61 * 60)  # 02 sleeps; 01 keeps a busy pod
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-docker-amd64")
+        r.amt.calls.clear()
+        for _ in range(4):
+            r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        self.assertEqual(set(r.waker.orphans), set())
+
+    def test_spare_just_raised_is_not_spare_yet(self):
+        # Delta review of 4073dead, P3: a raise restarts the listener and
+        # GitHub holds turned-down jobs ~10 min; spare that new is on paper.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        r.tick(advance=300)  # wakes 01, raises zagreus-ci
+        r.tick(advance=30)
+        self.assertEqual(set(r.waker.orphans), set())
+
+    def test_a_raise_restarts_the_spare_clock(self):
+        # Spare seen for ten minutes, then a raise (02 uncordoned by hand):
+        # the listener restarted, so the old spare no longer counts.
+        r = Rig()
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")  # keeps 02 out of the sleep choice
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        for _ in range(20):
+            r.tick(advance=30)  # ten minutes of spare on 01
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = False
+        for _ in range(12):
+            r.tick(advance=30)  # six minutes after the raise
+        self.assertEqual(set(r.waker.orphans), set())
+
+    def test_a_job_queued_long_while_its_set_was_full_is_not_an_orphan(self):
+        # Waiting behind busy runners is not orphaned: no spare was seen.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
+    def test_a_young_job_with_spare_does_not_hold_nodes_awake(self):
+        r = Rig()
+        r.tick()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
 
 
 class Modes(unittest.TestCase):

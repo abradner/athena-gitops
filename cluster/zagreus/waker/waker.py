@@ -95,6 +95,20 @@ DEFAULTS = {
     "runLookbackHours": 72,
     "idleMinutes": 60,
     "wakeCooldownSeconds": 180,
+    # A job a set turned down for want of room is held about ten minutes
+    # before GitHub offers it again, even once the set has room (26 Oct
+    # 2026). One still queued this long beside spare slots is taken to be
+    # held: it keeps the nodes that can run it awake.
+    "heldAfterSeconds": 180,
+    # ...and only for this long after that: GitHub offers it again in about
+    # ten minutes, and a queued job that never dispatches (an orphan the
+    # 72 h lookback still reads) must not keep nodes awake for days.
+    "heldForSeconds": 900,
+    # A job set aside as an orphan counts as demand again after this long:
+    # if dispatch to the set was broken rather than the job abandoned, it
+    # comes back (and can wake a node) once dispatch may have recovered.
+    # A true orphan costs one wake and about an idle period per window.
+    "orphanForSeconds": 21600,
     "listenerSettleSeconds": 15,
     "drainRecheckSeconds": 30,
     # Time between publishing "asleep" and shutting the node down, so the
@@ -185,13 +199,16 @@ def parse_time(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def demand_by_set(cfg, jobs, set_labels, now):
-    """Queued jobs per driven set that have waited past their grace.
+def demand_by_set(cfg, jobs, set_labels, now, max_age=None):
+    """Queued jobs per driven set that have waited past their grace (and,
+    with max_age, no longer than that).
 
     jobs: dicts with repo, labels, created_at (aware datetime)."""
     out = {s["name"]: 0 for s in cfg["sets"]}
     for job in jobs:
         age = (now - job["created_at"]).total_seconds()
+        if max_age is not None and age >= max_age:
+            continue
         for s in cfg["sets"]:
             if job["repo"].lower() != s["repo"].lower():
                 continue
@@ -368,13 +385,32 @@ def bound_caps(wanted, live, ceilings):
     return out
 
 
-def choose_wake(cfg, unmet, node_states, backoff_until, now_s):
-    """The first sleeping node, in configured order, with a slot for a set
-    whose demand is unmet."""
-    hungry = {name for name, u in unmet.items() if u > 0}
-    if not hungry:
-        return None
+def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
+    """Sleeping nodes, in configured order, until their slots cover every
+    set's unmet demand (or none is left to wake).
+
+    All of them wake together and the caps rise once: every maxRunners
+    change restarts the set's listener, and a job turned down for want of
+    room is held about ten minutes before it is offered again, so raising
+    0 -> 1 -> 3 node by node strands the second job (26 Oct 2026).
+
+    room(nodes): the caps those nodes would add, per set, once awake (the
+    caller's compute_caps, so sets sharing a node share its room). Without
+    it, each node's configured slots."""
+    if room is None:
+        def room(nodes):
+            out = {}
+            for n in cfg["nodes"]:
+                if n["name"] in nodes:
+                    for s, k in n.get("slots", {}).items():
+                        out[s] = out.get(s, 0) + int(k)
+            return out
+    want = {name: u for name, u in unmet.items() if u > 0}
+    need = dict(want)
+    out = []
     for n in cfg["nodes"]:
+        if not need:
+            break
         st = node_states.get(n["name"])
         if st is None:
             continue
@@ -384,9 +420,18 @@ def choose_wake(cfg, unmet, node_states, backoff_until, now_s):
             continue
         if backoff_until.get(n["name"], 0) > now_s:
             continue
-        if any(int(n.get("slots", {}).get(s, 0)) > 0 for s in hungry):
-            return n["name"]
-    return None
+        slots = n.get("slots", {})
+        if not any(int(slots.get(s, 0)) > 0 for s in need):
+            continue
+        out.append(n["name"])
+        got = room(out)
+        need = {s: u - got.get(s, 0) for s, u in want.items() if u - got.get(s, 0) > 0}
+    return out
+
+
+def choose_wake(cfg, unmet, node_states, backoff_until, now_s):
+    """The first node choose_wakes would wake."""
+    return next(iter(choose_wakes(cfg, unmet, node_states, backoff_until, now_s)), None)
 
 
 def pod_holds_node(pod, evictable_namespaces=()):
@@ -860,6 +905,10 @@ class Waker:
         self.last_wish = None  # last "would wake/sleep" logged, to log changes only
         self.last_demand_ok = clock()
         self.stuck_woke = set()  # sets that already woke a node for a stuck claim
+        self.held = {}  # per set: queued jobs older than heldAfterSeconds
+        self.jobs = []  # the last demand read, orphans excluded
+        self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
+        self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
 
     def wakeable(self):
@@ -1079,6 +1128,18 @@ class Waker:
         jobs = []
         for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
             jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
+        queued, t = {j.get("id") for j in jobs}, self.clock()
+        self.orphans = {i: at for i, at in self.orphans.items()
+                        if i in queued and t - at < self.cfg["orphanForSeconds"]}
+        jobs = [j for j in jobs if j.get("id") not in self.orphans]
+        self.jobs = jobs
+        # Jobs queued past heldAfterSeconds: where the set shows spare,
+        # these were turned down and are waiting to be offered again.
+        self.held = demand_by_set(dict(self.cfg, namedGraceSeconds=self.cfg["heldAfterSeconds"],
+                                       saturationGraceSeconds=max(self.cfg["heldAfterSeconds"],
+                                                                  self.cfg["saturationGraceSeconds"])),
+                                  jobs, labels, now,
+                                  max_age=self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"])
         return demand_by_set(self.cfg, jobs, labels, now)
 
     # ----- caps
@@ -1109,6 +1170,9 @@ class Waker:
                              name, live, want)
                     continue
             self.lower_streak.pop(name, None)
+            # A changed cap restarts the listener: spare from it is on paper
+            # until GitHub has had its ~10 min to offer held jobs again.
+            self.spare_since.pop(name, None)
             changed[name] = (snap["live"][name], want)  # old may be None (unlimited)
             if self.may_patch_caps:
                 self.kube.merge_patch(ARS.format(ns=s["namespace"], name=name),
@@ -1242,6 +1306,9 @@ class Waker:
             return
         self.last_demand_ok = now
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
+        if self.mark_orphans(snap):
+            demand = demand_by_set(self.cfg, self.jobs, snap["labels"], dt.datetime.now(dt.timezone.utc))
+            unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         for name in snap.get("blind", ()):
             unmet[name] = 0
         if any(demand.values()):
@@ -1255,30 +1322,58 @@ class Waker:
         # template, a taint nothing tolerates) would otherwise wake every
         # node in turn and pin them all on. The episode ends when the set
         # has no stuck claim left.
-        hungry = dict(unmet)
+        # Stuck claims and queued jobs never overlap (unmet already
+        # subtracts the claims' jobs), so a set with both needs room for
+        # the sum. A set with stuck claims only is a guess (a bad template
+        # never binds): it may add at most one node per episode (Codex on
+        # 27905470).
+        stuck = {}
         for name, u in snap.get("stuck", {}).items():
             if not u:
                 self.stuck_woke.discard(name)
             elif name not in self.stuck_woke:
-                hungry[name] = max(hungry.get(name, 0), u)
-        wake = None
+                stuck[name] = u
+        hungry = dict(unmet)
+        for name, u in stuck.items():
+            hungry[name] = hungry.get(name, 0) + u
+        wakes = []
         if now - self.last_wake_at >= self.cfg["wakeCooldownSeconds"]:
-            wake = choose_wake(self.cfg, hungry, states, self.backoff_until, now)
-        if wake:
-            self._wish("wake", wake, f"for {dict((k, v) for k, v in hungry.items() if v)}")
-            if self.may_power and self.wake(wake, snap):
-                # The episode is spent only by a wake that worked, and only
-                # for sets the woken node has slots for.
-                slots = next((n.get("slots", {}) for n in self.cfg["nodes"] if n["name"] == wake), {})
-                for name, u in snap.get("stuck", {}).items():
-                    if u and not unmet.get(name) and int(slots.get(name, 0)) > 0:
-                        self.stuck_woke.add(name)
+            room = lambda nodes: self._room_if_awake(snap, nodes)  # noqa: E731
+            real = {name: n for name, n in hungry.items() if unmet.get(name, 0) > 0}
+            guess = {name: n for name, n in hungry.items() if n > 0 and not unmet.get(name, 0)}
+            wakes = choose_wakes(self.cfg, real, states, self.backoff_until, now, room=room)
+            if guess:
+                got = room(wakes) if wakes else {}
+                # Only sets the batch gives no room at all; and one node for
+                # all of them.
+                still = {name: n for name, n in guess.items() if not got.get(name, 0)}
+                extra = [n for n in choose_wakes(self.cfg, still, states, self.backoff_until, now, room=room)
+                         if n not in wakes][:1] if still else []
+                wakes = wakes + extra
+        if wakes:
+            self._wish("wake", ", ".join(wakes), f"for {dict((k, v) for k, v in hungry.items() if v)}")
+            # Room each node gives, read before the wake updates the snapshot.
+            gives = {node: room([node]) for node in wakes} if wakes else {}
+            woke = self.wake_many(wakes, snap) if self.may_power else []
+            # The episode is spent only by a wake that worked, and only for
+            # sets the nodes that woke give room (not merely slots: a node
+            # woken for other demand may have none left for them).
+            for name, u in snap.get("stuck", {}).items():
+                if u and not unmet.get(name) and any(gives[n].get(name, 0) > 0 for n in woke):
+                    self.stuck_woke.add(name)
             return
 
+        # A held job (turned down, waiting to be offered again) shows as
+        # spare, not unmet: it still keeps the nodes that can run it awake.
+        held = {name: n for name, n in self.held.items() if n and not unmet.get(name)}
+        if held:
+            LOG.warning("jobs queued over %ss beside spare slots (held by GitHub?): %s",
+                        self.cfg["heldAfterSeconds"], held)
+        keep = {name: max(unmet.get(name, 0), held.get(name, 0)) for name in set(unmet) | set(held)}
         sleep = None if snap.get("degraded") else choose_sleep(
-                             self.cfg, states, self.idle_since, unmet, self.backoff_until, now,
+                             self.cfg, states, self.idle_since, keep, self.backoff_until, now,
                              wakeable=self.wakeable(), unplaced=sum(snap["unplaced"].values()))
-        if not wake and not sleep:
+        if not sleep:
             self.last_wish = None
         if sleep:
             self._wish("sleep", sleep, "(idle since %s)" % dt.datetime.fromtimestamp(
@@ -1306,48 +1401,127 @@ class Waker:
 
     # ----- wake
 
+    def mark_orphans(self, snap):
+        """A job still queued past the held window, beside a free slot its
+        set has shown unbroken for heldForSeconds (no cap change since), was
+        offered room and never took it: it is not coming. Left in demand it
+        wakes a node every time the nodes sleep (Codex on dc38d10d). At most
+        as many jobs a pass as there are free slots, oldest first: a backlog behind
+        full runners is not orphaned by one runner finishing (delta review
+        of 4073dead). A slot free for 15 min beside waiting jobs means GitHub
+        is not dispatching them to this set, whatever the reason, and more
+        room would not change that; so the whole backlog can be set aside,
+        a few a pass. Each is set aside for orphanForSeconds (or until the
+        waker restarts), then counts again."""
+        limit = self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"]
+        now = dt.datetime.now(dt.timezone.utc)
+        t = self.clock()
+        new = set()
+        for s in self.cfg["sets"]:
+            name = s["name"]
+            cap = snap["live"].get(name)
+            spare = 0 if (cap is None or name in snap.get("blind", ()) or snap.get("degraded")) \
+                else cap - snap["runners"].get(name, 0)
+            if spare <= 0:
+                self.spare_since.pop(name, None)
+                continue
+            since = self.spare_since.setdefault(name, t)
+            if t - since < self.cfg["heldForSeconds"]:
+                continue
+            old = sorted((j for j in self.jobs
+                          if j.get("id") is not None and j["id"] not in new
+                          and j["repo"].lower() == s["repo"].lower()
+                          and (now - j["created_at"]).total_seconds() >= limit
+                          and job_match(j["labels"], name, snap["labels"].get(name, []))[0]),
+                         key=lambda j: j["created_at"])
+            # At most as many per pass as there are free slots. Not charged
+            # for ever: an orphan takes no slot, and a cumulative charge
+            # pinned nodes awake once orphans outnumbered the cap (delta
+            # review of 015feee4). The lasting-spare clock is what protects
+            # a real backlog.
+            new |= {j["id"] for j in old[:spare]}
+        if new:
+            LOG.warning("ignoring queued jobs %s: past the held window beside spare slots", sorted(new))
+            self.orphans.update(dict.fromkeys(new, t))
+            self.jobs = [j for j in self.jobs if j.get("id") not in new]
+        return bool(new)
+
+    def _room_if_awake(self, snap, nodes):
+        """Caps the nodes would add once awake, from their room on paper."""
+        states = snap["states"]
+        hyp = {k: (dict(v, ready=True, asleep=False, unschedulable=v.get("taint") is not None)
+                   if k in nodes else v) for k, v in states.items()}
+        # Unplaced claims are need (the caller adds them), not room: placed
+        # on paper only in `after`, each would count as a slot the node may
+        # not have (delta review of 723c5352).
+        before = compute_caps(self.cfg, states, snap.get("requests"))
+        after = compute_caps(self.cfg, hyp, snap.get("requests"))
+        return {s: after[s] - before.get(s, 0) for s in after}
+
     def wake(self, node, snap):
+        return node in self.wake_many([node], snap)
+
+    def wake_many(self, nodes, snap):
+        """Power every node on, wait for each, then raise the caps once for
+        all of them (see choose_wakes). Returns the nodes that woke; one
+        that fails is backed off and does not hold the others back."""
         start = self.clock()
         self.last_wake_at = start
-        self.set_state_annotation(node, "waking")
-        try:
-            self._power_on(node)
-            self._wait(lambda: node_fresh_ready(self._node(node) or {}, self.clock(),
-                                                self._lease_age(node, strict=True)),
-                       self.cfg["readyTimeoutSeconds"], f"{node} Ready")
-            ready_s = self.clock() - start
-            self._wait(lambda: self._heartbeat_ready(node),
-                       self.cfg["heartbeatPodTimeoutSeconds"], f"{node} heartbeat pod", fatal=False)
-            # Back on the expected-node list before it takes work: its
-            # heartbeats are flowing, and the assertion lingers in the alert's
-            # 150 s lookback while the first ones arrive.
-            self.mark_asleep(node, False)
-            self.cordon(node, False)
-        except Exception as e:
-            LOG.error("wake of %s failed: %s", node, e)
-            self.backoff_until[node] = self.clock() + self.cfg["failureBackoffSeconds"]
-            # Off the asleep list, so the node's missing heartbeat raises
-            # ZagreusNodeKmsgGone: a node that will not wake is a fault.
+        powered, woke, ready_s = [], [], {}
+        for node in nodes:
             try:
+                self.set_state_annotation(node, "waking")
+                self._power_on(node)
+                powered.append(node)
+            except Exception as e:
+                self._wake_failed(node, e)
+        for node in powered:
+            try:
+                # The deadline runs from the first power-on: they boot together.
+                left = max(0, self.cfg["readyTimeoutSeconds"] - (self.clock() - start))
+                self._wait(lambda: node_fresh_ready(self._node(node) or {}, self.clock(),
+                                                    self._lease_age(node, strict=True)),
+                           left, f"{node} Ready")
+                ready_s[node] = self.clock() - start
+                self._wait(lambda: self._heartbeat_ready(node),
+                           self.cfg["heartbeatPodTimeoutSeconds"], f"{node} heartbeat pod", fatal=False)
+                # Back on the expected-node list before it takes work: its
+                # heartbeats are flowing, and the assertion lingers in the
+                # alert's 150 s lookback while the first ones arrive.
                 self.mark_asleep(node, False)
-                self.set_state_annotation(node, "wake-failed")
-            except Exception as e2:
-                LOG.error("could not clear %s from the asleep list: %s", node, e2)
-            self.record_event("wake-failed", node, error=str(e)[:200])
-            return False
-        # Raise caps from a fresh look, not the snapshot taken while the node
-        # was asleep: uncordoning does not lift a taint (Codex on #242).
+                self.cordon(node, False)
+                woke.append(node)
+            except Exception as e:
+                self._wake_failed(node, e)
+        if not woke:
+            return []
+        # Raise caps from a fresh look, not the snapshot taken while the
+        # nodes were asleep: uncordoning does not lift a taint (Codex on
+        # #242). One raise for every node that woke.
         try:
             snap.update(self.observe())
         except Exception as e:
-            LOG.warning("re-observe after waking %s failed (%s); caps follow next pass", node, e)
+            LOG.warning("re-observe after waking %s failed (%s); caps follow next pass", woke, e)
         else:
             self.apply_caps(snap)
-        self.pending_first_job[node] = start
-        self.idle_since[node] = self.clock()
-        self.awake_since[node] = start
-        self.record_event("woke", node, ready_seconds=round(ready_s))
-        return True
+        for node in woke:
+            self.pending_first_job[node] = start
+            self.idle_since[node] = self.clock()
+            self.awake_since[node] = start
+            self.record_event("woke", node, ready_seconds=round(ready_s[node]))
+        return woke
+
+    def _wake_failed(self, node, e):
+        LOG.error("wake of %s failed: %s", node, e)
+        self.backoff_until[node] = self.clock() + self.cfg["failureBackoffSeconds"]
+        # Off the asleep list, so the node's missing heartbeat raises
+        # ZagreusNodeKmsgGone: a node that will not wake is a fault.
+        try:
+            self.mark_asleep(node, False)
+            self.set_state_annotation(node, "wake-failed")
+        except Exception as e2:
+            LOG.error("could not clear %s from the asleep list: %s", node, e2)
+        self.record_event("wake-failed", node, error=str(e)[:200])
 
     def _power_on(self, node):
         if self.amt.available(node):
