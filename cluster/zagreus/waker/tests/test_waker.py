@@ -255,7 +255,7 @@ class FakeKube:
 
 SET_LABELS = {
     "zagreus-ci": ["self-hosted", "linux", "spritz-ci", "playwright-full"],
-    "zagreus-ci-x64": ["self-hosted", "linux", "X64", "spritz-e2e"],
+    "zagreus-ci-x64": ["self-hosted", "linux", "X64", "spritz-ci"],
     "zagreus-docker-amd64": ["self-hosted", "linux", "X64", "docker-amd64"],
 }
 CEILINGS = {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1}
@@ -414,6 +414,85 @@ class Demand(unittest.TestCase):
         d = w.demand_by_set(self.cfg, [self.job(["self-hosted", "linux", "spritz-light"], 600)],
                             SET_LABELS, self.now)
         self.assertEqual(sum(d.values()), 0)
+
+
+class DemandOnce(unittest.TestCase):
+    def test_a_job_two_sets_could_run_counts_once_for_the_first(self):
+        # 26 Oct 2026: zagreus-ci-x64 now carries X64 + spritz-ci, so a
+        # spritz-ci job matches it and zagreus-ci both.
+        cfg = cfg_with()
+        now = dt.datetime.now(UTC)
+        jobs = [{"repo": "abradner/spritz", "labels": ["self-hosted", "linux", "spritz-ci"],
+                 "created_at": now - dt.timedelta(seconds=90)},
+                {"repo": "abradner/spritz", "labels": ["self-hosted", "linux", "X64", "spritz-ci"],
+                 "created_at": now - dt.timedelta(seconds=90)}]
+        d = w.demand_by_set(cfg, jobs, SET_LABELS, now)
+        self.assertEqual(d["zagreus-ci"], 1)
+        self.assertEqual(d["zagreus-ci-x64"], 1)
+
+
+    def test_codex_a_claim_on_an_overlapping_set_cancels_the_demand(self):
+        # Codex on 346d1b43: x64 claimed the plain spritz-ci job (still
+        # queued at GitHub), but the job counted for zagreus-ci, so the x64
+        # claim could not cancel it and 02 woke for a job already taken.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")  # 01's CI slot taken, 01 kept awake
+        r.tick()
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {"jobRequestId": 5}})
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci-x64")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci-x64"},
+                                                       "creationTimestamp": iso(r.clock())},
+                                          "status": {}})  # claimed, job not started yet
+        r.amt.calls.clear()
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=300)
+        self.assertNotIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_x64_spare_does_not_orphan_zagreus_cis_backlog(self):
+        # Review of c8a33837, P2: plain jobs queued behind a full zagreus-ci
+        # were orphaned because x64, which they also match, had lasting spare.
+        r = Rig()
+        r.tick()
+        for i in range(3):
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                              "status": {"jobRequestId": 50 + i}})
+        for _ in range(4):
+            r.job(["self-hosted", "linux", "spritz-ci"],
+                  age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(r.cfg["heldForSeconds"] // 30 + 10):
+            r.tick(advance=30)
+        self.assertEqual(set(r.waker.orphans), set())
+
+    def test_one_overlapping_slot_absorbs_one_job_not_two(self):
+        cfg = cfg_with()
+        now = dt.datetime.now(UTC)
+        # Two sets counted a job that x64 could also run; x64 has one slot.
+        jobs = [{"repo": "abradner/spritz", "labels": labels, "created_at": now - dt.timedelta(seconds=90)}
+                for labels in (["self-hosted", "linux", "X64"], ["self-hosted", "linux", "spritz-ci"])]
+        alts = {}
+        d = w.demand_by_set(cfg, jobs, SET_LABELS, now, alts=alts)
+        self.assertEqual(sorted(alts), [("zagreus-ci", "zagreus-ci-x64"), ("zagreus-docker-amd64", "zagreus-ci-x64")])
+        live = {"zagreus-docker-amd64": 0, "zagreus-ci": 0, "zagreus-ci-x64": 1}
+        unmet = w.unmet_by_set(d, live, {}, {})
+        after = w.share_overlap(unmet, d, alts, live, {}, {})
+        self.assertEqual(after["zagreus-ci"] + after["zagreus-docker-amd64"], 1)
+
+    def test_spare_on_an_overlapping_set_takes_a_plain_job(self):
+        # 01 awake with its CI slot busy but the x64 slot free: a plain
+        # spritz-ci job can run there, so 02 stays asleep.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        r.tick()
+        r.tick(advance=61 * 60)
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {"jobRequestId": 5}})
+        r.amt.calls.clear()
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=300)
+        self.assertNotIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
 
 
 class Unmet(unittest.TestCase):

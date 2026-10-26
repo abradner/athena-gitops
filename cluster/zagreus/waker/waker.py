@@ -199,9 +199,20 @@ def parse_time(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def demand_by_set(cfg, jobs, set_labels, now, max_age=None):
+def first_set(cfg, job, set_labels):
+    """The set a job counts for: the first in waker.conf order it matches."""
+    for s in cfg["sets"]:
+        if job["repo"].lower() == s["repo"].lower() and \
+                job_match(job["labels"], s["name"], set_labels.get(s["name"], []))[0]:
+            return s["name"]
+    return None
+
+
+def demand_by_set(cfg, jobs, set_labels, now, max_age=None, alts=None):
     """Queued jobs per driven set that have waited past their grace (and,
-    with max_age, no longer than that).
+    with max_age, no longer than that). Each job counts once, for the first
+    set in waker.conf order that it matches. alts, when given, is filled
+    with {(counted set, other set it matches): jobs}, for share_overlap.
 
     jobs: dicts with repo, labels, created_at (aware datetime)."""
     out = {s["name"]: 0 for s in cfg["sets"]}
@@ -218,6 +229,17 @@ def demand_by_set(cfg, jobs, set_labels, now, max_age=None):
             grace = cfg["namedGraceSeconds"] if by_name else cfg["saturationGraceSeconds"]
             if age >= grace:
                 out[s["name"]] += 1
+                if alts is not None:
+                    for o in cfg["sets"]:
+                        if o["name"] != s["name"] and o["repo"].lower() == s["repo"].lower() and \
+                                job_match(job["labels"], o["name"], set_labels.get(o["name"], []))[0]:
+                            key = (s["name"], o["name"])
+                            alts[key] = alts.get(key, 0) + 1
+            # One job runs once: it counts for the first set it matches, in
+            # waker.conf order. Counted for every match, a spritz-ci job
+            # would be demand on both zagreus-ci and zagreus-ci-x64 once x64
+            # carries the class labels (26 Oct 2026).
+            break
     return out
 
 
@@ -238,6 +260,29 @@ def unmet_by_set(demand, live_caps, runners, unstarted):
             continue
         spare = max(0, cap - runners.get(name, 0))
         out[name] = max(0, d - claimed - spare)
+    return out
+
+
+def share_overlap(unmet, demand, alts, live_caps, runners, unstarted):
+    """Unmet demand a set with overlapping labels can still absorb. A job
+    counted for one set (demand_by_set) may be claimed by, or offered to,
+    another set it also matches: that set's claims beyond its own demand,
+    and its spare beyond its own unmet, cancel the first set's unmet for
+    those jobs (Codex on 346d1b43)."""
+    out = dict(unmet)
+    left = {}
+    for name, d in demand.items():
+        cap = live_caps.get(name, 0)
+        own_claims = min(unstarted.get(name, 0), d)
+        surplus_claims = max(0, unstarted.get(name, 0) - d)
+        spare = 0 if cap is None else max(0, cap - runners.get(name, 0))
+        spare_left = max(0, spare - max(0, d - own_claims))
+        left[name] = surplus_claims + spare_left
+    for (counted, other), n in sorted(alts.items()):
+        take = min(out.get(counted, 0), n, left.get(other, 0))
+        if take:
+            out[counted] -= take
+            left[other] -= take
     return out
 
 
@@ -919,6 +964,7 @@ class Waker:
         self.stuck_woke = set()  # sets that already woke a node for a stuck claim
         self.held = {}  # per set: queued jobs older than heldAfterSeconds
         self.jobs = []  # the last demand read, orphans excluded
+        self.alts = {}  # (counted set, other matching set) -> jobs, from the last read
         self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
@@ -1146,6 +1192,7 @@ class Waker:
                         if i in queued and t - at < self.cfg["orphanForSeconds"]}
         jobs = [j for j in jobs if j.get("id") not in self.orphans]
         self.jobs = jobs
+        self.alts = {}
         # Jobs queued past heldAfterSeconds: where the set shows spare,
         # these were turned down and are waiting to be offered again.
         self.held = demand_by_set(dict(self.cfg, namedGraceSeconds=self.cfg["heldAfterSeconds"],
@@ -1153,7 +1200,7 @@ class Waker:
                                                                   self.cfg["saturationGraceSeconds"])),
                                   jobs, labels, now,
                                   max_age=self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"])
-        return demand_by_set(self.cfg, jobs, labels, now)
+        return demand_by_set(self.cfg, jobs, labels, now, alts=self.alts)
 
     # ----- caps
 
@@ -1320,8 +1367,11 @@ class Waker:
         self.last_demand_ok = now
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         if self.mark_orphans(snap):
-            demand = demand_by_set(self.cfg, self.jobs, snap["labels"], dt.datetime.now(dt.timezone.utc))
+            self.alts = {}
+            demand = demand_by_set(self.cfg, self.jobs, snap["labels"], dt.datetime.now(dt.timezone.utc),
+                                   alts=self.alts)
             unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
+        unmet = share_overlap(unmet, demand, self.alts, snap["live"], snap["runners"], snap["unstarted"])
         for name in snap.get("blind", ()):
             unmet[name] = 0
         if any(demand.values()):
@@ -1445,7 +1495,9 @@ class Waker:
                           if j.get("id") is not None and j["id"] not in new
                           and j["repo"].lower() == s["repo"].lower()
                           and (now - j["created_at"]).total_seconds() >= limit
-                          and job_match(j["labels"], name, snap["labels"].get(name, []))[0]),
+                          # The set it counts for, not any it matches: x64's
+                          # spare must not orphan zagreus-ci's backlog.
+                          and first_set(self.cfg, j, snap["labels"]) == name),
                          key=lambda j: j["created_at"])
             # At most as many per pass as there are free slots. Not charged
             # for ever: an orphan takes no slot, and a cumulative charge

@@ -63,7 +63,7 @@ code runs, above).
 |---|---|---|---|---|---|
 | `zagreus-ci-light` | `self-hosted, linux, spritz-light` | the three x64 LXC runners and the two Mac runners, once they carry `spritz-light` (none do yet) | prefers arm runners, may use arm64 builder nodes, falls back to amd64 | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
 | `zagreus-ci` | `self-hosted, linux, spritz-ci, playwright-full` | the three x64 LXC runners and the two Mac runners carry both today | prefers amd64, falls back to arm64 | 0–3 | general CI, the full browser matrix |
-| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-e2e` | the three x64 LXC runners, once they carry `spritz-e2e` (none do yet) | amd64 only | 0–1 | e2e (must not rasterise on arm64) |
+| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-ci` | the x64 LXC runners (e2e asks for `X64, spritz-ci`) | amd64 only | 0–1 | e2e (must not rasterise on arm64) |
 | `zagreus-docker-arm64` | none: name only (`docker-arm64.yaml` says why) | none; the Mac builders keep `docker-arm64` | arm64 builder (always on) | 0–1 | bot-authored PR build checks; not release legs while they would share its data root |
 | `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
 

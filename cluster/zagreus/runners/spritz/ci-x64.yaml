@@ -1,6 +1,8 @@
-# spritz e2e (`runs-on: zagreus-ci-x64`): the Chromium suite that captures the
-# Chromatic archives, which must never rasterise on arm64. amd64 nodes only,
-# so a job here is what wakes an amd64 node when they are all asleep.
+# spritz e2e: the Chromium suite that captures the Chromatic archives, which
+# must never rasterise on arm64. amd64 nodes only, so a job here is what wakes
+# an amd64 node when they are all asleep. It takes jobs that name it and the
+# x64 class jobs (`self-hosted, linux, X64, spritz-ci`: e2e today), beside the
+# classic x64 runners.
 # Same pod as ci.yaml apart from placement; keep the two in step.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -22,7 +24,7 @@ spec:
         # (README, "Runners"). ARC writes them only when it CREATES the scale
         # set: after a change here, delete the AutoscalingRunnerSet and let
         # Argo recreate it, or GitHub keeps the old labels.
-        scaleSetLabels: [self-hosted, linux, X64, spritz-e2e]
+        scaleSetLabels: [self-hosted, linux, X64, spritz-ci]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
@@ -30,9 +32,10 @@ spec:
           name: arc-gha-rs-controller
         minRunners: 0
         # 1 of the four 6 GiB pods the amd64 nodes always fit; ci.yaml has the
-        # other 3 and the arithmetic. Its labels match no job class until the
-        # classic runners carry spritz-e2e, so today it takes only jobs that
-        # name it (bot-authored PRs).
+        # other 3 and the arithmetic. With X64 + spritz-ci it takes spritz's
+        # e2e jobs (runs-on: [self-hosted, linux, X64, spritz-ci]) when the
+        # classic x64 runners are busy: on 26 Oct 2026 three e2e jobs waited
+        # 20 min with this slot idle, because spritz-e2e matched no job.
         maxRunners: 1
         listenerTemplate:
           spec:
