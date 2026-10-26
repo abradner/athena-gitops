@@ -431,6 +431,41 @@ class DemandOnce(unittest.TestCase):
         self.assertEqual(d["zagreus-ci-x64"], 1)
 
 
+    def test_codex_a_claim_on_an_overlapping_set_cancels_the_demand(self):
+        # Codex on 346d1b43: x64 claimed the plain spritz-ci job (still
+        # queued at GitHub), but the job counted for zagreus-ci, so the x64
+        # claim could not cancel it and 02 woke for a job already taken.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")  # 01's CI slot taken, 01 kept awake
+        r.tick()
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {"jobRequestId": 5}})
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci-x64")
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci-x64"},
+                                                       "creationTimestamp": iso(r.clock())},
+                                          "status": {}})  # claimed, job not started yet
+        r.amt.calls.clear()
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=300)
+        self.assertNotIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+    def test_spare_on_an_overlapping_set_takes_a_plain_job(self):
+        # 01 awake with its CI slot busy but the x64 slot free: a plain
+        # spritz-ci job can run there, so 02 stays asleep.
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        r.tick()
+        r.tick(advance=61 * 60)
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {"jobRequestId": 5}})
+        r.amt.calls.clear()
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=300)
+        self.assertNotIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
+
 class Unmet(unittest.TestCase):
     def test_a_claimed_job_is_not_counted_twice(self):
         # Cap 1, one runner claimed for a job GitHub still lists as queued.
