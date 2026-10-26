@@ -18,9 +18,8 @@
 # device on it dropped, /var included. It did so twice in an hour, the second
 # time about a minute after boot. No under-voltage was logged. Talos then
 # cannot finish a reset either, because it waits on the vanished EPHEMERAL
-# volume; power-cycle the node instead. If it recurs with this drive,
-# disabling UAS for the bridge (usb-storage.quirks=<vid>:<pid>:u) is the next
-# step, at some cost in throughput.
+# volume; power-cycle the node instead. It recurred with this drive on 26 Oct,
+# once at idle, so UAS is now off for this enclosure (worker-cm5.schematic.yaml).
 #
 # Contains no secrets; committed as-is, never hydrated.
 machine:
