@@ -276,6 +276,18 @@ def pod_requests(spec):
     return tuple(out)
 
 
+# Taints the node controller puts on a node that is down; the kubelet's
+# first Ready lifts them. Not held against a sleeping node's room.
+DOWN_TAINTS = ("node.kubernetes.io/unreachable", "node.kubernetes.io/not-ready")
+
+
+def untolerated_taints(node, tolerated_keys=()):
+    """Every NoSchedule or NoExecute taint key the runner pods do not
+    tolerate."""
+    return [t.get("key") for t in (node.get("spec") or {}).get("taints") or []
+            if t.get("effect") in ("NoSchedule", "NoExecute") and t.get("key") not in tolerated_keys]
+
+
 def untolerated_taint(node, tolerated_keys=()):
     """The first NoSchedule or NoExecute taint the runner pods do not
     tolerate (they tolerate none), or None. PreferNoSchedule does not stop
@@ -1035,6 +1047,7 @@ class Waker:
                 "retry": ann.get(ANNOTATION_STATE) in RETRY_STATES,
                 "unschedulable": bool(node.get("spec", {}).get("unschedulable")) or taint is not None,
                 "taint": taint,
+                "taints": untolerated_taints(node, cfg["toleratedTaintKeys"]),
                 "waker_cordon": ann.get(ANNOTATION_CORDON) == "true",
                 # Only the full mode keeps the list: in observe or caps a
                 # leftover list (say, after stepping back from full) must
@@ -1449,7 +1462,12 @@ class Waker:
     def _room_if_awake(self, snap, nodes):
         """Caps the nodes would add once awake, from their room on paper."""
         states = snap["states"]
-        hyp = {k: (dict(v, ready=True, asleep=False, unschedulable=v.get("taint") is not None)
+        # A powered-off node carries the unreachable taint, which lifts once
+        # it is Ready: held against it, every node looked roomless and every
+        # wake woke them all (live, 26 Oct 2026).
+        hyp = {k: (dict(v, ready=True, asleep=False,
+                        unschedulable=any(t not in DOWN_TAINTS for t in v.get("taints", [v.get("taint")])
+                                          if t is not None))
                    if k in nodes else v) for k, v in states.items()}
         # Unplaced claims are need (the caller adds them), not room: placed
         # on paper only in `after`, each would count as a slot the node may

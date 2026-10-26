@@ -1540,6 +1540,44 @@ class ReofferFindings(unittest.TestCase):
         self.assertEqual(self.ci_patches(r), [3])  # one listener restart, never 0 -> 1 -> 3
         self.assertEqual(r.kube.asleep(), set())
 
+    def down_taints(self, r):
+        """As the node controller leaves a powered-off node; the kubelet's
+        first Ready lifts them."""
+        for n in ("zag-amd64-01", "zag-amd64-02"):
+            r.kube.taint(n, "node.kubernetes.io/unreachable", effect="NoExecute")
+            r.kube.taint(n, "node.kubernetes.io/unreachable")
+        real = r.amt.request_power
+
+        def boot_lifts(node, state):
+            real(node, state)
+            if state == w.POWER_ON:
+                r.kube.nodes[node]["spec"]["taints"] = [
+                    t for t in r.kube.nodes[node]["spec"].get("taints", [])
+                    if t["key"] != "node.kubernetes.io/unreachable"]
+        r.amt.request_power = boot_lifts
+
+    def test_live_a_sleeping_nodes_unreachable_taint_is_not_held_against_its_room(self):
+        # Live, 26 Oct 13:10 AEDT, first wake on b179c304: one zagreus-ci job
+        # woke both nodes. A powered-off node carries the unreachable taint,
+        # so on paper neither node had any room once awake.
+        r = Rig()
+        r.put_all_to_sleep()
+        self.down_taints(r)
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+
+    def test_a_real_taint_beside_the_unreachable_one_still_counts(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        self.down_taints(r)
+        r.kube.taint("zag-amd64-01", "example.com/maintenance")
+        r.amt.calls.clear()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+
     def test_demand_one_node_covers_wakes_only_that_node(self):
         r = Rig()
         r.put_all_to_sleep()
