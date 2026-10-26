@@ -199,6 +199,15 @@ def parse_time(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def first_set(cfg, job, set_labels):
+    """The set a job counts for: the first in waker.conf order it matches."""
+    for s in cfg["sets"]:
+        if job["repo"].lower() == s["repo"].lower() and \
+                job_match(job["labels"], s["name"], set_labels.get(s["name"], []))[0]:
+            return s["name"]
+    return None
+
+
 def demand_by_set(cfg, jobs, set_labels, now, max_age=None, alts=None):
     """Queued jobs per driven set that have waited past their grace (and,
     with max_age, no longer than that). Each job counts once, for the first
@@ -1486,7 +1495,9 @@ class Waker:
                           if j.get("id") is not None and j["id"] not in new
                           and j["repo"].lower() == s["repo"].lower()
                           and (now - j["created_at"]).total_seconds() >= limit
-                          and job_match(j["labels"], name, snap["labels"].get(name, []))[0]),
+                          # The set it counts for, not any it matches: x64's
+                          # spare must not orphan zagreus-ci's backlog.
+                          and first_set(self.cfg, j, snap["labels"]) == name),
                          key=lambda j: j["created_at"])
             # At most as many per pass as there are free slots. Not charged
             # for ever: an orphan takes no slot, and a cumulative charge
