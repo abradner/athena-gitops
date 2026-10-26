@@ -1,5 +1,5 @@
 # zagreus arm64 image builder (today zag-arm64-02): a CM5 8 GB Lite whose /var
-# lives on a 256 GB NVMe SSD in a USB 3 (UASP) enclosure (Realtek RTL9210B),
+# lives on a 256 GB NVMe SSD in a USB 3 enclosure (UASP-capable; UAS is turned off, below) (Realtek RTL9210B),
 # until an NVMe HAT replaces it. Always on, so
 # arm64 image builds no longer wait for a Mac to be awake. It runs the
 # docker-arm64 dind scale set and the light lane (unprivileged, no docker

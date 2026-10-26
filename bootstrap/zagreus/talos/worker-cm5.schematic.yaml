@@ -30,7 +30,7 @@
 # 0bda:9210). Over UAS, a write that stalls for 5 s sends the kernel into its
 # abort path, the CM5's xHCI controller stops answering ("HC died"), and every
 # USB device drops, /var included. That happened on a SATA SSD and on this
-# NVMe (23 and 26 Oct 2026, once at idle), so the drive was not the cause.
+# NVMe (23 and 26 Oct 2026, once at idle), so the drive was not the sole cause.
 # usb-storage handles the same enclosure without UAS: slower, and so far
 # without the controller death. The quirk names one USB ID, so it does nothing
 # on CM5s without that enclosure.
