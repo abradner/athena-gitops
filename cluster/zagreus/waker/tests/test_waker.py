@@ -255,7 +255,7 @@ class FakeKube:
 
 SET_LABELS = {
     "zagreus-ci": ["self-hosted", "linux", "spritz-ci", "playwright-full"],
-    "zagreus-ci-x64": ["self-hosted", "linux", "X64", "spritz-e2e"],
+    "zagreus-ci-x64": ["self-hosted", "linux", "X64", "spritz-ci"],
     "zagreus-docker-amd64": ["self-hosted", "linux", "X64", "docker-amd64"],
 }
 CEILINGS = {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1}
@@ -414,6 +414,21 @@ class Demand(unittest.TestCase):
         d = w.demand_by_set(self.cfg, [self.job(["self-hosted", "linux", "spritz-light"], 600)],
                             SET_LABELS, self.now)
         self.assertEqual(sum(d.values()), 0)
+
+
+class DemandOnce(unittest.TestCase):
+    def test_a_job_two_sets_could_run_counts_once_for_the_first(self):
+        # 26 Oct 2026: zagreus-ci-x64 now carries X64 + spritz-ci, so a
+        # spritz-ci job matches it and zagreus-ci both.
+        cfg = cfg_with()
+        now = dt.datetime.now(UTC)
+        jobs = [{"repo": "abradner/spritz", "labels": ["self-hosted", "linux", "spritz-ci"],
+                 "created_at": now - dt.timedelta(seconds=90)},
+                {"repo": "abradner/spritz", "labels": ["self-hosted", "linux", "X64", "spritz-ci"],
+                 "created_at": now - dt.timedelta(seconds=90)}]
+        d = w.demand_by_set(cfg, jobs, SET_LABELS, now)
+        self.assertEqual(d["zagreus-ci"], 1)
+        self.assertEqual(d["zagreus-ci-x64"], 1)
 
 
 class Unmet(unittest.TestCase):

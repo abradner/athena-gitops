@@ -201,7 +201,8 @@ def parse_time(value):
 
 def demand_by_set(cfg, jobs, set_labels, now, max_age=None):
     """Queued jobs per driven set that have waited past their grace (and,
-    with max_age, no longer than that).
+    with max_age, no longer than that). Each job counts once, for the first
+    set in waker.conf order that it matches.
 
     jobs: dicts with repo, labels, created_at (aware datetime)."""
     out = {s["name"]: 0 for s in cfg["sets"]}
@@ -218,6 +219,11 @@ def demand_by_set(cfg, jobs, set_labels, now, max_age=None):
             grace = cfg["namedGraceSeconds"] if by_name else cfg["saturationGraceSeconds"]
             if age >= grace:
                 out[s["name"]] += 1
+            # One job runs once: it counts for the first set it matches, in
+            # waker.conf order. Counted for every match, a spritz-ci job
+            # would be demand on both zagreus-ci and zagreus-ci-x64 once x64
+            # carries the class labels (26 Oct 2026).
+            break
     return out
 
 
