@@ -23,6 +23,8 @@ spec:
     - 'https://postfinance.github.io/kubelet-csr-approver'
     - 'https://victoriametrics.github.io/helm-charts/'
     - 'https://prometheus-community.github.io/helm-charts'
+    # OpenTelemetry collector (cluster/core/observability/otel-collector-app.yaml).
+    - 'https://open-telemetry.github.io/opentelemetry-helm-charts'
   destinations:
     - server: 'https://kubernetes.default.svc'
       namespace: argocd

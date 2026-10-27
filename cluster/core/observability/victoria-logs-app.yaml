@@ -201,6 +201,42 @@ spec:
                       }
                     }
                   }
+
+                  # 5. Lift the trace id to a top-level `trace_id`, so a log
+                  #    line in VictoriaLogs can link to its trace in
+                  #    VictoriaTraces (Grafana derived field) and a trace can
+                  #    find its logs. Only ever ADDS a field; nothing above
+                  #    changes. Sources, in order:
+                  #    - a JSON line's own trace_id field (structured loggers,
+                  #      spritz's [error_report] JSON);
+                  #    - a `trace=<32 hex>` tag anywhere in the line. Rails
+                  #      tagged logging puts it among the bracketed tags, whose
+                  #      count and order vary by process, so it is searched
+                  #      for, not parsed by position. For a JSON line the
+                  #      search runs over the whole re-encoded object, which
+                  #      also catches a tags array.
+                  #    Exactly 32 lowercase hex and not all zeros (the W3C
+                  #    "invalid" id), else no field at all.
+                  #
+                  #    in : .log = "[3f2a] [Mozilla/5.0] [trace=4bf92f3577b34da6a3ce929d0e0e4736] Started GET \"/portal\""
+                  #    out: .trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+                  #    in : .log = {"msg":"boom","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736"}
+                  #    out: .trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+                  #    in : .log = "[trace=4bf92f3577b34da6a3ce929d0e0e47361] ..." (33 hex), or no tag
+                  #    out: no trace_id
+                  tid = ""
+                  if is_object(.log) {
+                    candidate = to_string(.log.trace_id) ?? ""
+                    if match(candidate, r'^[0-9a-f]{32}$') { tid = candidate }
+                  }
+                  if tid == "" {
+                    hay = if is_string(.log) { to_string(.log) ?? "" } else { encode_json(.log) }
+                    found, ferr = parse_regex(hay, r'trace=(?P<id>[0-9a-f]{32})(?:[^0-9a-f]|$)')
+                    if ferr == null { tid = to_string(found.id) }
+                  }
+                  if tid != "" && tid != "00000000000000000000000000000000" {
+                    .trace_id = tid
+                  }
             sinks:
               # Ship to the out-of-cluster VictoriaLogs (obs-logs) by
               # completing the CHART'S OWN vlogs sink rather than adding a
