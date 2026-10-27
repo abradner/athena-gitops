@@ -70,6 +70,14 @@ data:
   # process. Older images ignore it, so it lands before the image.
   TRANSCODER_INTERNAL_HOST: spritz-web
   CANONICAL_HOST: staging.rabalex.wedding
+  # The host every guest-facing link is built on (/t/, /day/, /n/, /s/,
+  # unsubscribe, QR codes): abradner/spritz GuestHost. A bare host name, no
+  # scheme. REQUIRED at boot by app images from the guest-host PR onward, in
+  # every process; older images ignore it, so it lands BEFORE the image.
+  # Equal to CANONICAL_HOST, the app behaves exactly as before: one host, no
+  # fence. Flip it to the spritz.rsvp name only once that host's listener,
+  # certificate and DNS answer (cluster/core/networking).
+  GUEST_HOST: staging.rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
   # Interim relay: Gmail (app password in the spritz-staging 1Password item;
