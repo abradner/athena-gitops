@@ -50,11 +50,22 @@ load-balancing tier in front first.
    apps' exporters then fail to connect and drop spans after their own small,
    capped in-memory queue; no request waits on telemetry.
 
-**When obs-traces is away**, spans and events queue on the collector's disk
-(about 1-2 GiB of traces at the configured caps), retried for as long as the
-queue has room. When it is full, new data is refused and counted in
-`otelcol_exporter_enqueue_failed_*`; the collector's own metrics are scraped by
-vmagent and alerted on from the out-of-cluster rules.
+**When obs-traces is away**, spans and events queue on the collector's disk,
+capped in bytes: 512 MiB of traces (about a day at the assumed staging rate)
+and 128 MiB of product events (about three days), with up to ~1.25 GiB peak
+on the node while bbolt compacts at start-up. Batches are retried for as long
+as the queue has room. When it is full, new data is refused and counted in
+`otelcol_exporter_enqueue_failed_*`. The collector's own metrics are scraped by
+vmagent; the alerts on them (enqueue and send failures, queue fill, refused
+data, the collector absent) are in the asn-infra observability rules
+(`obs-traces.yaml`), evaluated outside this cluster.
+
+**Turning a sender on is its own change.** `spritz-staging` carries
+`OTEL_SERVICE_NAME` and the protocol, but not `OTEL_EXPORTER_OTLP_ENDPOINT`.
+That one line lands in a separate PR once obs-traces is verified reachable by
+its internal name: until the internal record exists the name resolves through
+a public wildcard, and spans would leave for somewhere that is not the store.
+The collector itself can run before that; with no senders it sends nothing.
 
 ## Why the stateful half left
 

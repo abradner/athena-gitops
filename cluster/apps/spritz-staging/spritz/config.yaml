@@ -69,21 +69,19 @@ data:
   # REQUIRED and non-blank at boot by app images from that PR onward, in every
   # process. Older images ignore it, so it lands before the image.
   TRANSCODER_INTERNAL_HOST: spritz-web
-  # OpenTelemetry (spritz tracing phase 0): where the app sends spans and
-  # product events. The in-cluster collector
-  # (cluster/core/observability/otel-collector-app.yaml) scrubs, samples and
-  # forwards them out of the cluster.
+  # OpenTelemetry (spritz tracing). Tracing on staging is OFF until its own
+  # PR adds the one line that turns it on:
+  #   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability:4318
+  # That PR waits for the obs-traces store to be verified reachable under
+  # its internal name (asn-infra). Until then the name resolves through a
+  # public wildcard, and an app sending to the collector would have the
+  # collector sending spans somewhere that is not the store. The Rails
+  # initializer starts the SDK only when the endpoint is set, so without it
+  # nothing is sent and nothing fails.
   #
-  # INERT until the image carries the OpenTelemetry gems (spritz tracing
-  # phase 1). Older images ignore both keys, so they land ahead of that
-  # image. The Rails initializer is optional-by-design: it starts the SDK
-  # only when the endpoint is set, and never fails boot without it.
-  #
-  # OFF SWITCH: delete OTEL_EXPORTER_OTLP_ENDPOINT and restart the pods; the
-  # SDK is then never started. (OTEL_SDK_DISABLED=true does the same without
-  # removing the endpoint.) Staging only: spritz-production has no endpoint
-  # until tracing phase 5.
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability:4318
+  # OFF SWITCH, once on: delete the endpoint line and restart the pods (or
+  # set OTEL_SDK_DISABLED=true). The protocol below is inert without an
+  # endpoint, and inert on images without the OTel gems (phase 1).
   OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
   CANONICAL_HOST: staging.rabalex.wedding
   CONTACT_EMAIL: alex@bradner.net

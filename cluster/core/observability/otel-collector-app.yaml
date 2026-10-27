@@ -102,8 +102,12 @@ spec:
 
         # The disk queue. Disposable, like vmagent's buffer: losing it costs
         # at most the queued window, never history. local-path (the default
-        # StorageClass) does not enforce the size; the queue_size caps below
-        # are what bound it.
+        # StorageClass) does NOT enforce this size: the byte caps on the two
+        # sending queues are what bound it. Budget, worst case:
+        #   traces queue 512 MiB + product queue 128 MiB = 640 MiB live data,
+        #   x2 while bbolt compacts at startup (it writes a compacted copy
+        #   beside the original) = ~1.25 GiB peak, inside the 1.5 GiB budget
+        #   for a node-local volume on a shared worker. See file_storage.
         statefulset:
           volumeClaimTemplates:
             - metadata:
@@ -154,11 +158,18 @@ spec:
               directory: /var/lib/otelcol/queue
               create_directory: true
               timeout: 2s
-              # Reclaim space after a backlog drains; otherwise the bbolt file
-              # keeps its high-water size for ever.
+              # Compaction rewrites the bbolt file into a fresh copy, so it
+              # briefly needs the file's size again in free space. on_start
+              # only: a backlog's high-water file is reclaimed at the next pod
+              # start, when the queue is at its fullest the peak is ~2 x 640
+              # MiB (see the PVC note above). on_rebound is OFF: it would
+              # compact while the store is recovering and data still arrives,
+              # which is when disk is tightest. Between restarts the file
+              # stays at its high-water size (bbolt reuses its free pages, so
+              # it does not grow past the caps).
               compaction:
                 on_start: true
-                on_rebound: true
+                on_rebound: false
                 directory: /var/lib/otelcol/queue
 
           receivers:
@@ -242,16 +253,22 @@ spec:
                   - 'replace_pattern(span.attributes["http.route"], "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
                   - 'replace_pattern(span.name, "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
                   # Day board codes: /day/:code and /api/v1/day/:code/... (the
-                  # same pattern covers both). Also rewrites the guide pages
-                  # (/day/seating and friends) to /day/:code: over-scrubbing,
-                  # accepted rather than keeping an allow-list of segments here
-                  # that would drift from the app's.
-                  - 'replace_pattern(span.attributes["url.full"], "/day/[^/?#]+", "/day/:code")'
-                  - 'replace_pattern(span.attributes["url.path"], "/day/[^/?#]+", "/day/:code")'
-                  - 'replace_pattern(span.attributes["http.url"], "/day/[^/?#]+", "/day/:code")'
-                  - 'replace_pattern(span.attributes["http.target"], "/day/[^/?#]+", "/day/:code")'
-                  - 'replace_pattern(span.attributes["http.route"], "/day/[^/?#]+", "/day/:code")'
-                  - 'replace_pattern(span.name, "/day/[^/?#]+", "/day/:code")'
+                  # same pattern covers both). The guide pages are NOT codes
+                  # and keep their name, as in the app's scrubber (spritz
+                  # spec/fixtures/parity/telemetry_token_paths.json; the list
+                  # is DayBoards::GUIDE_SEGMENTS): /day/seating stays
+                  # /day/seating. RE2 has no lookahead, so the exception is a
+                  # `where` on the whole value: a value holding a guide page
+                  # is left alone, which is exact for a single path or URL.
+                  # A new guide page added in the app and not here gets
+                  # rewritten to /day/:code: over-scrubbing, the safe
+                  # direction.
+                  - 'replace_pattern(span.attributes["url.full"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["url.full"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["url.path"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["url.path"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["http.url"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.url"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["http.target"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.target"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["http.route"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.route"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.name, "/day/[^/?#]+", "/day/:code") where not IsMatch(span.name, "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
                   # Active Storage: a signed blob id is a bearer capability, and
                   # the trailing filename is whatever the uploader called the
                   # file (often a person's name). Everything after the
@@ -261,6 +278,12 @@ spec:
                   - 'replace_pattern(span.attributes["http.url"], "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
                   - 'replace_pattern(span.attributes["http.target"], "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
                   - 'replace_pattern(span.name, "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  # The Disk service's encoded key is a signed token too.
+                  - 'replace_pattern(span.attributes["url.full"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.attributes["url.path"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.attributes["http.url"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.attributes["http.target"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.name, "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
                 - context: spanevent
                   statements:
                   # Span EVENTS: Rails records an exception as an event, and its
@@ -270,12 +293,16 @@ spec:
                   # that follows a path (a "/" then no space), so a Ruby method
                   # name ending in "?" in the same message survives. The
                   # filename after an Active Storage id stops at whitespace.
+                  # Free text can hold several paths, so the /day/ guide-page
+                  # exception above is not applied here: a guide page in an
+                  # event message becomes /day/:code (over-scrubbing).
                   - 'replace_all_patterns(spanevent.attributes, "value", "(/[^ ?#]*)[?#][^ ]*", "$${1}")'
                   - 'replace_all_patterns(spanevent.attributes, "value", "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token")'
                   - 'replace_all_patterns(spanevent.attributes, "value", "/n/[^/?# ]+", "/n/:token")'
                   - 'replace_all_patterns(spanevent.attributes, "value", "/unsubscribe/[^/?# ]+", "/unsubscribe/:token")'
                   - 'replace_all_patterns(spanevent.attributes, "value", "/day/[^/?# ]+", "/day/:code")'
                   - 'replace_all_patterns(spanevent.attributes, "value", "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key")'
 
             # --- 3. classify: mark recurring noise ---------------------------
             #
@@ -410,8 +437,6 @@ spec:
 
             batch:
               send_batch_size: 512
-              # Bounds one queued request, which with queue_size below bounds
-              # the disk queue: 1000 x 1024 spans at ~1-2 KiB is ~1-2 GiB.
               send_batch_max_size: 1024
               timeout: 5s
 
@@ -428,6 +453,55 @@ spec:
               logs:
                 log_record:
                   - 'instrumentation_scope.name != "spritz.analytics"'
+
+            # The same redaction as transform/scrub, for product events: a
+            # second layer behind the app (the analytics lane allow-lists
+            # props and the app's scrubber runs over log records too). Event
+            # props have no fixed keys, so every attribute value and the body
+            # get the free-text rules; as for span events, a /day/ guide page
+            # in a value becomes /day/:code (over-scrubbing).
+            transform/scrub-product:
+              error_mode: ignore
+              log_statements:
+                - context: log
+                  statements:
+                  - 'delete_key(log.attributes, "url.query")'
+                  - 'delete_key(log.attributes, "url.fragment")'
+                  - 'delete_matching_keys(log.attributes, "^http[.](request|response)[.]header[.]")'
+                  - 'replace_all_patterns(log.attributes, "value", "(/[^ ?#]*)[?#][^ ]*", "$${1}")'
+                  - 'replace_all_patterns(log.attributes, "value", "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token")'
+                  - 'replace_all_patterns(log.attributes, "value", "/n/[^/?# ]+", "/n/:token")'
+                  - 'replace_all_patterns(log.attributes, "value", "/unsubscribe/[^/?# ]+", "/unsubscribe/:token")'
+                  - 'replace_all_patterns(log.attributes, "value", "/day/[^/?# ]+", "/day/:code")'
+                  - 'replace_all_patterns(log.attributes, "value", "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_all_patterns(log.attributes, "value", "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key")'
+                  # The body: a string body (replace_pattern) or a map body
+                  # (replace_all_patterns). Guarded by type: unguarded, the
+                  # wrong-shape call errors and error_mode: ignore logs a
+                  # warning per record, which would flood Vector.
+                  - 'replace_pattern(log.body, "(/[^ ?#]*)[?#][^ ]*", "$${1}") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/n/[^/?# ]+", "/n/:token") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/unsubscribe/[^/?# ]+", "/unsubscribe/:token") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/day/[^/?# ]+", "/day/:code") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key") where IsString(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "(/[^ ?#]*)[?#][^ ]*", "$${1}") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/n/[^/?# ]+", "/n/:token") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/unsubscribe/[^/?# ]+", "/unsubscribe/:token") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/day/[^/?# ]+", "/day/:code") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key") where IsMap(log.body)'
+
+            # Product events batch on their own, and slowly. The queue below
+            # is sized in bytes, so batch size no longer decides how much it
+            # holds; a long timeout just keeps request overhead (and bbolt
+            # writes) down for a trickle of small records.
+            batch/product:
+              send_batch_size: 2000
+              send_batch_max_size: 4000
+              timeout: 60s
 
           exporters:
             # TRAILING DOTS on both hostnames — load-bearing, same reason as
@@ -458,11 +532,18 @@ spec:
                 enabled: true
                 storage: file_storage/queue
                 num_consumers: 2
-                # Requests (batches of at most 1024 spans, see batch). Full
-                # queue = new spans refused and counted in
+                # Sized in BYTES (serialised size), not requests: a request
+                # count bounds neither disk use nor outage time, because a
+                # request can be 1 span or 1024. 512 MiB of the disk budget.
+                # At an assumed staging rate after sampling of ~5 spans/s x
+                # ~1 KiB (~18 MiB/h), that is roughly a day of store outage;
+                # production at 20% sampling is the same order. Re-measure
+                # from otelcol_exporter_queue_size once real traffic flows.
+                # Full queue = new spans refused and counted in
                 # otelcol_exporter_enqueue_failed_spans; the app is never
                 # blocked by it.
-                queue_size: 1000
+                sizer: bytes
+                queue_size: 536870912
 
             otlphttp/product:
               # The product-events VictoriaLogs on the same container, through
@@ -491,10 +572,14 @@ spec:
                 enabled: true
                 storage: file_storage/queue
                 num_consumers: 1
-                # Product events are small and few; never sampled, so the
-                # queue is the only thing between an obs-traces outage and a
-                # gap in the funnel.
-                queue_size: 500
+                # Never sampled, so this queue is the only thing between an
+                # obs-traces outage and a gap in the funnel. BYTES, 128 MiB of
+                # the disk budget. At an assumed staging rate of ~1 event/s x
+                # ~0.5 KiB (~42 MiB/day), that is ~3 days of outage; even
+                # 10x that rate keeps over 7 hours, and production volume
+                # will be re-measured before its phase.
+                sizer: bytes
+                queue_size: 134217728
 
           service:
             extensions: [health_check, file_storage/queue]
@@ -525,7 +610,8 @@ spec:
                 processors:
                   - memory_limiter
                   - filter/product
-                  - batch
+                  - transform/scrub-product
+                  - batch/product
                 exporters: [otlphttp/product]
   destination:
     server: 'https://kubernetes.default.svc'
