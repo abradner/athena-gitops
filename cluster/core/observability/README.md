@@ -51,14 +51,14 @@ load-balancing tier in front first.
    capped in-memory queue; no request waits on telemetry.
 
 **When obs-traces is away**, spans and events queue on the collector's disk,
-capped in bytes: 512 MiB of traces (about a day at the assumed staging rate)
-and 128 MiB of product events (about three days), with up to ~1.25 GiB peak
+capped in bytes: 384 MiB of traces (about 21 hours at the assumed staging
+rate) and 128 MiB of product events (about three days), with about 1.5 GiB peak
 on the node while bbolt compacts at start-up. Batches are retried for as long
 as the queue has room. When it is full, new data is refused and counted in
 `otelcol_exporter_enqueue_failed_*`. The collector's own metrics are scraped by
 vmagent; the alerts on them (enqueue and send failures, queue fill, refused
-data, the collector absent) are in the asn-infra observability rules
-(`obs-traces.yaml`), evaluated outside this cluster.
+data, the collector absent) are in asn-infra
+`observability/rules/otel-collector.yaml`, evaluated outside this cluster.
 
 **Turning a sender on is its own change.** `spritz-staging` carries
 `OTEL_SERVICE_NAME` and the protocol, but not `OTEL_EXPORTER_OTLP_ENDPOINT`.

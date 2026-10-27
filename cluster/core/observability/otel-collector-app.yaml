@@ -104,10 +104,11 @@ spec:
         # at most the queued window, never history. local-path (the default
         # StorageClass) does NOT enforce this size: the byte caps on the two
         # sending queues are what bound it. Budget, worst case:
-        #   traces queue 512 MiB + product queue 128 MiB = 640 MiB live data,
-        #   x2 while bbolt compacts at startup (it writes a compacted copy
-        #   beside the original) = ~1.25 GiB peak, inside the 1.5 GiB budget
-        #   for a node-local volume on a shared worker. See file_storage.
+        #   traces queue 384 MiB + product queue 128 MiB = 512 MiB live data,
+        #   plus bbolt page overhead, x2 while bbolt compacts at startup (it
+        #   writes a compacted copy beside the original): about 1.5 GiB peak,
+        #   the budget for a node-local volume on a shared worker. See
+        #   file_storage.
         statefulset:
           volumeClaimTemplates:
             - metadata:
@@ -161,9 +162,10 @@ spec:
               # Compaction rewrites the bbolt file into a fresh copy, so it
               # briefly needs the file's size again in free space. on_start
               # only: a backlog's high-water file is reclaimed at the next pod
-              # start, when the queue is at its fullest the peak is ~2 x 640
-              # MiB (see the PVC note above). on_rebound is OFF: it would
-              # compact while the store is recovering and data still arrives,
+              # start; with the queue at its fullest the peak is about 2 x
+              # 512 MiB plus overhead (see the PVC note above). on_rebound is
+              # OFF: it would compact while the store is recovering and data
+              # still arrives,
               # which is when disk is tightest. Between restarts the file
               # stays at its high-water size (bbolt reuses its free pages, so
               # it does not grow past the caps).
@@ -256,13 +258,15 @@ spec:
                   # same pattern covers both). The guide pages are NOT codes
                   # and keep their name, as in the app's scrubber (spritz
                   # spec/fixtures/parity/telemetry_token_paths.json; the list
-                  # is DayBoards::GUIDE_SEGMENTS): /day/seating stays
+                  # is spritz DayBoards::GUIDE_SEGMENTS in
+                  # app/services/day_boards.rb, copied here by hand):
+                  # /day/seating stays
                   # /day/seating. RE2 has no lookahead, so the exception is a
                   # `where` on the whole value: a value holding a guide page
                   # is left alone, which is exact for a single path or URL.
                   # A new guide page added in the app and not here gets
-                  # rewritten to /day/:code: over-scrubbing, the safe
-                  # direction.
+                  # rewritten to /day/:code: drift fails safe (over-scrubs),
+                  # never leaks a code.
                   - 'replace_pattern(span.attributes["url.full"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["url.full"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
                   - 'replace_pattern(span.attributes["url.path"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["url.path"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
                   - 'replace_pattern(span.attributes["http.url"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.url"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
@@ -460,6 +464,11 @@ spec:
             # props have no fixed keys, so every attribute value and the body
             # get the free-text rules; as for span events, a /day/ guide page
             # in a value becomes /day/:code (over-scrubbing).
+            # Scope: TOP-LEVEL attribute values and the body only.
+            # replace_all_patterns does not descend into nested maps. That
+            # is enough because the analytics provider emits flat attributes
+            # (analytics.subject.*, spritz.props.*, spritz.context.*), as
+            # agreed at the analytics seam; nested maps are not expected.
             transform/scrub-product:
               error_mode: ignore
               log_statements:
@@ -534,16 +543,16 @@ spec:
                 num_consumers: 2
                 # Sized in BYTES (serialised size), not requests: a request
                 # count bounds neither disk use nor outage time, because a
-                # request can be 1 span or 1024. 512 MiB of the disk budget.
+                # request can be 1 span or 1024. 384 MiB of the disk budget.
                 # At an assumed staging rate after sampling of ~5 spans/s x
-                # ~1 KiB (~18 MiB/h), that is roughly a day of store outage;
+                # ~1 KiB (~18 MiB/h), that is about 21 hours of store outage;
                 # production at 20% sampling is the same order. Re-measure
                 # from otelcol_exporter_queue_size once real traffic flows.
                 # Full queue = new spans refused and counted in
                 # otelcol_exporter_enqueue_failed_spans; the app is never
                 # blocked by it.
                 sizer: bytes
-                queue_size: 536870912
+                queue_size: 402653184
 
             otlphttp/product:
               # The product-events VictoriaLogs on the same container, through
