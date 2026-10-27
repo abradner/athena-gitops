@@ -154,7 +154,9 @@ spec:
               tunnel: simplytics
       containers:
         - name: cloudflared
-          image: docker.io/cloudflare/cloudflared:2026.8.3
+          # 2026.10.2 is the floor: the release that drops the compromised
+          # eMudhra intermediates (Cloudflare advisory, 20 Oct 2026).
+          image: docker.io/cloudflare/cloudflared:2026.10.4
           args:
             - tunnel
             - --config
