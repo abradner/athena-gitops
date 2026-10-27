@@ -82,7 +82,7 @@ spec:
         # No supplementalGroups: Talos creates /dev/dri/renderD128 mode 0666.
       containers:
         - name: transcoder
-          image: ghcr.io/abradner/spritz-transcoder:v202610251757@sha256:085f6c8562232af291fe4b683c64742a93589764178fd99cc54deb3494788906
+          image: ghcr.io/abradner/spritz-transcoder:v202610270042@sha256:43744483396901834f061c57524c2da5649909bf7027468e123ccf8bdc129998
           env:
             # In-cluster Service, never the public host: no tunnel, no edge.
             - name: TRANSCODER_API_URL
