@@ -1,0 +1,660 @@
+---
+# OpenTelemetry collector: the in-cluster hop for application traces and
+# product events. Spritz is the first (and so far only) sender.
+#
+# Same shape as vmagent and Vector (Placement Doctrine, rule 3): a forwarder
+# that runs here because the senders run here, buffers to a small local disk,
+# and ships everything OUTWARD. The stores live on the obs-traces container on
+# the hypervisor tier, not in this cluster:
+#
+#   traces          -> VictoriaTraces    (obs-traces, insert port :10481)
+#   product events  -> VictoriaLogs #2   (obs-traces, insert port :9481), a separate
+#                      instance from obs-logs: different retention (months,
+#                      not 30 days) and different readers.
+#
+# Application LOGS do not come through here. They stay on Vector -> obs-logs
+# (victoria-logs-app.yaml), which is where the trace id is lifted out of each
+# log line so a log line can link to its trace.
+#
+# What it does to the data, in pipeline order (details beside each part):
+#   1. memory_limiter   refuse rather than OOM
+#   2. scrub            the second privacy layer: token-shaped URL segments
+#                       replaced, query strings, fragments and headers dropped.
+#                       The first layer is in the app (spritz
+#                       Spritz::Telemetry::ScrubbingExporter); this one exists
+#                       for the span the app forgot, not instead of it.
+#   3. classify         mark recurring noise so sampling can thin it
+#   4. tail_sampling    keep every error, slow trace and Temporal workflow;
+#                       a share of the rest
+#   5. batch -> otlphttp with a disk-backed queue
+#
+# OFF SWITCHES, finest first (all reversible, no image rebuild):
+#   - per app: unset OTEL_EXPORTER_OTLP_ENDPOINT in that app's ConfigMap; the
+#     app's SDK is then never started.
+#   - whole collector: replicaCount: 0 below. Senders' exporters then fail to
+#     connect and drop after their own small in-memory queue (the Ruby SDK's
+#     BatchSpanProcessor caps it); nothing blocks a request on this.
+#
+# Senders reach it at http://otel-collector.observability:4318 (OTLP/HTTP) or
+# :4317 (gRPC). ClusterIP only: nothing outside the cluster can post to it.
+# Browser spans arrive through the app (POST /api/telemetry/traces on
+# spritz-web), never directly.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-collector
+  namespace: argocd
+spec:
+  project: core
+  source:
+    repoURL: 'https://open-telemetry.github.io/opentelemetry-helm-charts'
+    chart: opentelemetry-collector
+    # Chart 0.177.0 ships collector 0.163.2 (its appVersion); the image tag
+    # below is pinned to the same so a chart bump is a deliberate, visible
+    # image bump too.
+    targetRevision: 0.177.0
+    helm:
+      values: |
+        # Stable names: senders' config (OTEL_EXPORTER_OTLP_ENDPOINT) points
+        # at otel-collector.observability, so the Service name must not move
+        # with the release or chart name.
+        fullnameOverride: otel-collector
+
+        # StatefulSet, not Deployment, with exactly ONE replica.
+        #
+        # One replica: tail sampling decides per TRACE, so every span of a
+        # trace must reach the same collector. Two replicas behind a
+        # ClusterIP Service would each see part of each trace and decide on
+        # fragments. Scaling out needs a load-balancing exporter tier keyed
+        # on trace id first; at Spritz's volume one replica is ample.
+        #
+        # StatefulSet: the disk queue (file_storage below) is a bbolt file
+        # that one process holds a lock on. A Deployment's rolling update
+        # starts the new pod before stopping the old, and both would want the
+        # same file; a StatefulSet stops the old pod first. It is also the
+        # chart's own way to get a PVC per pod (volumeClaimTemplates), the
+        # same pattern vmagent's statefulMode uses for its remote-write
+        # buffer.
+        mode: statefulset
+        replicaCount: 1
+
+        image:
+          # contrib, not core: tail_sampling, transform, filter and
+          # file_storage are all contrib components. Multi-arch (arm64 and
+          # amd64 both published).
+          repository: otel/opentelemetry-collector-contrib
+          tag: "0.163.2"
+
+        # Arm64 workers only. The GPU workers are amd64 and tainted for the
+        # transcoder; the control plane is tainted too. The selector states
+        # the intent rather than relying on taints alone.
+        nodeSelector:
+          kubernetes.io/arch: arm64
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+        # The chart sets GOMEMLIMIT to 80% of the limit (useGOMEMLIMIT,
+        # default true), so the Go GC works before the kernel OOM-kills.
+
+        # The disk queue. Disposable, like vmagent's buffer: losing it costs
+        # at most the queued window, never history. local-path (the default
+        # StorageClass) does NOT enforce this size: the byte caps on the two
+        # sending queues are what bound it. Budget, worst case:
+        #   traces queue 384 MiB + product queue 128 MiB = 512 MiB live data,
+        #   plus bbolt page overhead, x2 while bbolt compacts at startup (it
+        #   writes a compacted copy beside the original): about 1.5 GiB peak,
+        #   the budget for a node-local volume on a shared worker. See
+        #   file_storage.
+        statefulset:
+          volumeClaimTemplates:
+            - metadata:
+                name: queue
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 2Gi
+        extraVolumeMounts:
+          - name: queue
+            mountPath: /var/lib/otelcol/queue
+
+        # Only the two OTLP ports, plus the self-metrics port for vmagent.
+        # The chart's defaults also open Jaeger and Zipkin receivers; nothing
+        # here speaks those, and an open receiver is surface for nothing.
+        ports:
+          otlp:
+            enabled: true
+          otlp-http:
+            enabled: true
+          jaeger-compact:
+            enabled: false
+          jaeger-thrift:
+            enabled: false
+          jaeger-grpc:
+            enabled: false
+          zipkin:
+            enabled: false
+          metrics:
+            enabled: true
+
+        # alternateConfig, NOT config. The chart's `config` is deep-merged
+        # with its defaults (Jaeger, Zipkin and Prometheus receivers, a debug
+        # exporter, three default pipelines), and Helm's merge cannot delete
+        # an inherited key (AGENTS.md gotcha #1: a null shipped the word
+        # null). alternateConfig replaces the whole thing, so what is written
+        # here is exactly what runs. The chart's note discouraging it is
+        # about subchart use; this is a direct install.
+        alternateConfig:
+          extensions:
+            # Required by the chart's liveness/readiness probes.
+            health_check:
+              endpoint: ${env:MY_POD_IP}:13133
+            # Backs both exporters' sending queues. Each exporter gets its own
+            # file inside this directory.
+            file_storage/queue:
+              directory: /var/lib/otelcol/queue
+              create_directory: true
+              timeout: 2s
+              # Compaction rewrites the bbolt file into a fresh copy, so it
+              # briefly needs the file's size again in free space. on_start
+              # only: a backlog's high-water file is reclaimed at the next pod
+              # start; with the queue at its fullest the peak is about 2 x
+              # 512 MiB plus overhead (see the PVC note above). on_rebound is
+              # OFF: it would compact while the store is recovering and data
+              # still arrives,
+              # which is when disk is tightest. Between restarts the file
+              # stays at its high-water size (bbolt reuses its free pages, so
+              # it does not grow past the caps).
+              compaction:
+                on_start: true
+                on_rebound: false
+                directory: /var/lib/otelcol/queue
+
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: ${env:MY_POD_IP}:4317
+                http:
+                  endpoint: ${env:MY_POD_IP}:4318
+
+          processors:
+            memory_limiter:
+              check_interval: 1s
+              limit_percentage: 80
+              spike_limit_percentage: 25
+
+            # --- 2. scrub: the second privacy layer --------------------------
+            #
+            # Spritz authenticates guests by a token IN THE PATH (magic links,
+            # day codes, share links, unsubscribe links, signed Active Storage
+            # ids). A span that records a raw URL records a credential. The app
+            # is meant to emit route templates (/t/:token) already; this layer
+            # rewrites anything that slipped past it.
+            #
+            # Applied to the span name and every URL-carrying attribute, old
+            # and current semantic-convention names both (http.url/http.target
+            # are the pre-1.21 names some instrumentations still emit).
+            #
+            # Order matters: strip query and fragment first, so a token in
+            # ?token= is gone before any path rule runs. Patterns are not
+            # anchored to the path start, on purpose: they must also match
+            # inside url.full (scheme://host/t/...). The cost is over-scrubbing
+            # a path that merely contains /day/ or /n/ somewhere, which is the
+            # safe direction. Every rule is idempotent on its own output, so a
+            # path the app already templated passes through unchanged.
+            #
+            # /t/ and /t/thanks/ are ONE rule: a separate /t/ rule after the
+            # /t/thanks/ one would rewrite "/t/thanks/:token" into
+            # "/t/:token/:token" (RE2 has no lookahead to exclude "thanks").
+            # $${1} is ${1} once the collector's config loader unescapes $$.
+            transform/scrub:
+              error_mode: ignore
+              trace_statements:
+                # Two groups with an EXPLICIT context. Mixed in one flat list,
+                # OTTL infers the narrowest context (spanevent) for the whole list
+                # and the span rules then run only for spans that HAVE events:
+                # every other span went through unscrubbed. Caught by a local run
+                # with planted tokens before this was committed.
+                - context: span
+                  statements:
+                  - 'replace_pattern(span.attributes["url.full"], "[?#].*", "")'
+                  - 'replace_pattern(span.attributes["http.url"], "[?#].*", "")'
+                  - 'replace_pattern(span.attributes["http.target"], "[?#].*", "")'
+                  - 'replace_pattern(span.attributes["url.path"], "[?#].*", "")'
+                  - 'replace_pattern(span.name, "[?#].*", "")'
+                  - 'delete_key(span.attributes, "url.query")'
+                  - 'delete_key(span.attributes, "url.fragment")'
+                  # Headers carry cookies, X-Slideshow-Token, X-Seating-Plan-Token,
+                  # X-Transcoder-Token. None belongs in a trace.
+                  - 'delete_matching_keys(span.attributes, "^http[.](request|response)[.]header[.]")'
+                  # Magic links: /t/:token and /t/thanks/:token (and their
+                  # /qr.png, /click children, which keep their suffix).
+                  - 'replace_pattern(span.attributes["url.full"], "/t/(thanks/)?[^/?#]+", "/t/$${1}:token")'
+                  - 'replace_pattern(span.attributes["url.path"], "/t/(thanks/)?[^/?#]+", "/t/$${1}:token")'
+                  - 'replace_pattern(span.attributes["http.url"], "/t/(thanks/)?[^/?#]+", "/t/$${1}:token")'
+                  - 'replace_pattern(span.attributes["http.target"], "/t/(thanks/)?[^/?#]+", "/t/$${1}:token")'
+                  - 'replace_pattern(span.attributes["http.route"], "/t/(thanks/)?[^/?#]+", "/t/$${1}:token")'
+                  - 'replace_pattern(span.name, "/t/(thanks/)?[^/?#]+", "/t/$${1}:token")'
+                  # Personal note share links.
+                  - 'replace_pattern(span.attributes["url.full"], "/n/[^/?#]+", "/n/:token")'
+                  - 'replace_pattern(span.attributes["url.path"], "/n/[^/?#]+", "/n/:token")'
+                  - 'replace_pattern(span.attributes["http.url"], "/n/[^/?#]+", "/n/:token")'
+                  - 'replace_pattern(span.attributes["http.target"], "/n/[^/?#]+", "/n/:token")'
+                  - 'replace_pattern(span.attributes["http.route"], "/n/[^/?#]+", "/n/:token")'
+                  - 'replace_pattern(span.name, "/n/[^/?#]+", "/n/:token")'
+                  # Email unsubscribe links.
+                  - 'replace_pattern(span.attributes["url.full"], "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
+                  - 'replace_pattern(span.attributes["url.path"], "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
+                  - 'replace_pattern(span.attributes["http.url"], "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
+                  - 'replace_pattern(span.attributes["http.target"], "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
+                  - 'replace_pattern(span.attributes["http.route"], "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
+                  - 'replace_pattern(span.name, "/unsubscribe/[^/?#]+", "/unsubscribe/:token")'
+                  # Day board codes: /day/:code and /api/v1/day/:code/... (the
+                  # same pattern covers both). The guide pages are NOT codes
+                  # and keep their name, as in the app's scrubber (spritz
+                  # spec/fixtures/parity/telemetry_token_paths.json; the list
+                  # is spritz DayBoards::GUIDE_SEGMENTS in
+                  # app/services/day_boards.rb, copied here by hand):
+                  # /day/seating stays
+                  # /day/seating. RE2 has no lookahead, so the exception is a
+                  # `where` on the whole value: a value holding a guide page
+                  # is left alone, which is exact for a single path or URL.
+                  # A new guide page added in the app and not here gets
+                  # rewritten to /day/:code: drift fails safe (over-scrubs),
+                  # never leaks a code.
+                  - 'replace_pattern(span.attributes["url.full"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["url.full"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["url.path"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["url.path"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["http.url"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.url"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["http.target"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.target"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.attributes["http.route"], "/day/[^/?#]+", "/day/:code") where not IsMatch(span.attributes["http.route"], "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  - 'replace_pattern(span.name, "/day/[^/?#]+", "/day/:code") where not IsMatch(span.name, "(?i)/day/(bingo|missions|seating|album|photos)([/?#]|$)")'
+                  # Active Storage: a signed blob id is a bearer capability, and
+                  # the trailing filename is whatever the uploader called the
+                  # file (often a person's name). Everything after the
+                  # proxy/redirect segment goes, variation key included.
+                  - 'replace_pattern(span.attributes["url.full"], "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_pattern(span.attributes["url.path"], "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_pattern(span.attributes["http.url"], "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_pattern(span.attributes["http.target"], "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_pattern(span.name, "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?#]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  # The Disk service's encoded key is a signed token too.
+                  - 'replace_pattern(span.attributes["url.full"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.attributes["url.path"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.attributes["http.url"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.attributes["http.target"], "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                  - 'replace_pattern(span.name, "/rails/active_storage/disk/[^?#]*", "/rails/active_storage/disk/:key")'
+                - context: spanevent
+                  statements:
+                  # Span EVENTS: Rails records an exception as an event, and its
+                  # message is free text that can quote the URL it failed on.
+                  # Free text has no known keys, so every event attribute value
+                  # gets the same rules. The query rule here only strips a ?/#
+                  # that follows a path (a "/" then no space), so a Ruby method
+                  # name ending in "?" in the same message survives. The
+                  # filename after an Active Storage id stops at whitespace.
+                  # Free text can hold several paths, so the /day/ guide-page
+                  # exception above is not applied here: a guide page in an
+                  # event message becomes /day/:code (over-scrubbing).
+                  - 'replace_all_patterns(spanevent.attributes, "value", "(/[^ ?#]*)[?#][^ ]*", "$${1}")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/n/[^/?# ]+", "/n/:token")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/unsubscribe/[^/?# ]+", "/unsubscribe/:token")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/day/[^/?# ]+", "/day/:code")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_all_patterns(spanevent.attributes, "value", "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key")'
+
+            # --- 3. classify: mark recurring noise ---------------------------
+            #
+            # Tail sampling can only say "any span in the trace has attribute
+            # X = Y". Marking the noisy spans here, where OTTL can test the
+            # span name, the route and the job class together, gives the
+            # sampler ONE key to test, and so one place to add the next noisy
+            # job. Noise is: the readiness/liveness probe (/up, every 10 s per
+            # web pod) and the recurring jobs that tick whether or not
+            # anything happened.
+            #
+            # The job class is matched on both the span name and code.namespace
+            # because the Ruby ActiveJob instrumentation names spans by queue
+            # or by class depending on its span_naming option, and carries the
+            # class in code.namespace either way. Match whole names only.
+            transform/classify:
+              error_mode: ignore
+              trace_statements:
+                - 'set(span.attributes["spritz.sampling.noisy"], "true") where span.attributes["url.path"] == "/up" or IsMatch(span.attributes["http.route"], "^/up([(]|$)")'
+                - 'set(span.attributes["spritz.sampling.noisy"], "true") where IsMatch(span.name, "(^|[ .])(SeatingPlanSyncTickJob|Rehearsals::SweepJob)([ .]|$)") or IsMatch(span.attributes["code.namespace"], "^(SeatingPlanSyncTickJob|Rehearsals::SweepJob)$")'
+
+            # --- 4. tail_sampling --------------------------------------------
+            #
+            # Top-level policies are OR'd: a trace is kept if ANY policy votes
+            # to sample it (and no `drop` policy votes against; there is none
+            # here, deliberately: a drop would also throw away the errors of a
+            # noisy trace).
+            #
+            #   errors       every trace with an ERROR span
+            #   slow         every trace longer than 1 s end to end
+            #   temporal     every trace touching a Temporal workflow (rare,
+            #                and the ones you most want whole)
+            #   noisy        1% of traces marked noisy above
+            #   staging      100% of the rest when deployment.environment is
+            #                staging
+            #   default      20% of the rest anywhere else
+            #
+            # "of the rest" is the `and` with an inverted string_attribute:
+            # inside an `and`, invert_match means "no span in this trace
+            # carries spritz.sampling.noisy=true". Without it, noisy traces
+            # would be kept by staging/default at 100%/20% and the 1% policy
+            # would do nothing.
+            #
+            # The probabilistic policies hash the trace id, so the same trace
+            # gets the same answer whichever policy evaluates it.
+            #
+            # "Every error" means every error span that arrives within
+            # decision_wait of the trace's first span. A span arriving after
+            # the decision follows it (decision_cache): an error minutes into
+            # a trace already dropped as unremarkable stays dropped. Temporal
+            # traces are kept whole regardless, which covers the long ones.
+            tail_sampling:
+              # How long spans of a trace are held before deciding. Spans that
+              # arrive later (a Temporal activity minutes into a workflow)
+              # follow the decision already made, via decision_cache.
+              decision_wait: 30s
+              # Traces held in memory at once. Spritz staging is a handful of
+              # requests a second; this is far above that and well inside
+              # 512Mi at typical span sizes.
+              num_traces: 20000
+              expected_new_traces_per_sec: 20
+              decision_cache:
+                sampled_cache_size: 100000
+                non_sampled_cache_size: 100000
+              policies:
+                - name: errors
+                  type: status_code
+                  status_code:
+                    status_codes: [ERROR]
+                - name: slow
+                  type: latency
+                  latency:
+                    threshold_ms: 1000
+                # Span names from temporalio's Ruby OpenTelemetry contrib:
+                # StartWorkflow:, RunWorkflow:, RunActivity:, StartActivity:,
+                # SignalWorkflow:, HandleSignal:, CompleteWorkflow: and
+                # friends. Every one of them carries temporalWorkflowID, which
+                # is the sturdier test; the name match is the backstop.
+                - name: temporal
+                  type: ottl_condition
+                  ottl_condition:
+                    error_mode: ignore
+                    span:
+                      - 'span.attributes["temporalWorkflowID"] != nil'
+                      - 'IsMatch(span.name, "^(Start|Run|Complete|Signal|SignalWithStart|Query|Handle|UpdateWithStart|StartChild|SignalChild|SignalExternal)(Workflow|Activity|Signal|Query|Update)?[A-Za-z]*:")'
+                - name: noisy
+                  type: and
+                  and:
+                    and_sub_policy:
+                      - name: is-noisy
+                        type: string_attribute
+                        string_attribute:
+                          key: spritz.sampling.noisy
+                          values: ["true"]
+                      - name: one-percent
+                        type: probabilistic
+                        probabilistic:
+                          sampling_percentage: 1
+                # Matches the resource attribute under both semantic-convention
+                # names: deployment.environment (what the Spritz initializer
+                # sets) and deployment.environment.name (its successor).
+                - name: staging
+                  type: and
+                  and:
+                    and_sub_policy:
+                      - name: not-noisy
+                        type: string_attribute
+                        string_attribute:
+                          key: spritz.sampling.noisy
+                          values: ["true"]
+                          invert_match: true
+                      - name: is-staging
+                        type: ottl_condition
+                        ottl_condition:
+                          error_mode: ignore
+                          span:
+                            - 'resource.attributes["deployment.environment"] == "staging" or resource.attributes["deployment.environment.name"] == "staging"'
+                - name: default
+                  type: and
+                  and:
+                    and_sub_policy:
+                      - name: not-noisy
+                        type: string_attribute
+                        string_attribute:
+                          key: spritz.sampling.noisy
+                          values: ["true"]
+                          invert_match: true
+                      - name: twenty-percent
+                        type: probabilistic
+                        probabilistic:
+                          sampling_percentage: 20
+
+            batch:
+              send_batch_size: 512
+              send_batch_max_size: 1024
+              timeout: 5s
+
+            # --- product events: keep ONLY spritz.analytics ------------------
+            #
+            # The analytics seam (spritz Analytics::Provider, OTel flavour)
+            # emits log records on the instrumentation scope
+            # "spritz.analytics". Anything else arriving as an OTLP log is not
+            # a product event and is dropped here: application logs go
+            # through Vector, and must not leak into the product store, whose
+            # retention is months.
+            filter/product:
+              error_mode: ignore
+              logs:
+                log_record:
+                  - 'instrumentation_scope.name != "spritz.analytics"'
+
+            # The same redaction as transform/scrub, for product events: a
+            # second layer behind the app (the analytics lane allow-lists
+            # props and the app's scrubber runs over log records too). Event
+            # props have no fixed keys, so every attribute value and the body
+            # get the free-text rules; as for span events, a /day/ guide page
+            # in a value becomes /day/:code (over-scrubbing).
+            # Scope: TOP-LEVEL attribute values and the body only.
+            # replace_all_patterns does not descend into nested maps. That
+            # is enough because the analytics provider emits flat attributes
+            # (analytics.subject.*, spritz.props.*, spritz.context.*), as
+            # agreed at the analytics seam; nested maps are not expected.
+            transform/scrub-product:
+              error_mode: ignore
+              log_statements:
+                - context: log
+                  statements:
+                  - 'delete_key(log.attributes, "url.query")'
+                  - 'delete_key(log.attributes, "url.fragment")'
+                  - 'delete_matching_keys(log.attributes, "^http[.](request|response)[.]header[.]")'
+                  - 'replace_all_patterns(log.attributes, "value", "(/[^ ?#]*)[?#][^ ]*", "$${1}")'
+                  - 'replace_all_patterns(log.attributes, "value", "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token")'
+                  - 'replace_all_patterns(log.attributes, "value", "/n/[^/?# ]+", "/n/:token")'
+                  - 'replace_all_patterns(log.attributes, "value", "/unsubscribe/[^/?# ]+", "/unsubscribe/:token")'
+                  - 'replace_all_patterns(log.attributes, "value", "/day/[^/?# ]+", "/day/:code")'
+                  - 'replace_all_patterns(log.attributes, "value", "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id")'
+                  - 'replace_all_patterns(log.attributes, "value", "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key")'
+                  # The body: a string body (replace_pattern) or a map body
+                  # (replace_all_patterns). Guarded by type: unguarded, the
+                  # wrong-shape call errors and error_mode: ignore logs a
+                  # warning per record, which would flood Vector.
+                  - 'replace_pattern(log.body, "(/[^ ?#]*)[?#][^ ]*", "$${1}") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/n/[^/?# ]+", "/n/:token") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/unsubscribe/[^/?# ]+", "/unsubscribe/:token") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/day/[^/?# ]+", "/day/:code") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id") where IsString(log.body)'
+                  - 'replace_pattern(log.body, "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key") where IsString(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "(/[^ ?#]*)[?#][^ ]*", "$${1}") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/t/(thanks/)?[^/?# ]+", "/t/$${1}:token") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/n/[^/?# ]+", "/n/:token") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/unsubscribe/[^/?# ]+", "/unsubscribe/:token") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/day/[^/?# ]+", "/day/:code") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/rails/active_storage/(blobs|representations)/(proxy|redirect)/[^?# ]*", "/rails/active_storage/$${1}/$${2}/:signed_id") where IsMap(log.body)'
+                  - 'replace_all_patterns(log.body, "value", "/rails/active_storage/disk/[^?# ]*", "/rails/active_storage/disk/:key") where IsMap(log.body)'
+
+            # Product events batch on their own, and slowly. The queue below
+            # is sized in bytes, so batch size no longer decides how much it
+            # holds; a long timeout just keeps request overhead (and bbolt
+            # writes) down for a trickle of small records.
+            batch/product:
+              send_batch_size: 2000
+              send_batch_max_size: 4000
+              timeout: 60s
+
+          exporters:
+            # TRAILING DOTS on both hostnames — load-bearing, same reason as
+            # obs-logs in victoria-logs-app.yaml (AGENTS.md gotcha #3): with
+            # ndots:5 and a node search domain, a relative name is tried with
+            # the search suffix first, matches a public wildcard record, and
+            # the connection goes somewhere that is not the store.
+            otlphttp/traces:
+              # VictoriaTraces' OTLP/HTTP ingest, on the store's INSERT-ONLY
+              # process (vtinsert): senders get a port that can write and
+              # cannot query. The query port is not reachable from the
+              # cluster at all. traces_endpoint is the full URL; `endpoint`
+              # would append /v1/traces itself.
+              traces_endpoint: http://obs-traces.infra.asn.casa.:10481/insert/opentelemetry/v1/traces
+              compression: gzip
+              timeout: 10s
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                # 0 = retry without limit. A finite limit DROPS the batch when
+                # it runs out, which would turn an obs-traces outage longer
+                # than the limit into lost data despite the disk queue. With
+                # no limit the batch stays queued until the store is back, and
+                # the queue_size cap below is what bounds the backlog.
+                max_elapsed_time: 0s
+              sending_queue:
+                enabled: true
+                storage: file_storage/queue
+                num_consumers: 2
+                # Sized in BYTES (serialised size), not requests: a request
+                # count bounds neither disk use nor outage time, because a
+                # request can be 1 span or 1024. 384 MiB of the disk budget.
+                # At an assumed staging rate after sampling of ~5 spans/s x
+                # ~1 KiB (~18 MiB/h), that is about 21 hours of store outage;
+                # production at 20% sampling is the same order. Re-measure
+                # from otelcol_exporter_queue_size once real traffic flows.
+                # Full queue = new spans refused and counted in
+                # otelcol_exporter_enqueue_failed_spans; the app is never
+                # blocked by it.
+                sizer: bytes
+                queue_size: 402653184
+
+            otlphttp/product:
+              # The product-events VictoriaLogs on the same container, through
+              # its insert-only process (vlinsert), same write-only reasoning
+              # as traces above. Logs OTLP path.
+              logs_endpoint: http://obs-traces.infra.asn.casa.:9481/insert/opentelemetry/v1/logs
+              # PROTOBUF ONLY: VictoriaLogs' OTLP ingest rejects OTLP/JSON.
+              # proto is otlphttp's default; stated so nobody "tidies" it to
+              # json and silently loses every product event.
+              encoding: proto
+              compression: gzip
+              timeout: 10s
+              headers:
+                # VictoriaLogs makes every resource attribute a stream field
+                # unless told otherwise, and pod/host/instance ids would make
+                # a new stream per pod restart. Streams by service and
+                # environment only; everything else stays a plain field.
+                VL-Stream-Fields: service.name,deployment.environment
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                # Retry without limit, as for traces above.
+                max_elapsed_time: 0s
+              sending_queue:
+                enabled: true
+                storage: file_storage/queue
+                num_consumers: 1
+                # Never sampled, so this queue is the only thing between an
+                # obs-traces outage and a gap in the funnel. BYTES, 128 MiB of
+                # the disk budget. At an assumed staging rate of ~1 event/s x
+                # ~0.5 KiB (~42 MiB/day), that is ~3 days of outage; even
+                # 10x that rate keeps over 7 hours, and production volume
+                # will be re-measured before its phase.
+                sizer: bytes
+                queue_size: 134217728
+
+          service:
+            extensions: [health_check, file_storage/queue]
+            telemetry:
+              # Self-metrics for vmagent (VMServiceScrape below). Bound to the
+              # pod IP, not 0.0.0.0, as the chart does by default.
+              metrics:
+                readers:
+                  - pull:
+                      exporter:
+                        prometheus:
+                          host: ${env:MY_POD_IP}
+                          port: 8888
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors:
+                  - memory_limiter
+                  - transform/scrub
+                  - transform/classify
+                  - tail_sampling
+                  - batch
+                exporters: [otlphttp/traces]
+              # Product events. NEVER sampled: a funnel with a 20% hole in
+              # it is wrong, not thinner.
+              logs/product:
+                receivers: [otlp]
+                processors:
+                  - memory_limiter
+                  - filter/product
+                  - transform/scrub-product
+                  - batch/product
+                exporters: [otlphttp/product]
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+---
+# vmagent scrape wiring for the collector's own metrics (:8888): accepted,
+# refused and dropped spans and log records, queue size and capacity, export
+# failures. The alerts that read them live with the out-of-cluster rules in
+# asn-infra, so they still fire when this cluster cannot. The VMAgent runs
+# with selectAllByDefault, so this CR is picked up without selector plumbing.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetry-collector
+      app.kubernetes.io/instance: otel-collector
+      component: statefulset-collector
+  endpoints:
+    - port: metrics
+      path: /metrics

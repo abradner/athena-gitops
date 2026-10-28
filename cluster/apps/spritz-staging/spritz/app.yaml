@@ -66,6 +66,13 @@ spec:
             # check the effect with a slow upload, not the value.
             - name: HTTP_WRITE_TIMEOUT
               value: "120"
+            # OpenTelemetry service.name for this process's spans (one per
+            # Deployment, so it lives here rather than in spritz-config).
+            # Inert until the image carries the OTel gems AND config.yaml
+            # sets OTEL_EXPORTER_OTLP_ENDPOINT (see there). staging.rb runs jobs
+            # in-process (async adapter), so job spans also say spritz-web.
+            - name: OTEL_SERVICE_NAME
+              value: spritz-web
           envFrom:
             - configMapRef:
                 name: spritz-config
@@ -136,6 +143,10 @@ spec:
           env:
             - name: TEMPORAL_METRICS_ADDR
               value: 0.0.0.0:9464
+            # OpenTelemetry service.name; inert until the image carries the
+            # OTel gems and config.yaml sets OTEL_EXPORTER_OTLP_ENDPOINT.
+            - name: OTEL_SERVICE_NAME
+              value: spritz-temporal-worker
           envFrom:
             - configMapRef:
                 name: spritz-config
