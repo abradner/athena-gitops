@@ -625,6 +625,18 @@ spec:
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: observability
+  # The StatefulSet's volumeClaimTemplates come back from the API server
+  # with fields the chart never sets (volumeMode: Filesystem, and a
+  # status: {phase: Pending} stub), so without this the app sits at
+  # OutOfSync/Healthy for ever and a real drift would hide behind it.
+  # RespectIgnoreDifferences keeps a sync from writing those fields back.
+  ignoreDifferences:
+  - group: apps
+    kind: StatefulSet
+    name: otel-collector
+    jqPathExpressions:
+    - .spec.volumeClaimTemplates[]?.status
+    - .spec.volumeClaimTemplates[]?.spec.volumeMode
   syncPolicy:
     automated:
       prune: true
@@ -632,6 +644,7 @@ spec:
     syncOptions:
     - CreateNamespace=true
     - ServerSideApply=true
+    - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
