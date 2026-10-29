@@ -42,6 +42,10 @@ spec:
     # The node waker (waker/).
     - server: 'https://kubernetes.default.svc'
       namespace: zagreus-waker
+    # The node power exporter for the on/off and power dashboard
+    # (core/node-power-exporter.yaml).
+    - server: 'https://kubernetes.default.svc'
+      namespace: node-power
   # This cluster runs only what this repo puts on it: cluster-scoped kinds
   # (Namespaces, PriorityClasses, CRDs, ClusterRoles, the ClusterSecretStore)
   # are allowed.
