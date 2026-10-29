@@ -1,0 +1,116 @@
+# node_exporter on every zagreus node, for the power and on/off dashboard.
+#
+# The dashboard ("zagreus power", in the private infrastructure repo under
+# observability/dashboards/) shows which machines are on and estimates what
+# each one draws. The amd64 ProDesks have no power meter, but Intel RAPL counts
+# the CPU package's energy, and wall watts are estimated from it with a
+# per-machine linear fit (base + k x package watts) calibrated against a meter.
+# The arm64 nodes have no RAPL; their estimate is built from CPU busy time.
+# The constants and how they were measured live beside the dashboard, not here.
+#
+# Shipping is a PULL: the metrics store, outside the cluster, scrapes :9100 on
+# each node's address. Nothing in zagreus gets a write path into the store, so
+# a CI job cannot forge metrics there the way it could through a push agent
+# sharing its node's address. A sleeping node simply fails its scrape, and the
+# store reads that as "asleep" (with the waker's own markers in the log store).
+#
+# Who can read :9100: anything that can reach a node's address on the CI VLAN.
+# Runner pods cannot (core/runner-network-policy.yaml denies them every private
+# address and allows no `host` egress); the router lets in only the metrics
+# store. What it serves is CPU, memory, load, temperatures and RAPL counters.
+#
+# Not privileged. RAPL's energy_uj has been readable by root only since the
+# Platypus side channel (CVE-2020-8694), so the container runs as uid 0, which
+# owns the file; owner permission is a plain DAC check and needs no
+# capability, so every capability is dropped. hostPath (/proc, /sys, read
+# only) and hostNetwork are what baseline Pod Security forbids, so the
+# namespace (namespaces.yaml) is labelled privileged.
+#
+# Read only towards power control: this neither talks to AMT nor reads or
+# writes anything of the node waker's (../waker/).
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: node-power
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: true
+      hostPID: false
+      # Every node, control plane and tainted builders included: the
+      # dashboard accounts for every machine on the zagreus power budget.
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: node-exporter
+          image: quay.io/prometheus/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            # Only what the dashboard uses. Filesystem, network and the rest
+            # are off: smaller pages, and nothing about job workloads leaks.
+            - --collector.disable-defaults
+            - --collector.rapl
+            - --collector.cpu
+            - --collector.cpufreq
+            - --collector.meminfo
+            - --collector.loadavg
+            - --collector.hwmon
+            - --collector.thermal_zone
+            - --collector.time
+            - --collector.uname
+            # The node's own address only, not every interface (Cilium's
+            # and the pods' included).
+            - --web.listen-address=$(HOST_IP):9100
+            - --web.disable-exporter-metrics
+          env:
+            - name: HOST_IP
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 48Mi
+          readinessProbe:
+            httpGet: {path: /, port: 9100}
+            periodSeconds: 30
+          volumeMounts:
+            - {name: proc, mountPath: /host/proc, readOnly: true}
+            - {name: sys, mountPath: /host/sys, readOnly: true}
+      volumes:
+        - name: proc
+          hostPath: {path: /proc, type: Directory}
+        - name: sys
+          hostPath: {path: /sys, type: Directory}
