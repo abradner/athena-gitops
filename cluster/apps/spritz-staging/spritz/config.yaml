@@ -53,15 +53,14 @@ data:
   # the job. Turning it on is a runbook (spritz .agents/personal_notes.md,
   # "Turning the history prune on") and Alex's call; this lands it "false".
   PERSONAL_NOTES_PRUNE_ENABLED: "false"
-  # Personal notes (abradner/spritz stack #1161): where personal-note email may
-  # go outside production (PersonalNotes::MailGuard). Staging sends REAL email
-  # and, after a refresh from production, holds real guests' addresses, so
-  # this is an allowlist: comma-separated addresses, "@domain", or "*". ""
-  # sends none. Read when an email is built; a missing key makes every
-  # personal-notes send on staging raise. REQUIRED before the image.
-  # DECISION FOR ALEX: "" (no note email on staging) or his own test
-  # addresses, e.g. "alex@bradner.net".
-  PERSONAL_NOTES_MAIL_ALLOWLIST: ""
+  # Where guest email may go outside production (PersonalNotes::MailGuard).
+  # Personal notes and Save the Date (SaveTheDateDeliveryJob) both read it.
+  # Staging sends REAL email and, after a refresh from production, holds real
+  # guests' addresses, so this is an allowlist: comma-separated addresses,
+  # "@domain", or "*". "" sends none (a Save the Date shows "Blocked"). Read
+  # when an email is built; a missing key makes every such send raise.
+  # Alex, 29 Oct 2026: his own domain only, for testing on staging.
+  PERSONAL_NOTES_MAIL_ALLOWLIST: "@bradner.net"
   # The Host the video transcoder's in-cluster calls arrive on (it calls the
   # web Service by name, http://spritz-web/). abradner/spritz #1093 exempts
   # /api/transcoder/* on exactly this host from the canonical-host redirect
