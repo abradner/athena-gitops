@@ -45,6 +45,12 @@ LOG = logging.getLogger("waker")
 
 ANNOTATION_STATE = "zagreus.asn.casa/waker-state"
 ANNOTATION_CORDON = "zagreus.asn.casa/waker-cordon"
+# On exactly the nodes on the asleep list. A DaemonSet whose rollout Argo waits
+# on (node-exporter) says "not on a node with this label", so the DaemonSet
+# controller stops counting a sleeping node as one it must run on; otherwise
+# its dead pod keeps the DaemonSet, and with it the whole zagreus-core sync,
+# Progressing for as long as the node sleeps (README, "Asleep label").
+LABEL_ASLEEP = "zagreus.asn.casa/asleep"
 # Set just before `talosctl shutdown`. A Ready condition whose last transition
 # is older than this is the API server's stale view of a node that is already
 # going down (it keeps Ready for ~40 s after the kubelet stops), not a node
@@ -1019,6 +1025,7 @@ class Waker:
         self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
+        self.asleep_labelled = {}  # node -> whether LABEL_ASLEEP was last written on it
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep."""
@@ -1062,6 +1069,30 @@ class Waker:
             })
         else:
             self.kube.merge_patch(self.asleep_cm_path(), {"data": data})
+        self.sync_asleep_labels(names)
+
+    def sync_asleep_labels(self, names):
+        """Label the nodes on the asleep list and unlabel the rest, writing
+        only what changed since the last success. Best effort: a failed patch
+        is retried on the next call and never stops a sleep or a wake. The
+        label goes on with the asleep line, before the shutdown, so the
+        DaemonSet controller removes its pod from a node that is still
+        alive; it comes off when the node leaves the list, after its
+        heartbeat is Ready."""
+        if not self.may_power:
+            return
+        asleep = set(names)
+        for n in self.cfg["nodes"]:
+            name = n["name"]
+            want = name in asleep
+            if self.asleep_labelled.get(name) == want:
+                continue
+            try:
+                self.kube.merge_patch(f"/api/v1/nodes/{name}",
+                                      {"metadata": {"labels": {LABEL_ASLEEP: "true" if want else None}}})
+                self.asleep_labelled[name] = want
+            except Exception as e:
+                LOG.warning("could not %s %s on %s: %s", "set" if want else "clear", LABEL_ASLEEP, name, e)
 
     def mark_asleep(self, node, asleep):
         names = set(self.read_asleep())
@@ -1419,6 +1450,9 @@ class Waker:
         if self.may_power:
             self.reconcile_ready_nodes(snap)
             self.audit_asleep_list(snap, now)
+            # Catches a list that changed outside write_asleep, and the first
+            # pass after a restart (nothing remembered yet).
+            self.sync_asleep_labels(self.read_asleep())
             if now - self.last_demand_ok <= self.cfg["demandBlindSeconds"]:
                 self._renew()  # or the heartbeat pod stops asserting
             elif self.read_asleep():

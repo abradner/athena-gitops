@@ -62,6 +62,20 @@ spec:
       # dashboard accounts for every machine on the zagreus power budget.
       tolerations:
         - operator: Exists
+      # Not on a node the waker has put to sleep. The DaemonSet controller
+      # counts every node it may run on, so a sleeping node's dead pod kept
+      # this DaemonSet Progressing, and Argo's zagreus-core sync waits for it
+      # to be healthy: no later revision applied for two hours (30 Oct 2026).
+      # The waker labels a node when it lists it asleep, before the shutdown,
+      # and clears the label once the node is awake again (waker/README.md,
+      # "Asleep label"). kmsg-heartbeat deliberately does NOT do this: the
+      # wake waits for that pod to be Ready on the node it is waking.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: zagreus.asn.casa/asleep, operator: DoesNotExist}
       priorityClassName: system-node-critical
       terminationGracePeriodSeconds: 5
       containers:
