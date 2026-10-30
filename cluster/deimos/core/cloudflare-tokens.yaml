@@ -1,0 +1,59 @@
+---
+# Cloudflare API tokens for cert-manager's DNS-01 solvers, read from the same
+# 1Password items the primary uses (cluster/core/cert-manager/). Two tokens
+# because the served zones span two Cloudflare accounts: rabalex.wedding and
+# athena.asn.casa in the personal account, spritz.events in the simplytics one.
+#
+# ONE OF THESE WILL NOT WORK FROM HERE UNTIL A HUMAN ACTS. The simplytics token
+# ("letsencrypt - athena & haproxy") is IP-locked to the primary site's static
+# ISP address — its own manifest on the primary says so. Every DNS-01 challenge
+# this zone raises for spritz.events therefore comes from deimos's Elastic IP
+# and is refused, and spritz-events-tls sits NotReady with a 403 from
+# Cloudflare in the Order's status. The fix is either adding deimos's Elastic
+# IP to that token's allowlist or a second, deimos-only token stored under a
+# new item and referenced here. Neither can be done from git. Until then the
+# Gateway's https-spritz-events listener is not programmed, and the
+# hostname-less tunnel listener still serves spritz.events regardless, so the
+# site is not blocked on it — only the listener's Accepted status is.
+#
+# Whether the personal token is IP-locked is not recorded anywhere; the
+# rabalex-wedding-tls Certificate going Ready is the test.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: cloudflare-api-token
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: cloudflare-api-token
+  data:
+    - secretKey: api-token
+      remoteRef:
+        key: cloudflare-dns/api-token
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: cloudflare-api-token-simplytics
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: cloudflare-api-token-simplytics
+  data:
+    - secretKey: api-token
+      remoteRef:
+        key: cloudflare-dns-simplytics/api-token
