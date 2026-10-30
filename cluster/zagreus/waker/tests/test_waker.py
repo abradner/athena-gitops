@@ -1973,6 +1973,145 @@ class Modes(unittest.TestCase):
         self.assertEqual(r.kube.asleep(), set())
 
 
+class QueueWatchdog(unittest.TestCase):
+    """30 Oct 2026: two spritz release jobs sat queued on zagreus-docker-amd64
+    for 58 and 61 minutes while the waker had woken the node and raised the
+    cap within 90 s, and the scale set's listener (restarted by that raise)
+    was told of no job by GitHub for 56 minutes. Nothing alerted: the wait is
+    inside GitHub, and timeout-minutes counts from the job's start. The waker
+    now publishes the oldest queued job's age per set."""
+
+    PATH = ("node-power", "waker-metrics")
+    DOCKER = ["self-hosted", "linux", "X64", "docker-amd64"]
+
+    def metrics(self, r):
+        cm = r.kube.cms.get(self.PATH)
+        return None if cm is None else cm["data"][w.QUEUE_METRIC_FILE]
+
+    def value(self, text, metric, set_name):
+        m = re.search(rf'^{metric}{{set="{set_name}"}} (\d+)$', text, re.M)
+        self.assertIsNotNone(m, f"{metric} for {set_name} missing from:\n{text}")
+        return int(m.group(1))
+
+    def test_a_job_stuck_beside_a_raised_cap_shows_its_age(self):
+        # The incident: the node is awake, the cap is 1, the job is 58 min old.
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=58 * 60)
+        r.tick()
+        text = self.metrics(r)
+        self.assertEqual(self.value(text, "zagreus_runner_oldest_queued_seconds", "zagreus-docker-amd64"),
+                         58 * 60)
+        self.assertEqual(self.value(text, "zagreus_runner_queued_jobs", "zagreus-docker-amd64"), 1)
+
+    def test_it_reports_the_oldest_of_several_and_zero_for_an_empty_set(self):
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=120)
+        r.job(self.DOCKER, age_seconds=61 * 60)
+        r.tick()
+        text = self.metrics(r)
+        self.assertEqual(self.value(text, "zagreus_runner_oldest_queued_seconds", "zagreus-docker-amd64"), 61 * 60)
+        self.assertEqual(self.value(text, "zagreus_runner_queued_jobs", "zagreus-docker-amd64"), 2)
+        # A set with nothing queued is reported as 0, so the alert resolves.
+        self.assertEqual(self.value(text, "zagreus_runner_oldest_queued_seconds", "zagreus-ci"), 0)
+        self.assertEqual(self.value(text, "zagreus_runner_queued_jobs", "zagreus-ci"), 0)
+
+    def test_an_orphan_the_waker_set_aside_still_counts(self):
+        # The waker stops treating a job as demand after the held window
+        # (02:13Z on 30 Oct); it is the job most worth alerting on.
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=40 * 60)
+        r.tick()
+        r.waker.orphans = {j["id"]: r.clock() for j in r.github.jobs}
+        r.tick(advance=30)
+        self.assertGreaterEqual(self.value(self.metrics(r), "zagreus_runner_oldest_queued_seconds",
+                                           "zagreus-docker-amd64"), 40 * 60)
+        self.assertEqual(r.waker.jobs, [])  # set aside from demand, not from the gauge
+
+    def test_a_job_for_no_driven_set_is_not_counted(self):
+        r = Rig()
+        r.job(["self-hosted", "linux", "ARM64"], age_seconds=3600)
+        r.job(["ubuntu-latest"], age_seconds=3600)
+        r.tick()
+        for name in ("zagreus-docker-amd64", "zagreus-ci", "zagreus-ci-x64"):
+            self.assertEqual(self.value(self.metrics(r), "zagreus_runner_oldest_queued_seconds", name), 0)
+
+    def test_the_gauge_goes_back_to_zero_when_the_queue_drains(self):
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=30 * 60)
+        r.tick()
+        r.github.jobs.clear()
+        r.tick(advance=30)
+        self.assertEqual(self.value(self.metrics(r), "zagreus_runner_oldest_queued_seconds",
+                                    "zagreus-docker-amd64"), 0)
+
+    def test_the_sample_time_is_the_wakers_clock(self):
+        r = Rig()
+        r.tick()
+        m = re.search(r"^zagreus_runner_queue_sampled_timestamp_seconds (\d+)$", self.metrics(r), re.M)
+        self.assertEqual(int(m.group(1)), int(r.clock()))
+
+    def test_a_blind_waker_leaves_the_old_sample_time_behind(self):
+        # GitHub unreadable: the file is not rewritten, so its sample time
+        # ages and the "watchdog blind" rule can fire instead of a calm 0.
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=60)
+        r.tick()
+        before = self.metrics(r)
+        r.github.fail = True
+        r.tick(advance=600)
+        self.assertEqual(self.metrics(r), before)
+
+    def test_observe_mode_publishes_nothing(self):
+        r = Rig(mode="observe")
+        r.job(self.DOCKER, age_seconds=3600)
+        r.tick()
+        self.assertIsNone(self.metrics(r))
+        self.assertEqual(r.kube.writes, [])
+
+    def test_a_failed_write_never_stops_the_controller(self):
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=3600)
+        real = r.kube.create
+
+        def refuse(path, body):
+            if "node-power" in path:
+                raise RuntimeError("forbidden")
+            return real(path, body)
+        r.kube.create = refuse
+        r.tick()  # must not raise
+        self.assertIsNone(self.metrics(r))
+
+    def test_the_exposition_is_valid_text_format(self):
+        text = w.render_queue_metrics({"zagreus-ci": {"jobs": 2, "oldest": 90.7}}, 1_800_000_000.4)
+        self.assertEqual(text.splitlines()[-1], "zagreus_runner_queue_sampled_timestamp_seconds 1800000000")
+        self.assertIn('zagreus_runner_oldest_queued_seconds{set="zagreus-ci"} 90\n', text)
+        self.assertTrue(text.endswith("\n"))
+        for line in text.splitlines():
+            self.assertRegex(line, r'^(# (HELP|TYPE) \w+ .+|\w+(\{set="[a-z0-9-]+"\})? \d+)$')
+
+
+class QueueWatchdogManifests(unittest.TestCase):
+    """The gauges only reach the metrics store through the node exporter's
+    textfile collector, reading the ConfigMap the waker writes."""
+
+    CORE = os.path.join(WAKER_DIR, "..", "core", "node-power-exporter.yaml")
+
+    def test_the_exporter_reads_the_wakers_configmap_as_a_textfile(self):
+        with open(self.CORE) as f:
+            text = f.read()
+        cfg = production_config()["metricsConfigMap"]
+        self.assertIn("--collector.textfile\n", text)
+        self.assertIn("--collector.textfile.directory=/textfile", text)
+        self.assertIn(f"configMap: {{name: {cfg['name']}, optional: true}}", text)
+
+    def test_the_waker_may_write_that_configmap_and_nothing_wider(self):
+        with open(os.path.join(WAKER_DIR, "waker.yaml")) as f:
+            text = f.read()
+        cfg = production_config()["metricsConfigMap"]
+        self.assertRegex(text, rf"kind: Role\nmetadata:\n  name: zagreus-waker\n  namespace: {cfg['namespace']}\n")
+        self.assertIn(f"resourceNames: [{cfg['name']}]", text)
+
+
 class Heartbeat(unittest.TestCase):
     """The shell loop in core/kmsg-heartbeat.yaml, run for one pass."""
 

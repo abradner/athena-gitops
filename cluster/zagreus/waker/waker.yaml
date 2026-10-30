@@ -172,6 +172,32 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker-e
 subjects:
   - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
 ---
+# The queue-age gauges (README, "Queue watchdog"): a ConfigMap the node
+# exporter mounts as a textfile (core/node-power-exporter.yaml). Created by
+# the waker on first write, so Argo does not own it and never reverts it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zagreus-waker
+  namespace: node-power
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [waker-metrics]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zagreus-waker
+  namespace: node-power
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zagreus-waker}
+subjects:
+  - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
+---
 # Credentials, from the CI-only vault (core/external-secrets.yaml). The
 # 1Password item `zagreus-waker` holds:
 #   github_token  a fine-grained token: repository abradner/spritz only,
