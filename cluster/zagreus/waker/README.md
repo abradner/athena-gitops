@@ -436,7 +436,9 @@ it, sets the waker had at 0 stay at 0, and jobs that name a set
 1. Set `mode` back to `observe`, or scale the waker to 0, and merge.
 2. Power on any node that is asleep: `amt-on <node>` from the waker pod, or
    by hand. Wait for it to be Ready, then uncordon it if the waker's cordon
-   is still on it.
+   is still on it. Then clear the asleep label, which only a waker in full
+   mode removes: `kubectl label node <node> zagreus.asn.casa/asleep-`. Left on,
+   `node-exporter` stays off that node (its power and resource metrics vanish).
 3. Put each set back to its ceiling by hand:
 
    ```
