@@ -87,9 +87,12 @@ data:
   # scheme. REQUIRED at boot by app images from the guest-host PR onward, in
   # every process; older images ignore it, so it lands BEFORE the image.
   # Equal to CANONICAL_HOST, the app behaves exactly as before: one host, no
-  # fence. Flip it to the spritz.rsvp name only once that host's listener,
-  # certificate and DNS answer (cluster/core/networking).
-  GUEST_HOST: staging.rabalex.wedding
+  # fence. Set to the spritz.rsvp name once that host's listener,
+  # certificate and DNS answered (cluster/core/networking). Rolling back is
+  # setting it equal to CANONICAL_HOST again; keep the guest host's DNS and
+  # route up, since links sent meanwhile name it. Nothing reloads pods on a
+  # ConfigMap change: roll the Deployments after this syncs.
+  GUEST_HOST: staging.spritz.rsvp
   CONTACT_EMAIL: alex@bradner.net
   FROM_EMAIL: noreply@rabalex.wedding
   # Interim relay: Gmail (app password in the spritz-staging 1Password item;
