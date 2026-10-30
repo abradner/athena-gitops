@@ -1071,12 +1071,19 @@ class Waker:
             names.discard(node)
         self.write_asleep(sorted(names))
 
-    def publish_queue_metrics(self):
+    def publish_queue_metrics(self, set_labels):
         """Write the queue-age gauges where the node exporter picks them up.
         Only after a pass that read GitHub, so a blind waker leaves a stale
         sample time behind. Never stops the controller. Not in observe mode,
         which writes nothing."""
         if not self.may_patch_caps:
+            return
+        # A set whose labels could not be read matches no job (first_set), so
+        # its queue would read as empty. Publish nothing instead: the sample
+        # time ages and the stale alert says the watchdog is blind.
+        unreadable = [s["name"] for s in self.cfg["sets"] if s["name"] not in set_labels]
+        if unreadable:
+            LOG.warning("not publishing queue metrics: labels of %s unreadable", ", ".join(unreadable))
             return
         c = self.cfg["metricsConfigMap"]
         path = CM.format(ns=c["namespace"], name=c["name"])
@@ -1437,7 +1444,7 @@ class Waker:
             LOG.warning("GitHub demand unreadable, holding: %s", e)
             return
         self.last_demand_ok = now
-        self.publish_queue_metrics()
+        self.publish_queue_metrics(snap["labels"])
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         if self.mark_orphans(snap):
             self.alts = {}

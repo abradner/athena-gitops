@@ -2061,6 +2061,19 @@ class QueueWatchdog(unittest.TestCase):
         r.tick(advance=600)
         self.assertEqual(self.metrics(r), before)
 
+    def test_an_unreadable_scale_set_is_not_published_as_an_empty_queue(self):
+        # Codex on #301: the set's GET fails while GitHub stays readable, so
+        # first_set cannot match its jobs and 3600 s / 1 job would read 0 / 0
+        # with a fresh sample time.
+        r = Rig()
+        r.job(self.DOCKER, age_seconds=3600)
+        r.tick()
+        before = self.metrics(r)
+        self.assertEqual(self.value(before, "zagreus_runner_oldest_queued_seconds", "zagreus-docker-amd64"), 3600)
+        r.kube.fail_get.append(r"/autoscalingrunnersets/zagreus-docker-amd64$")
+        r.tick(advance=60)
+        self.assertEqual(self.metrics(r), before)  # old sample kept, so Stale can fire
+
     def test_observe_mode_publishes_nothing(self):
         r = Rig(mode="observe")
         r.job(self.DOCKER, age_seconds=3600)
@@ -2103,6 +2116,13 @@ class QueueWatchdogManifests(unittest.TestCase):
         self.assertIn("--collector.textfile\n", text)
         self.assertIn("--collector.textfile.directory=/textfile", text)
         self.assertIn(f"configMap: {{name: {cfg['name']}, optional: true}}", text)
+
+    def test_sleeping_nodes_cannot_block_the_exporter_rollout(self):
+        # 30 Oct 2026: both asleep amd64 nodes count as unavailable, so with
+        # maxUnavailable 1 the rollout never reached the awake nodes.
+        with open(self.CORE) as f:
+            text = f.read()
+        self.assertIn('maxUnavailable: "100%"', text)
 
     def test_the_waker_may_write_that_configmap_and_nothing_wider(self):
         with open(os.path.join(WAKER_DIR, "waker.yaml")) as f:

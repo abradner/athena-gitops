@@ -488,6 +488,17 @@ port, no router rule. Every node serves the same file, so a rule takes the max
 over nodes. A pass that cannot read GitHub does not rewrite the file, so the
 sample time ages: a blind watchdog reads as stale, not as a calm queue.
 
+**Lesson: power-managed nodes count as unavailable to a DaemonSet
+rollout.** The exporter's default `maxUnavailable: 1` stalled the rollout that
+added the textfile collector: both sleeping amd64 nodes (NotReady) used up the
+budget, so the awake nodes never got the new pods and the gauges were not
+served. The DaemonSet now sets `maxUnavailable: "100%"`. Any DaemonSet on these
+nodes whose rollout must reach the awake ones needs the same.
+
+If any driven set's labels cannot be read, the pass publishes nothing: that
+set's jobs would match nothing and its queue would read as empty. The sample
+time then ages and the stale alert fires.
+
 The alert rules live in asn-infra (`observability/rules/zagreus-runner-queue.yaml`).
 There is no automatic recovery: whether bouncing the listener (a `maxRunners`
 change) releases held jobs earlier is untested, and a wrong guess would

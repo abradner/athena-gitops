@@ -41,8 +41,14 @@ spec:
   selector:
     matchLabels:
       app: node-exporter
+  # Every node at once. The default (maxUnavailable 1) counts a node the
+  # waker has put to sleep as unavailable, so with both amd64 nodes asleep a
+  # rollout stalled before it reached the awake ones (30 Oct 2026). Safe here:
+  # node_exporter holds no state, and a restart is a missed scrape or two.
   updateStrategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "100%"
   template:
     metadata:
       labels:
