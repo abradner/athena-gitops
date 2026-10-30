@@ -224,6 +224,12 @@ class FakeKube:
                     node["metadata"]["annotations"].pop(k, None)
                 else:
                     node["metadata"]["annotations"][k] = v
+            for k, v in body.get("metadata", {}).get("labels", {}).items():
+                labels = node["metadata"].setdefault("labels", {})
+                if v is None:
+                    labels.pop(k, None)
+                else:
+                    labels[k] = v
             return node
         m = re.fullmatch(r"/apis/actions.github.com/v1alpha1/namespaces/([^/]+)/autoscalingrunnersets/([^/]+)", path)
         if m:
@@ -2130,6 +2136,95 @@ class QueueWatchdogManifests(unittest.TestCase):
         cfg = production_config()["metricsConfigMap"]
         self.assertRegex(text, rf"kind: Role\nmetadata:\n  name: zagreus-waker\n  namespace: {cfg['namespace']}\n")
         self.assertIn(f"resourceNames: [{cfg['name']}]", text)
+
+
+class AsleepLabel(unittest.TestCase):
+    """30 Oct 2026: Argo's zagreus-core sync waited 2 hours on the
+    node-exporter DaemonSet, whose pods on the sleeping nodes were never
+    Ready. A DaemonSet counts every node it may run on; the waker now labels a
+    sleeping node so the exporter's node affinity excludes it."""
+
+    KEY = "zagreus.asn.casa/asleep"
+    EXPORTER = os.path.join(WAKER_DIR, "..", "core", "node-power-exporter.yaml")
+    HEARTBEAT = os.path.join(WAKER_DIR, "..", "core", "kmsg-heartbeat.yaml")
+
+    def labelled(self, r):
+        return {n for n, o in r.kube.nodes.items() if o["metadata"].get("labels", {}).get(self.KEY) == "true"}
+
+    def test_a_sleeping_node_is_labelled_before_its_power_goes(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        self.assertEqual(self.labelled(r), {"zag-amd64-01", "zag-amd64-02"})
+        for node in ("zag-amd64-01", "zag-amd64-02"):
+            at = [i for i, wr in enumerate(r.kube.writes)
+                  if wr[0] == "PATCH" and wr[1] == f"/api/v1/nodes/{node}"
+                  and wr[2].get("metadata", {}).get("labels", {}).get(self.KEY) == "true"]
+            down = r.kube.writes.index(("SHUTDOWN", node, None))
+            self.assertTrue(at and at[0] < down, f"{node}: label {at} not before shutdown {down}")
+
+    def test_a_woken_node_loses_the_label_once_it_leaves_the_asleep_list(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.job(["zagreus-ci"], age_seconds=1)
+        r.tick(advance=300)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})  # one job wakes one node
+        self.assertEqual(self.labelled(r), {"zag-amd64-02"})
+
+    def test_the_label_follows_the_list_after_a_restart(self):
+        # A new waker remembers nothing: its first pass puts the label where
+        # the list says, and takes it off a node that is not listed.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.nodes["zag-amd64-01"]["metadata"]["labels"].pop(self.KEY)  # lost
+        r.kube.cms[("log-heartbeat", "waker-asleep")]["data"]["asleep"] = "zag-amd64-01"
+        r.kube.nodes["zag-amd64-02"]["metadata"]["labels"][self.KEY] = "true"  # stale
+        r.waker = w.Waker(r.cfg, r.kube, r.github, r.amt, r.talos,
+                          clock=r.clock, sleep=r.clock.sleep, my_node="cp1")
+        r.tick()
+        self.assertEqual(self.labelled(r), {"zag-amd64-01"})
+
+    def test_nothing_is_rewritten_while_nothing_changes(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.kube.writes.clear()
+        r.tick(advance=30)
+        r.tick(advance=30)
+        self.assertEqual([wr for wr in r.kube.writes
+                          if wr[1].startswith("/api/v1/nodes/") and "labels" in wr[2].get("metadata", {})], [])
+
+    def test_a_failed_label_patch_never_stops_a_sleep_and_is_retried(self):
+        r = Rig()
+        broken = [True]
+
+        def refuse(verb, path, body):
+            if broken[0] and path.startswith("/api/v1/nodes/") and "labels" in body.get("metadata", {}):
+                raise RuntimeError("forbidden")
+        r.kube.on_write = refuse
+        r.put_all_to_sleep()  # still sleeps both
+        self.assertEqual(self.labelled(r), set())
+        broken[0] = False
+        r.tick(advance=30)
+        self.assertEqual(self.labelled(r), {"zag-amd64-01", "zag-amd64-02"})
+
+    def test_observe_and_caps_modes_label_nothing(self):
+        for mode in ("observe", "caps"):
+            r = Rig(mode=mode)
+            r.kube.cms[("log-heartbeat", "waker-asleep")] = {"data": {
+                "asleep": "zag-amd64-01", "renewed": str(int(r.clock())), "emitter": "cp1"}}
+            r.tick()
+            self.assertEqual(self.labelled(r), set(), mode)
+
+    def test_the_exporter_avoids_labelled_nodes_and_the_heartbeat_does_not(self):
+        # The wake waits for a node's heartbeat pod to be Ready before it
+        # takes the label off, so the heartbeat must keep a pod on a sleeping
+        # node; a label-avoiding heartbeat would deadlock every wake.
+        with open(self.EXPORTER) as f:
+            exporter = f.read()
+        with open(self.HEARTBEAT) as f:
+            heartbeat = f.read()
+        self.assertRegex(exporter, rf"key: {re.escape(self.KEY)}, operator: DoesNotExist")
+        self.assertNotIn(self.KEY, heartbeat)
+        self.assertEqual(w.LABEL_ASLEEP, self.KEY)
 
 
 class Heartbeat(unittest.TestCase):

@@ -436,7 +436,9 @@ it, sets the waker had at 0 stay at 0, and jobs that name a set
 1. Set `mode` back to `observe`, or scale the waker to 0, and merge.
 2. Power on any node that is asleep: `amt-on <node>` from the waker pod, or
    by hand. Wait for it to be Ready, then uncordon it if the waker's cordon
-   is still on it.
+   is still on it. Then clear the asleep label, which only a waker in full
+   mode removes: `kubectl label node <node> zagreus.asn.casa/asleep-`. Left on,
+   `node-exporter` stays off that node (its power and resource metrics vanish).
 3. Put each set back to its ceiling by hand:
 
    ```
@@ -487,6 +489,43 @@ mounts it on every node, and the metrics store scrapes it with the rest. No new
 port, no router rule. Every node serves the same file, so a rule takes the max
 over nodes. A pass that cannot read GitHub does not rewrite the file, so the
 sample time ages: a blind watchdog reads as stale, not as a calm queue.
+
+## Asleep label
+
+Argo's `zagreus-core` sync waits for every DaemonSet it applies to be
+healthy ("waiting for healthy state of apps/DaemonSet/node-exporter"), and a
+DaemonSet is healthy only when its pods are updated and available on every node
+it counts. A sleeping node still counts, so its dead (Terminating or Pending)
+pod kept the DaemonSet Progressing, the sync operation Running, and every later
+revision of `zagreus-core` unapplied until someone terminated the operation or
+woke the nodes (30 Oct 2026: 14:43 to 16:49 AEDT). It is also why `zagreus-core`
+showed Progressing for hours at a time; no other zagreus app was affected (the
+other twelve are Healthy, and the Talos-installed Cilium DaemonSets are in no
+app).
+
+The fix makes the DaemonSet stop counting the node, not Argo stop looking:
+
+- The waker sets the label `zagreus.asn.casa/asleep=true` on a node in the same
+  step that adds it to the asleep list (`write_asleep`, before the shutdown, so
+  the pod is removed from a node that is still alive) and clears it when the
+  node leaves the list (after its heartbeat pod is Ready), on a failed wake, and
+  on a pass that finds it wrong (a restart). Full mode only. A failed patch is
+  logged and retried; it never stops a sleep or a wake.
+- `node-exporter` has a required node affinity `asleep DoesNotExist`.
+- `kmsg-heartbeat` does **not**: the wake waits for its pod to be Ready on the
+  node being woken, so a heartbeat that avoids the label would deadlock the
+  wake. It is not affected today (its pods stay Ready through a sleep). A test
+  pins both.
+
+Other designs weighed: a Lua health override in `argocd-cm` can read only the
+DaemonSet's own status, not Node objects, so it could only say "ignore
+unavailable pods", which hides a real stuck rollout on an awake node. An
+`ignore-healthcheck` annotation has the same blindness, and whether it governs
+the sync wait or only the app's aggregate health is not something the deployed
+Argo (v3.4.4) documents clearly. A NoSchedule/NoExecute taint would also work for
+a DaemonSet but would need every DaemonSet that tolerates everything
+(`operator: Exists`, as these do) rewritten to list its tolerations, and it
+touches scheduling for every pod.
 
 **Lesson: power-managed nodes count as unavailable to a DaemonSet
 rollout.** The exporter's default `maxUnavailable: 1` stalled the rollout that
