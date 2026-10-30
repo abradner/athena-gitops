@@ -134,6 +134,10 @@ DEFAULTS = {
     "nodes": [],
     "asleepConfigMap": {"namespace": "log-heartbeat", "name": "waker-asleep"},
     "eventsConfigMap": {"namespace": "zagreus-waker", "name": "waker-events"},
+    # The queue-age gauges, as a node_exporter textfile: the node exporter
+    # (core/node-power-exporter.yaml) mounts this ConfigMap, and the metrics
+    # store already scrapes it. See "Queue watchdog" in README.md.
+    "metricsConfigMap": {"namespace": "node-power", "name": "waker-metrics"},
     "heartbeat": {"namespace": "log-heartbeat", "label": "app=kmsg-heartbeat"},
     "applicationsNamespace": "argocd",
     "evictableNamespaces": ["kube-system"],
@@ -241,6 +245,52 @@ def demand_by_set(cfg, jobs, set_labels, now, max_age=None, alts=None):
             # carries the class labels (26 Oct 2026).
             break
     return out
+
+
+QUEUE_METRIC_FILE = "waker.prom"
+
+
+def oldest_queued_by_set(cfg, jobs, set_labels, now):
+    """{set: {"jobs": n, "oldest": seconds}} for every driven set: how many
+    jobs GitHub still lists as queued for it, and how long the oldest has
+    waited. No grace and no orphan filter: this is the raw wait a person
+    sees, and a job the waker has set aside as an orphan is exactly the one
+    that is stuck. A job counts for the first set it matches (first_set), as
+    in demand_by_set."""
+    out = {s["name"]: {"jobs": 0, "oldest": 0.0} for s in cfg["sets"]}
+    for job in jobs:
+        name = first_set(cfg, job, set_labels)
+        if name is None:
+            continue
+        age = max(0.0, (now - job["created_at"]).total_seconds())
+        out[name]["jobs"] += 1
+        out[name]["oldest"] = max(out[name]["oldest"], age)
+    return out
+
+
+def render_queue_metrics(stats, sampled_at):
+    """Prometheus text exposition (a node_exporter textfile) for
+    oldest_queued_by_set. The sample time is its own gauge: the file is only
+    rewritten when GitHub was readable, so a frozen file shows as a stale
+    sample time rather than as a calm queue. Set names come from waker.conf
+    and are DNS-like; no escaping is needed."""
+    lines = [
+        "# HELP zagreus_runner_oldest_queued_seconds Age of the oldest job GitHub lists as queued for the scale set (0 when none).",
+        "# TYPE zagreus_runner_oldest_queued_seconds gauge",
+    ]
+    lines += [f'zagreus_runner_oldest_queued_seconds{{set="{n}"}} {int(v["oldest"])}'
+              for n, v in sorted(stats.items())]
+    lines += [
+        "# HELP zagreus_runner_queued_jobs Jobs GitHub lists as queued for the scale set.",
+        "# TYPE zagreus_runner_queued_jobs gauge",
+    ]
+    lines += [f'zagreus_runner_queued_jobs{{set="{n}"}} {v["jobs"]}' for n, v in sorted(stats.items())]
+    lines += [
+        "# HELP zagreus_runner_queue_sampled_timestamp_seconds When the waker last read GitHub's queue (epoch seconds).",
+        "# TYPE zagreus_runner_queue_sampled_timestamp_seconds gauge",
+        f"zagreus_runner_queue_sampled_timestamp_seconds {int(sampled_at)}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def unmet_by_set(demand, live_caps, runners, unstarted):
@@ -964,6 +1014,7 @@ class Waker:
         self.stuck_woke = set()  # sets that already woke a node for a stuck claim
         self.held = {}  # per set: queued jobs older than heldAfterSeconds
         self.jobs = []  # the last demand read, orphans excluded
+        self.queue_stats = {}  # per set: queued jobs and the oldest's age, orphans included
         self.alts = {}  # (counted set, other matching set) -> jobs, from the last read
         self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
@@ -1019,6 +1070,26 @@ class Waker:
         else:
             names.discard(node)
         self.write_asleep(sorted(names))
+
+    def publish_queue_metrics(self):
+        """Write the queue-age gauges where the node exporter picks them up.
+        Only after a pass that read GitHub, so a blind waker leaves a stale
+        sample time behind. Never stops the controller. Not in observe mode,
+        which writes nothing."""
+        if not self.may_patch_caps:
+            return
+        c = self.cfg["metricsConfigMap"]
+        path = CM.format(ns=c["namespace"], name=c["name"])
+        body = {"data": {QUEUE_METRIC_FILE: render_queue_metrics(self.queue_stats, self.clock())}}
+        try:
+            if self.kube.get(path) is None:
+                self.kube.create(f"/api/v1/namespaces/{c['namespace']}/configmaps", {
+                    "apiVersion": "v1", "kind": "ConfigMap",
+                    "metadata": {"name": c["name"], "namespace": c["namespace"]}, **body})
+            else:
+                self.kube.merge_patch(path, body)
+        except Exception as e:  # a gauge must never stop the controller
+            LOG.warning("could not publish queue metrics: %s", e)
 
     def record_event(self, kind, node, **fields):
         fields.update({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -1188,6 +1259,7 @@ class Waker:
         for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
             jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
         queued, t = {j.get("id") for j in jobs}, self.clock()
+        self.queue_stats = oldest_queued_by_set(self.cfg, jobs, labels, now)
         self.orphans = {i: at for i, at in self.orphans.items()
                         if i in queued and t - at < self.cfg["orphanForSeconds"]}
         jobs = [j for j in jobs if j.get("id") not in self.orphans]
@@ -1365,6 +1437,7 @@ class Waker:
             LOG.warning("GitHub demand unreadable, holding: %s", e)
             return
         self.last_demand_ok = now
+        self.publish_queue_metrics()
         unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
         if self.mark_orphans(snap):
             self.alts = {}

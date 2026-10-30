@@ -26,8 +26,9 @@
 # only) and hostNetwork are what baseline Pod Security forbids, so the
 # namespace (namespaces.yaml) is labelled privileged.
 #
-# Read only towards power control: this neither talks to AMT nor reads or
-# writes anything of the node waker's (../waker/).
+# Read only towards power control: this neither talks to AMT nor writes
+# anything of the node waker's (../waker/). The one thing it reads of the
+# waker's is the queue-age gauges file, below.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -75,6 +76,12 @@ spec:
             - --collector.thermal_zone
             - --collector.time
             - --collector.uname
+            # The node waker's queue-age gauges (waker/README.md, "Queue
+            # watchdog"): it writes the ConfigMap mounted below, and the
+            # metrics store scrapes them with everything else. Every node
+            # serves the same file; the alert takes the max.
+            - --collector.textfile
+            - --collector.textfile.directory=/textfile
             # The node's own address only, not every interface (Cilium's
             # and the pods' included).
             - --web.listen-address=$(HOST_IP):9100
@@ -109,7 +116,12 @@ spec:
           volumeMounts:
             - {name: proc, mountPath: /host/proc, readOnly: true}
             - {name: sys, mountPath: /host/sys, readOnly: true}
+            - {name: waker-metrics, mountPath: /textfile, readOnly: true}
       volumes:
+        # Created by the waker on its first write, so optional: until then
+        # the directory is empty.
+        - name: waker-metrics
+          configMap: {name: waker-metrics, optional: true}
         - name: proc
           hostPath: {path: /proc, type: Directory}
         - name: sys

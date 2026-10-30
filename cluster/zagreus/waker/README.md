@@ -454,6 +454,45 @@ it, sets the waker had at 0 stay at 0, and jobs that name a set
 The same applies if the waker dies or is deleted while in `caps` or `full`
 mode: the sets keep whatever it last wrote.
 
+## Queue watchdog
+
+A job can sit queued inside GitHub with the node awake and the cap raised.
+`timeout-minutes` cannot catch it (it counts from the job's start), and the
+`held` rule above only keeps nodes awake. On 30 Oct 2026 two spritz release
+jobs waited 58 and 61 minutes on `zagreus-docker-amd64`. The waker had
+decided to wake zag-amd64-01 23 s after the jobs were queued, the node was
+Ready 47 s later and the cap went 0 to 1 in the same second. The set's
+listener restarted on that change and opened a fresh session, and GitHub's
+broker answered every long poll for 56 minutes with nothing (`totalAssignedJobs=0`,
+no message), then delivered the first job. ARC's listener reports only
+assigned jobs, so nothing in the cluster could see the wait. Earlier wakes
+show the same shape at shorter lengths (first job 375 s to 2058 s after a wake
+on 28 and 29 Oct, against the usual 89 s). Why GitHub held the jobs is not
+known from the cluster side.
+
+So the waker measures it from the GitHub API it already polls. Each pass that
+reads the queue (caps and full modes) writes, for every driven set:
+
+| Metric | Meaning |
+|---|---|
+| `zagreus_runner_oldest_queued_seconds{set}` | age of the oldest job GitHub lists as queued for the set; 0 when none |
+| `zagreus_runner_queued_jobs{set}` | how many |
+| `zagreus_runner_queue_sampled_timestamp_seconds` | when the waker last read the queue |
+
+The jobs are counted with no grace and **orphans included** (the waker sets a
+job aside from demand after the held window; it is still stuck). The gauges
+travel as a node_exporter textfile: the waker patches the ConfigMap
+`node-power/waker-metrics` (key `waker.prom`), `core/node-power-exporter.yaml`
+mounts it on every node, and the metrics store scrapes it with the rest. No new
+port, no router rule. Every node serves the same file, so a rule takes the max
+over nodes. A pass that cannot read GitHub does not rewrite the file, so the
+sample time ages: a blind watchdog reads as stale, not as a calm queue.
+
+The alert rules live in asn-infra (`observability/rules/zagreus-runner-queue.yaml`).
+There is no automatic recovery: whether bouncing the listener (a `maxRunners`
+change) releases held jobs earlier is untested, and a wrong guess would
+restart listeners under running jobs.
+
 ## Measurements
 
 The waker records these in `zagreus-waker/waker-events`:
@@ -549,6 +588,7 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | any manager's stamp counts, not just the kubelet's | `LeaseFindings.test_another_writer_on_the_lease_does_not_revive_a_dead_node` |
 | without AMT, an unreadable Lease, or the shutdown stamp, confirms "off" | `LeaseFindings.test_without_amt_an_unreadable_lease_never_confirms_off`, `test_without_amt_a_hung_shutdown_with_a_live_kubelet_is_not_off` |
 | the wake counts a Ready node with no live kubelet | `LeaseFindings.test_a_woken_node_without_a_live_kubelet_is_a_failed_wake` |
+| the queue gauges never published | 6 of the `QueueWatchdog` tests (age, oldest of several, orphans included, drains to 0, sample time) |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed
