@@ -154,6 +154,11 @@ spec:
     - name: homelab-gateway
       namespace: default
       sectionName: https-rabalex
+    # The guest host (GUEST_HOST). Until GUEST_HOST names it, the app
+    # redirects it to CANONICAL_HOST like any other unknown host.
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-spritz-rsvp
     # Public: also attached to the tunnel listener (:8443). This records
     # intent and keeps the route working if attachment ever becomes
     # spec-strict. It is NOT a security control — Cilium serves every route
@@ -165,6 +170,7 @@ spec:
       sectionName: https-tunnel
   hostnames:
     - "rabalex.wedding"
+    - "spritz.rsvp"
   rules:
     # The video transcoder's API is cluster-internal (abradner/spritz deploy
     # gate G7): the transcoder calls the spritz-web Service directly and never

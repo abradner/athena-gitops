@@ -175,6 +175,30 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: staging-spritz-events-tls
+  # spritz.rsvp — the Spritz guest host (guest links only; the app fences
+  # organiser routes off it). Simplytics-account zone, as spritz.events.
+  - name: https-spritz-rsvp
+    port: 443
+    protocol: HTTPS
+    hostname: "spritz.rsvp"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: spritz-rsvp-tls
+  - name: https-spritz-rsvp-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.spritz.rsvp"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-spritz-rsvp-tls
   # chuvar.ai — the public site. Simplytics-account zone, same cert-manager
   # caveat as inbox.simplytics.ai above; irrelevant to the Gateway itself.
   - name: https-chuvar-ai
