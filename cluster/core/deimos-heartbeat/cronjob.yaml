@@ -1,0 +1,76 @@
+---
+# Once a minute, from inside athena: "I am alive and I have egress."
+#
+# THIS LOOKS LIKE IT BREAKS THE PLACEMENT DOCTRINE, AND DELIBERATELY DOES NOT.
+# The doctrine puts watchers OF the cluster outside it, so a dead cluster can
+# still be reported dead. A heartbeat is the inverse signal — proof of life —
+# and can only be asserted from inside the thing whose death it attests to.
+# Moving this out would leave it able to say "I can reach athena's API",
+# which the public probes already say, and unable to say the one thing the
+# DR zone's power controller needs: that athena itself is up and can reach
+# the internet. Do not "fix" this by relocating it.
+#
+# What reads it: the deimos-power Lambda (asn-infra: deimos/lambda/). A stale
+# heartbeat alone starts nothing — the WAN failing over to 4G looks the same
+# for a minute or two and the tunnel rides that out — it takes the heartbeat
+# stale AND the public sites failing before the DR instance is powered on.
+#
+# backoffLimit 0: a missed minute self-heals on the next one, and retries
+# would only pile pods up behind a dead WAN.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: athena-heartbeat
+  namespace: deimos-heartbeat
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 50
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 30
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: heartbeat
+              image: curlimages/curl:8.11.1
+              command:
+                - sh
+                - -c
+                - |
+                  code=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' \
+                    -X POST -H "X-Heartbeat-Secret: ${SECRET}" "${URL}")
+                  echo "heartbeat: HTTP ${code}"
+                  [ "$code" = 204 ]
+              env:
+                - name: URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: deimos-heartbeat
+                      key: url
+                - name: SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: deimos-heartbeat
+                      key: secret
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 32Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
