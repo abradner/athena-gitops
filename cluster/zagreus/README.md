@@ -52,7 +52,7 @@ It drives `zagreus-ci`, `zagreus-ci-x64` and `zagreus-docker-amd64`; their
 Applications ignore `spec.maxRunners`, and the value written in each is the
 waker's ceiling. Until the waker leaves observe mode the static caps below
 apply as written, and with the amd64 nodes always on, `zagreus-ci` races the
-classic runners for up to three jobs at a time rather than waiting for them
+classic runners for up to seven jobs at a time rather than waiting for them
 to fill. Each job class matches at most one scale set; a job matching two
 would go to either, so a heavy job could land in a light pod. The scale-set
 name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus

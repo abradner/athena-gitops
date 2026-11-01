@@ -34,8 +34,26 @@ def iso(t):
     return dt.datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def production_config():
+def live_config():
+    """waker.conf exactly as deployed. Only the checks that the file itself
+    is right (slots fit, ceilings and RBAC agree with it) read this."""
     return w.load_config(os.path.join(WAKER_DIR, "waker.conf"))
+
+
+# The behaviour tests run against a frozen two-node world (the hardware of
+# 23 Oct 2026, matching ALLOCATABLE below), so adding or resizing a node
+# changes the live-config checks and not 160 scenarios. ThreeNodes runs the
+# live node list through the wake and sleep choices.
+TWO_NODES = [
+    {"name": "zag-amd64-01", "slots": {"zagreus-ci": 1, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1}},
+    {"name": "zag-amd64-02", "slots": {"zagreus-ci": 2}},
+]
+
+
+def production_config():
+    cfg = live_config()
+    cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
+    return cfg
 
 
 def cfg_with(**over):
@@ -563,13 +581,72 @@ class Caps(unittest.TestCase):
 
     def test_configured_slots_fit_the_nodes(self):
         """The arithmetic in waker.conf, checked: each node's slots, plus
-        what else may land there, fit its allocatable memory (23 Oct 2026)."""
-        alloc_gib = {"zag-amd64-01": 22.47, "zag-amd64-02": 14.49}
+        what else may land there, fit its allocatable memory and CPU
+        (1 Nov 2026, after the RAM shuffle)."""
+        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44}
+        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95}
         pod_gib = {"zagreus-ci": 6, "zagreus-ci-x64": 6, "zagreus-docker-amd64": 3 + 0.75}
+        pod_cpu = {"zagreus-ci": 1.5, "zagreus-ci-x64": 1.5, "zagreus-docker-amd64": 1 + 0.25}
         others_gib = 2 * 0.75 + 0.25 + 0.5  # two light pods, bundle fill, coredns and slack
-        for n in self.cfg["nodes"]:
+        # two light pods, coredns, then cilium, the bundle fill and the other DaemonSets
+        others_cpu = 2 * 0.25 + 0.1 + 0.156
+        nodes = live_config()["nodes"]
+        self.assertEqual(set(alloc_gib), {n["name"] for n in nodes})
+        for n in nodes:
             used = sum(pod_gib[s] * k for s, k in n["slots"].items()) + others_gib
             self.assertLessEqual(used, alloc_gib[n["name"]], n["name"])
+            cpu = sum(pod_cpu[s] * k for s, k in n["slots"].items()) + others_cpu
+            self.assertLessEqual(cpu, alloc_cpu[n["name"]], n["name"])
+
+
+class LiveConfig(unittest.TestCase):
+    """waker.conf, the RBAC in waker.yaml and the ceilings in the runner
+    Applications have to agree, and nothing but a test makes them."""
+
+    RUNNERS = os.path.join(WAKER_DIR, "..", "runners", "spritz")
+    CEILING_FILES = {"zagreus-ci": "ci.yaml", "zagreus-ci-x64": "ci-x64.yaml",
+                     "zagreus-docker-amd64": "docker-amd64.yaml"}
+
+    def test_the_rbac_names_every_listed_node_and_no_other(self):
+        with open(os.path.join(WAKER_DIR, "waker.yaml")) as f:
+            text = f.read()
+        names = sorted(n["name"] for n in live_config()["nodes"])
+        rules = re.findall(r"resources: \[(nodes|leases)\]\n\s+resourceNames: \[([^\]]*)\]", text)
+        self.assertEqual(sorted(r for r, _ in rules), ["leases", "nodes"])
+        for resource, listed in rules:
+            self.assertEqual(sorted(x.strip() for x in listed.split(",")), names, resource)
+
+    def test_each_ceiling_is_the_sum_of_the_node_slots(self):
+        cfg = live_config()
+        for s in cfg["sets"]:
+            with open(os.path.join(self.RUNNERS, self.CEILING_FILES[s["name"]])) as f:
+                ceiling = int(re.search(r"^\s+maxRunners: (\d+)$", f.read(), re.M).group(1))
+            slots = s["base"] + sum(n["slots"].get(s["name"], 0) for n in cfg["nodes"])
+            self.assertEqual(ceiling, slots, s["name"])
+
+
+class ThreeNodes(unittest.TestCase):
+    """The live node list (three amd64 nodes from 1 Nov 2026): wake in list
+    order, sleep the last first."""
+
+    def setUp(self):
+        self.cfg = live_config()
+        self.names = [n["name"] for n in self.cfg["nodes"]]
+
+    def test_wake_follows_the_list(self):
+        st = states(**{n: {"ready": False, "asleep": True} for n in self.names})
+        self.assertEqual(w.choose_wake(self.cfg, {"zagreus-ci": 1}, st, {}, T0), self.names[0])
+        backoff = {self.names[0]: T0 + 1}
+        self.assertEqual(w.choose_wake(self.cfg, {"zagreus-ci": 1}, st, backoff, T0), self.names[1])
+
+    def test_only_the_first_node_serves_the_builder(self):
+        st = states(**{self.names[0]: {}, **{n: {"ready": False, "asleep": True} for n in self.names[1:]}})
+        self.assertIsNone(w.choose_wake(self.cfg, {"zagreus-docker-amd64": 1}, st, {}, T0))
+
+    def test_sleep_takes_the_last_node_first(self):
+        st = states(**{n: {} for n in self.names})
+        idle = {n: T0 for n in self.names}
+        self.assertEqual(w.choose_sleep(self.cfg, st, idle, {}, {}, T0 + 60 * 60), self.names[-1])
 
 
 class Choose(unittest.TestCase):

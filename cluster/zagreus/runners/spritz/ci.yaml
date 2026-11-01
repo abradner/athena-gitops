@@ -38,22 +38,22 @@ spec:
         minRunners: 0
         # Never more runners than the nodes can schedule. A job this set claims
         # is bound to it: a claim beyond capacity sits in a Pending pod while a
-        # classic runner with the same labels could have taken it. The two
-        # amd64 nodes have 22.5 and 14.5 GiB allocatable (23 Oct 2026); after
-        # the bundle filler and coredns they fit three 6 GiB pods and two. The
-        # amd64 builder (docker-amd64.yaml, 3.75 GiB with its dind sidecar)
-        # and up to two light pods (768 MiB, ci-light.yaml) share them, and
-        # with the builder on the 14.5 GiB node only one 6 GiB pod fits there.
-        # So four heavy pods always schedule, five do not: this set 3,
-        # ci-x64.yaml 1. The margin is about 1 GiB across both nodes, so
-        # re-check whenever a DaemonSet or system pod grows, and raise both
-        # together when a node joins. CPU (worst node: 3 x 1.5 plus the
-        # builder's 1.25 and two light pods' 0.5, 6.25 of 7.95) and ephemeral storage (about 108 and 115 GB
-        # allocatable against 34 GiB of requests) do not bind. The node waker
-        # drives the live value from the awake nodes, and this is its ceiling
-        # (README, "Runners"; ../../waker/waker.conf holds the per-node slots
-        # that sum to it).
-        maxRunners: 3
+        # classic runner with the same labels could have taken it. The three
+        # amd64 nodes have 30.3, 30.2 and 14.4 GiB and 7.95, 7.95 and 3.95 CPU
+        # allocatable (1 Nov 2026). A heavy pod requests 6 GiB and 1.5 CPU;
+        # the amd64 builder (docker-amd64.yaml) 3.75 GiB and 1.25 CPU with its
+        # dind sidecar; up to two light pods (ci-light.yaml), the bundle
+        # filler, coredns and the DaemonSets about 2.25 GiB and 0.76 CPU more.
+        # CPU binds on the two i7s: zag-amd64-01 fits the builder and three
+        # heavy pods (6.51 of 7.95 CPU; a fourth makes 8.01), zag-amd64-02
+        # fits four (6.76; a fifth makes 8.26). Memory binds on the i5:
+        # zag-amd64-03 fits two (14.25 of 14.4 GiB). Nine heavy pods in all:
+        # this set 7, ci-x64.yaml 2. Re-check whenever a request, a DaemonSet
+        # or a node changes. The node waker drives the live value from the
+        # awake nodes, and this is its ceiling (README, "Runners";
+        # ../../waker/waker.conf holds the per-node slots that sum to it, and
+        # its test_configured_slots_fit_the_nodes checks the sums).
+        maxRunners: 7
         listenerTemplate:
           spec:
             nodeSelector:
