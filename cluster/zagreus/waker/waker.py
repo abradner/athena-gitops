@@ -299,6 +299,102 @@ def render_queue_metrics(stats, sampled_at):
     return "\n".join(lines) + "\n"
 
 
+SLOT_METRIC_FILE = "slots.prom"
+NODE_STATES = ("awake", "asleep", "cordoned", "not_ready", "unknown")
+
+
+def node_state_name(st):
+    """One word for a listed node's state, for the slot metrics. None (the
+    node could not be read this pass) is "unknown", never "awake"."""
+    if st is None:
+        return "unknown"
+    if st["asleep"]:
+        return "asleep"
+    if not st["ready"]:
+        return "not_ready"
+    if st["unschedulable"]:
+        return "cordoned"
+    return "awake"
+
+
+def _label(v):
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def slot_usage(cfg, states, pods_by_node, offered, runner_jobs):
+    """What the slot metrics say, as data (render_slot_metrics writes it).
+
+    used: runner pods (any scale set, light ones included) on each node,
+    finished ones left out. Every node that has any pod at all gets a row
+    for every set seen anywhere plus the driven sets, so zero is written as
+    zero and a missing row means "not known", not "none".
+    offered: per listed node and driven set, what the waker would offer now
+    (compute_caps per_node, own runners included); 0 on a node that is not
+    awake. A listed node that could not be read gets no row.
+    jobs: one row per runner pod whose EphemeralRunner names a job."""
+    driven = [s["name"] for s in cfg["sets"]]
+    listed = [n["name"] for n in cfg["nodes"]]
+    used = {}
+    for node, pods in pods_by_node.items():
+        if not node:
+            continue
+        counts = used.setdefault(node, {})
+        for p in pods:
+            set_name = (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL)
+            if set_name and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"):
+                counts[set_name] = counts.get(set_name, 0) + 1
+    for node in listed:
+        if states.get(node) is not None:
+            used.setdefault(node, {})
+    sets_seen = sorted(set(driven) | {s for c in used.values() for s in c})
+    used = {node: {s: c.get(s, 0) for s in sets_seen} for node, c in used.items()}
+    state = {node: node_state_name(states.get(node)) for node in listed}
+    configured = {n["name"]: {s: int(n.get("slots", {}).get(s, 0)) for s in driven} for n in cfg["nodes"]}
+    offer = {node: {s: (offered.get(node, {}).get(s, 0) if state[node] == "awake" else 0) for s in driven}
+             for node in listed if state[node] != "unknown"}
+    jobs = []
+    for node, pods in pods_by_node.items():
+        for p in pods:
+            name = p.get("metadata", {}).get("name")
+            job = runner_jobs.get(name)
+            if node and job and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"):
+                jobs.append(dict(job, node=node, runner=name))
+    return {"used": used, "state": state, "configured": configured, "offered": offer,
+            "jobs": sorted(jobs, key=lambda j: (j["node"], j["runner"]))}
+
+
+def render_slot_metrics(usage, sampled_at):
+    """Prometheus text for slot_usage. The node is runner_node, because the
+    scrape already sets node (the exporter's own host, and every awake node
+    exports this same file). The sample time ages if the waker stops."""
+    lines = ["# HELP zagreus_runner_node_state The waker's view of a node it manages: 1 for its current state.",
+             "# TYPE zagreus_runner_node_state gauge"]
+    for node, st in sorted(usage["state"].items()):
+        lines += [f'zagreus_runner_node_state{{runner_node="{node}",state="{k}"}} {int(k == st)}'
+                  for k in NODE_STATES]
+    lines += ["# HELP zagreus_runner_slots_used Runner pods of the scale set on the node (finished ones left out).",
+              "# TYPE zagreus_runner_slots_used gauge"]
+    for node, c in sorted(usage["used"].items()):
+        lines += [f'zagreus_runner_slots_used{{runner_node="{node}",set="{s}"}} {k}' for s, k in sorted(c.items())]
+    lines += ["# HELP zagreus_runner_slots_offered Slots the waker would offer the set on the node now, its running runners included (0 unless awake).",
+              "# TYPE zagreus_runner_slots_offered gauge"]
+    for node, c in sorted(usage["offered"].items()):
+        lines += [f'zagreus_runner_slots_offered{{runner_node="{node}",set="{s}"}} {k}' for s, k in sorted(c.items())]
+    lines += ["# HELP zagreus_runner_slots_configured The node's slots for the set in waker.conf.",
+              "# TYPE zagreus_runner_slots_configured gauge"]
+    for node, c in sorted(usage["configured"].items()):
+        lines += [f'zagreus_runner_slots_configured{{runner_node="{node}",set="{s}"}} {k}' for s, k in sorted(c.items())]
+    lines += ["# HELP zagreus_runner_job_info 1 for each runner pod running a job: which job is in which slot.",
+              "# TYPE zagreus_runner_job_info gauge"]
+    for j in usage["jobs"]:
+        lines.append('zagreus_runner_job_info{runner_node="%s",set="%s",runner="%s",repo="%s",workflow_run="%s",job="%s"} 1'
+                     % tuple(_label(j[k]) for k in ("node", "set", "runner", "repo", "workflow_run", "job")))
+    lines += ["# HELP zagreus_runner_slots_sampled_timestamp_seconds When the waker last wrote the slot metrics (epoch seconds).",
+              "# TYPE zagreus_runner_slots_sampled_timestamp_seconds gauge",
+              f"zagreus_runner_slots_sampled_timestamp_seconds {int(sampled_at)}"]
+    return "\n".join(lines) + "\n"
+
+
 def unmet_by_set(demand, live_caps, runners, unstarted):
     """Demand a set cannot absorb with the caps it already has.
 
@@ -399,7 +495,7 @@ def untolerated_taint(node, tolerated_keys=()):
     return None
 
 
-def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
+def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=None):
     """base + what each awake node can still take, per driven set (no
     ceiling).
 
@@ -419,7 +515,11 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
 
     Sets are filled in waker.conf order, so the builder (listed first: it
     preempts CI pods) gets its room before CI does. Without set_requests:
-    the configured slots, as written."""
+    the configured slots, as written.
+
+    per_node: a dict to fill with what each awake node offers each set
+    ({node: {set: n}}, its own runners included); the caps are its sums
+    plus base. For the slot metrics only: the caps never read it."""
     caps = {s["name"]: int(s.get("base", 0)) for s in cfg["sets"]}
     room_nodes = []  # (node config, own counts, [free cpu, free mem]) for room-aware awake nodes
     for n in cfg["nodes"]:
@@ -432,6 +532,8 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
         if set_requests is None or "free" not in st:
             for set_name, slots in n.get("slots", {}).items():
                 caps[set_name] += int(slots)
+                if per_node is not None:
+                    per_node.setdefault(n["name"], {})[set_name] = int(slots)
             continue
         room_nodes.append((n, dict(st.get("own") or {}), list(st["free"])))
 
@@ -464,6 +566,8 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
     for n, own, free in room_nodes:
         for set_name in caps:
             caps[set_name] += own.get(set_name, 0)
+            if per_node is not None:
+                per_node.setdefault(n["name"], {})[set_name] = own.get(set_name, 0)
         for s in cfg["sets"]:
             name = s["name"]
             req = set_requests.get(name, (0, 0))
@@ -473,6 +577,8 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None):
                 free[0] -= fit * req[0]
                 free[1] -= fit * req[1]
                 caps[name] += fit
+                if per_node is not None:
+                    per_node[n["name"]][name] += fit
     return caps
 
 
@@ -1116,9 +1222,30 @@ class Waker:
         if unreadable:
             LOG.warning("not publishing queue metrics: labels of %s unreadable", ", ".join(unreadable))
             return
+        self.write_metrics_file(QUEUE_METRIC_FILE, render_queue_metrics(self.queue_stats, self.clock()))
+
+    def publish_slot_metrics(self, snap):
+        """Write the slot gauges (slot_usage) every pass, GitHub readable or
+        not: they come from the cluster alone. Not in observe mode. Never
+        stops the controller."""
+        if not self.may_patch_caps:
+            return
+        try:
+            offered = {}
+            compute_caps(self.cfg, snap["states"], snap.get("requests"), snap.get("unplaced"), per_node=offered)
+            usage = slot_usage(self.cfg, snap["states"], snap.get("pods_by_node") or {}, offered,
+                               snap.get("runner_jobs") or {})
+            text = render_slot_metrics(usage, self.clock())
+        except Exception as e:  # a gauge must never stop the controller
+            LOG.warning("could not compute slot metrics: %s", e)
+            return
+        self.write_metrics_file(SLOT_METRIC_FILE, text)
+
+    def write_metrics_file(self, key, text):
+        """One file in the metrics ConfigMap, the others left as they are."""
         c = self.cfg["metricsConfigMap"]
         path = CM.format(ns=c["namespace"], name=c["name"])
-        body = {"data": {QUEUE_METRIC_FILE: render_queue_metrics(self.queue_stats, self.clock())}}
+        body = {"data": {key: text}}
         try:
             if self.kube.get(path) is None:
                 self.kube.create(f"/api/v1/namespaces/{c['namespace']}/configmaps", {
@@ -1127,7 +1254,7 @@ class Waker:
             else:
                 self.kube.merge_patch(path, body)
         except Exception as e:  # a gauge must never stop the controller
-            LOG.warning("could not publish queue metrics: %s", e)
+            LOG.warning("could not publish %s: %s", key, e)
 
     def record_event(self, kind, node, **fields):
         fields.update({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -1215,6 +1342,7 @@ class Waker:
             ips[n["name"]] = node_ip(node)
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
+        runner_jobs = {}  # runner pod name (= its EphemeralRunner's) -> the job it runs
         degraded, blind = set(), set()
         stuck = {}
         for s in cfg["sets"]:
@@ -1264,6 +1392,14 @@ class Waker:
             # demand (athena-gitops#239).
             live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
             runners[s["name"]] = len(live_ers)
+            for e in live_ers:
+                st = e.get("status") or {}
+                er_name = (e.get("metadata") or {}).get("name")
+                if er_name and (st.get("jobDisplayName") or st.get("jobRequestId")):
+                    runner_jobs[er_name] = {
+                        "set": s["name"], "repo": st.get("jobRepositoryName") or "",
+                        "workflow_run": st.get("workflowRunId") or "",
+                        "job": st.get("jobDisplayName") or ""}
             unstarted[s["name"]] = sum(1 for e in live_ers if not e.get("status", {}).get("jobRequestId"))
             placed = sum(1 for p in pods
                          if (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL) == s["name"]
@@ -1289,6 +1425,7 @@ class Waker:
                 "degraded": degraded,
                 # Sets whose runners could not be read: claims unknown.
                 "blind": blind,
+                "runner_jobs": runner_jobs,
                 "requests": requests if len(requests) == len(live) else None}
 
     def demand(self, labels):
@@ -1470,6 +1607,7 @@ class Waker:
         self.note_first_jobs(snap)
 
         self.apply_caps(snap)
+        self.publish_slot_metrics(snap)
 
         try:
             demand = self.demand(snap["labels"])

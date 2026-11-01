@@ -2206,6 +2206,92 @@ class QueueWatchdog(unittest.TestCase):
             self.assertRegex(line, r'^(# (HELP|TYPE) \w+ .+|\w+(\{set="[a-z0-9-]+"\})? \d+)$')
 
 
+class SlotMetrics(unittest.TestCase):
+    """1 Nov 2026, Alex: "the number of / which slots are in-use as a
+    timeseries for each node / aggregate". The waker writes slots.prom
+    beside waker.prom every pass. A sleeping or unreadable node must read as
+    that, never as an idle node with nothing in use."""
+
+    PATH = ("node-power", "waker-metrics")
+
+    def text(self, r):
+        cm = r.kube.cms.get(self.PATH)
+        return None if cm is None else cm["data"].get(w.SLOT_METRIC_FILE)
+
+    def value(self, text, metric, **labels):
+        sel = ",".join(f'{k}="{v}"' for k, v in labels.items())
+        m = re.search(rf'^{metric}{{{re.escape(sel)}}} (\d+)$', text, re.M)
+        self.assertIsNotNone(m, f"{metric}{{{sel}}} missing from:\n{text}")
+        return int(m.group(1))
+
+    def test_used_offered_and_the_job_in_each_slot(self):
+        r = Rig()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci", name="zagreus-ci-runner-abc")
+        r.kube.ers["arc-runners"].append({
+            "metadata": {"name": "zagreus-ci-runner-abc", "labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+            "status": {"jobRequestId": 9, "jobRepositoryName": "abradner/spritz",
+                       "workflowRunId": 123, "jobDisplayName": 'rspec "shard" 2'}})
+        r.kube.add_runner_pod("zag-arm64-02", "zagreus-ci-light")  # a node the waker does not manage
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci", phase="Succeeded")  # finished: not in use
+        r.tick()
+        t = self.text(r)
+        self.assertEqual(self.value(t, "zagreus_runner_node_state", runner_node="zag-amd64-01", state="awake"), 1)
+        self.assertEqual(self.value(t, "zagreus_runner_node_state", runner_node="zag-amd64-01", state="asleep"), 0)
+        self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node="zag-amd64-01", set="zagreus-ci"), 1)
+        self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node="zag-amd64-02", set="zagreus-ci"), 0)
+        self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node="zag-arm64-02", set="zagreus-ci-light"), 1)
+        # Zero is written as zero for every set, light ones included.
+        self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node="zag-amd64-01", set="zagreus-ci-light"), 0)
+        # Two-node fixture: 01 has one ci slot, held by its own runner; 02 has two free.
+        self.assertEqual(self.value(t, "zagreus_runner_slots_offered", runner_node="zag-amd64-01", set="zagreus-ci"), 1)
+        self.assertEqual(self.value(t, "zagreus_runner_slots_offered", runner_node="zag-amd64-02", set="zagreus-ci"), 2)
+        self.assertEqual(self.value(t, "zagreus_runner_slots_configured", runner_node="zag-amd64-02", set="zagreus-ci"), 2)
+        self.assertIn('zagreus_runner_job_info{runner_node="zag-amd64-01",set="zagreus-ci",runner="zagreus-ci-runner-abc",'
+                      'repo="abradner/spritz",workflow_run="123",job="rspec \\"shard\\" 2"} 1', t)
+        self.assertEqual(t.count("zagreus_runner_job_info{"), 1)
+        self.assertRegex(t, r"(?m)^zagreus_runner_slots_sampled_timestamp_seconds \d+$")
+
+    def test_a_sleeping_node_reads_as_asleep_with_nothing_offered(self):
+        r = Rig()
+        r.put_all_to_sleep()
+        r.tick(advance=30)  # the metrics are written early in a pass; the sleep came later in the last one
+        t = self.text(r)
+        for node in ("zag-amd64-01", "zag-amd64-02"):
+            self.assertEqual(self.value(t, "zagreus_runner_node_state", runner_node=node, state="asleep"), 1)
+            self.assertEqual(self.value(t, "zagreus_runner_node_state", runner_node=node, state="awake"), 0)
+            self.assertEqual(self.value(t, "zagreus_runner_slots_offered", runner_node=node, set="zagreus-ci"), 0)
+            self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node=node, set="zagreus-ci"), 0)
+
+    def test_an_unreadable_node_is_unknown_not_idle(self):
+        r = Rig()
+        r.kube.fail_get.append(r"/api/v1/nodes/zag-amd64-02$")
+        r.tick()
+        t = self.text(r)
+        self.assertEqual(self.value(t, "zagreus_runner_node_state", runner_node="zag-amd64-02", state="unknown"), 1)
+        self.assertEqual(self.value(t, "zagreus_runner_node_state", runner_node="zag-amd64-02", state="awake"), 0)
+        self.assertNotIn('zagreus_runner_slots_offered{runner_node="zag-amd64-02"', t)
+        # Control: the readable node is still reported.
+        self.assertEqual(self.value(t, "zagreus_runner_slots_offered", runner_node="zag-amd64-01", set="zagreus-ci"), 1)
+
+    def test_published_while_github_is_unreadable(self):
+        r = Rig()
+        r.github.fail = True
+        r.tick()
+        self.assertIsNotNone(self.text(r))
+
+    def test_the_queue_file_survives_beside_it(self):
+        r = Rig()
+        r.tick()
+        data = r.kube.cms[self.PATH]["data"]
+        self.assertIn(w.QUEUE_METRIC_FILE, data)
+        self.assertIn(w.SLOT_METRIC_FILE, data)
+
+    def test_observe_mode_writes_nothing(self):
+        r = Rig(mode="observe")
+        r.tick()
+        self.assertIsNone(r.kube.cms.get(self.PATH))
+
+
 class QueueWatchdogManifests(unittest.TestCase):
     """The gauges only reach the metrics store through the node exporter's
     textfile collector, reading the ConfigMap the waker writes."""
