@@ -643,6 +643,26 @@ class ThreeNodes(unittest.TestCase):
         st = states(**{self.names[0]: {}, **{n: {"ready": False, "asleep": True} for n in self.names[1:]}})
         self.assertIsNone(w.choose_wake(self.cfg, {"zagreus-docker-amd64": 1}, st, {}, T0))
 
+    # Live allocatable (1 Nov 2026) less the worst case of everything else
+    # that may land there (two light pods, coredns, DaemonSets), in CPU and
+    # GiB. Requests as the pod templates give them.
+    FREE = {"zag-amd64-01": (7.95 - 0.76, 30.34 - 2.25),
+            "zag-amd64-02": (7.95 - 0.76, 30.22 - 2.25),
+            "zag-amd64-03": (3.95 - 0.76, 14.44 - 2.25)}
+    REQ = {"zagreus-ci": (1.5, 6.0), "zagreus-ci-x64": (1.5, 6.0), "zagreus-docker-amd64": (1.25, 3.75)}
+
+    def test_room_counting_on_the_live_nodes_offers_the_ceilings(self):
+        st = states(**{n: {"free": self.FREE[n]} for n in self.names})
+        caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
+        self.assertEqual(caps, {"zagreus-docker-amd64": 1, "zagreus-ci": 7, "zagreus-ci-x64": 2})
+
+    def test_the_i5_alone_offers_its_two_heavy_slots(self):
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True},
+                       "zag-amd64-03": {"free": self.FREE["zag-amd64-03"]}})
+        caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
+        self.assertEqual(caps, {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0})
+
     def test_sleep_takes_the_last_node_first(self):
         st = states(**{n: {} for n in self.names})
         idle = {n: T0 for n in self.names}

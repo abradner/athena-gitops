@@ -110,7 +110,7 @@ footer { margin-top: 64px; color: var(--muted); font-size: 14px; border-top: 1px
 <header class="hero">
   <div class="eyebrow">athena-gitops · cluster/zagreus/waker</div>
   <h1>zagreus waker</h1>
-  <p class="lede">One pod on zagreus's control plane runs this loop every 30 seconds. It keeps the two amd64 runner nodes asleep until the always-on classic runners can't keep up. It wakes them through Intel AMT when work queues, and puts them back to sleep after an hour idle. All along, it tells GitHub how many jobs each zagreus scale set may take.</p>
+  <p class="lede">One pod on zagreus's control plane runs this loop every 30 seconds. It keeps the three amd64 runner nodes asleep until the always-on classic runners can't keep up. It wakes them through Intel AMT when work queues, and puts them back to sleep after an hour idle. All along, it tells GitHub how many jobs each zagreus scale set may take.</p>
 </header>
 
 <h2 id="why">Why maxRunners, not only power</h2>
@@ -204,7 +204,7 @@ flowchart TD
 </table></div>
 <h3>Two worked examples</h3>
 <ul>
-  <li><strong>01 gone, an e2e job (6 GiB) running on 02.</strong> 02 has room for one more heavy pod, so <code>zagreus-ci</code> gets 1 and <code>zagreus-ci-x64</code> keeps 1 for its running job. Before room counting, it would have offered ci 2, and one of those two jobs would have been stranded.</li>
+  <li><strong>01 gone, an e2e job (6 GiB) running on 02</strong> (on the 24 Oct hardware, when 02 had 16 GB). 02 had room for one more heavy pod, so <code>zagreus-ci</code> got 1 and <code>zagreus-ci-x64</code> kept 1 for its running job. Before room counting, it would have offered ci 2, and one of those two jobs would have been stranded.</li>
   <li><strong>02 cordoned by hand</strong> (live, 24 Oct 21:46). <code>zagreus-ci maxRunners 3 -&gt; 1</code> was written 18 s later and held for 3 h. It went back to 3 within 32 s of 02 being Ready again.</li>
 </ul>
 <p>Lowering is immediate. The one exception is the first pass after a start: if that pass can't read a node's Lease and has nothing earlier to go on, it waits a pass before lowering, so one failed read doesn't make the listeners flap.</p>

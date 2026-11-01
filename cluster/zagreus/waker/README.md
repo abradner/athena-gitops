@@ -145,7 +145,7 @@ clocks again. A failed Lease read reuses the last good answer for up to
 **Without AMT, "off" is weaker:** it means the kubelet's Lease has stopped,
 plus a 30 s margin, because Talos stops the kubelet before it powers off. A
 kubelet that crashes during a sleep, or a shutdown that hangs after the
-kubelet stops, is taken as off. Both nodes have AMT today, and AMT's power
+kubelet stops, is taken as off. Every listed node has AMT, and AMT's power
 state is the confirmation whenever it answers. The
 kubelet renews it every 10 s, and the Lease stops the moment the node loses
 power. The Ready condition takes ~40 s to notice, and never notices if
@@ -273,8 +273,8 @@ only what still fits. It counts:
 
 - **Room:** the node's allocatable, less the requests of every pod already
   there (Codex on #238). That catches another set's runner taking the room.
-  For example, with zag-amd64-01 gone and an e2e job on 02, `zagreus-ci`
-  is offered one slot there, not two.
+  For example (24 Oct, when 02 had 16 GB), with zag-amd64-01 gone and an
+  e2e job on 02, `zagreus-ci` was offered one slot there, not two.
 - **Requests:** each set's pod requests come from its AutoscalingRunnerSet
   template, with native sidecars counted in full (the builder's dind is
   one: 3.75 GiB).
