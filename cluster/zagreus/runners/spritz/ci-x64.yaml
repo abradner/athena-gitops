@@ -62,6 +62,18 @@ spec:
                         - key: zagreus.asn.casa/role
                           operator: In
                           values: [amd64-runner]
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  # Heavy jobs scale with cores (Vitest workers, parallel
+                  # rspec): prefer the two 8-thread i7s over the 4-thread
+                  # i5 (zag-amd64-03), which still takes jobs once they are
+                  # full. A preference only: the waker's slots decide what
+                  # is offered, this only decides where it lands.
+                  - weight: 50
+                    preference:
+                      matchExpressions:
+                        - key: kubernetes.io/hostname
+                          operator: In
+                          values: [zag-amd64-01, zag-amd64-02]
             initContainers:
               # Copies this node's pre-installed gem tree (bundle-cache.yaml)
               # into the pod's own BUNDLE_PATH. The trees are mounted
@@ -141,14 +153,24 @@ spec:
                   # take for installed.
                   - name: MISE_CACHE_DIR
                     value: /home/runner/.local/share/mise/.cache
+                  # With no CPU limit this is the node's allocatable cores
+                  # (8 on the i7s, 4 on the i5). Nothing in spritz reads it
+                  # today; Vitest takes VITEST_MAX_WORKERS from ci.yml.
                   - name: CI_CPUS
                     valueFrom:
                       resourceFieldRef:
                         containerName: runner
                         resource: limits.cpu
+                # No CPU limit (2 Nov 2026). A limit of 4 had CFS throttle the
+                # Vitest step even on an idle node: 300-550 s here against
+                # 100-200 s on the Mac runners. The request (1.5) is unchanged:
+                # it is what the scheduler and the waker's slot sums use, and
+                # under contention it sets each pod's share of the node. Memory
+                # keeps its limit: running out of memory kills, running out of
+                # CPU only slows.
                 resources:
                   requests: {cpu: 1500m, memory: 6Gi, ephemeral-storage: 10Gi}
-                  limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 40Gi}
+                  limits: {memory: 8Gi, ephemeral-storage: 40Gi}
                 volumeMounts:
                   - {name: mise, mountPath: /home/runner/.local/share/mise}
                   - {name: playwright, mountPath: /home/runner/.cache/ms-playwright}
