@@ -303,6 +303,14 @@ SLOT_METRIC_FILE = "slots.prom"
 NODE_STATES = ("awake", "asleep", "cordoned", "not_ready", "unknown")
 
 
+def is_runner_pod(pod):
+    """A runner pod, owned by an EphemeralRunner. Not the set's listener,
+    which carries the same scale-set label but runs on the control plane
+    (owned by an AutoscalingListener) and holds no job."""
+    return any(o.get("kind") == "EphemeralRunner"
+               for o in (pod.get("metadata", {}).get("ownerReferences") or []))
+
+
 def node_state_name(st):
     """One word for a listed node's state, for the slot metrics. None (the
     node could not be read this pass) is "unknown", never "awake"."""
@@ -341,7 +349,7 @@ def slot_usage(cfg, states, pods_by_node, offered, runner_jobs):
         counts = used.setdefault(node, {})
         for p in pods:
             set_name = (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL)
-            if set_name and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"):
+            if set_name and is_runner_pod(p) and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"):
                 counts[set_name] = counts.get(set_name, 0) + 1
     for node in listed:
         if states.get(node) is not None:
@@ -1321,7 +1329,7 @@ class Waker:
             own = {}
             for p in node_pods:
                 set_name = (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL)
-                if set_name in driven:
+                if set_name in driven and is_runner_pod(p):
                     own[set_name] = own.get(set_name, 0) + 1
             states[n["name"]] = {
                 "ready": ready,
@@ -1401,8 +1409,10 @@ class Waker:
                         "workflow_run": st.get("workflowRunId") or "",
                         "job": st.get("jobDisplayName") or ""}
             unstarted[s["name"]] = sum(1 for e in live_ers if not e.get("status", {}).get("jobRequestId"))
+            # Runner pods only: the listener has the same label and a node.
             placed = sum(1 for p in pods
                          if (p.get("metadata", {}).get("labels") or {}).get(SCALE_SET_LABEL) == s["name"]
+                         and is_runner_pod(p)
                          and p.get("spec", {}).get("nodeName")
                          and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"))
             unplaced[s["name"]] = max(0, len(live_ers) - placed)
@@ -1709,7 +1719,8 @@ class Waker:
         for node, started in list(self.pending_first_job.items()):
             for p in snap["pods_by_node"].get(node, []):
                 labels = p.get("metadata", {}).get("labels", {}) or {}
-                if labels.get(SCALE_SET_LABEL) in driven and p.get("status", {}).get("phase") == "Running":
+                if (labels.get(SCALE_SET_LABEL) in driven and is_runner_pod(p)
+                        and p.get("status", {}).get("phase") == "Running"):
                     self.record_event("first-job", node, seconds=round(self.clock() - started))
                     del self.pending_first_job[node]
                     break
