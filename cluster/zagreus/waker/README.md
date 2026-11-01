@@ -497,6 +497,40 @@ port, no router rule. Every node serves the same file, so a rule takes the max
 over nodes. A pass that cannot read GitHub does not rewrite the file, so the
 sample time ages: a blind watchdog reads as stale, not as a calm queue.
 
+## Slot metrics
+
+Alex, 1 Nov 2026: "the number of / which slots are in-use as a timeseries
+for each node / aggregate". The waker already knows each node's state, its
+configured slots, what it would offer now (room counted) and every runner
+pod, so it writes them out each pass, GitHub readable or not (caps and full
+modes), as a second file in the same ConfigMap (key `slots.prom`):
+
+| Metric | Meaning |
+|---|---|
+| `zagreus_runner_node_state{runner_node,state}` | 1 for a managed node's current state: `awake`, `asleep`, `cordoned`, `not_ready` or `unknown` (unreadable this pass) |
+| `zagreus_runner_slots_used{runner_node,set}` | runner pods of the set on the node, finished ones left out. Every set, light ones too, on every node with pods |
+| `zagreus_runner_slots_offered{runner_node,set}` | what the waker would offer the set there now, its running runners included; 0 unless awake |
+| `zagreus_runner_slots_configured{runner_node,set}` | the node's slots in `waker.conf` |
+| `zagreus_runner_job_info{runner_node,set,runner,repo,workflow_run,job}` | 1 per runner pod running a job: which job is in which slot (driven sets only; their EphemeralRunners are the ones the waker reads) |
+| `zagreus_runner_slots_sampled_timestamp_seconds` | when the waker last wrote the file |
+
+Absence is never written as zero, and zero is never left as absence:
+
+- A sleeping node is `state="asleep"` with 0 offered, not a missing series.
+  (Only in `full` mode, which keeps the asleep list; in `caps` mode a
+  powered-off node reads `not_ready`.)
+- An unreadable node is `state="unknown"` and has no `offered` row.
+- Every node with pods gets a `used` row for every set, so 0 is written
+  as 0.
+- A stopped waker leaves the sample time ageing.
+
+The node label is `runner_node` because the scrape already sets `node` (the
+exporter's own host). Every awake node serves the same file, so take `max by
+(runner_node, set)`. Light slots are not modelled by the waker: their sets
+are not driven, so only `used` covers them.
+Gate on the sample time as well: the exporters keep serving a stopped waker's
+last file, so without the gate stale numbers read as live.
+
 ## Asleep label
 
 Argo's `zagreus-core` sync waits for every DaemonSet it applies to be
