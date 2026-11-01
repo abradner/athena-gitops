@@ -2251,6 +2251,40 @@ class SlotMetrics(unittest.TestCase):
         self.assertEqual(t.count("zagreus_runner_job_info{"), 1)
         self.assertRegex(t, r"(?m)^zagreus_runner_slots_sampled_timestamp_seconds \d+$")
 
+    def add_listeners(self, r):
+        """1 Nov 2026, live: every set's listener runs on cp1 with the same
+        scale-set label (owned by an AutoscalingListener), and the first
+        slots.prom counted each as a runner in use there."""
+        for s in ["zagreus-ci", "zagreus-ci-x64", "zagreus-docker-amd64"]:
+            r.kube.pods.append({
+                "metadata": {"name": f"{s}-84694794-listener", "namespace": "arc-systems",
+                             "labels": {w.SCALE_SET_LABEL: s},
+                             "ownerReferences": [{"kind": "AutoscalingListener", "name": s}]},
+                "spec": {"nodeName": "cp1", "containers": [{"name": "listener"}]},
+                "status": {"phase": "Running"}})
+
+    def test_listeners_are_not_runners(self):
+        r = Rig()
+        self.add_listeners(r)
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci")
+        r.tick()
+        t = self.text(r)
+        for s in ("zagreus-ci", "zagreus-ci-x64", "zagreus-docker-amd64"):
+            self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node="cp1", set=s), 0)
+        # Control: the real runner is still counted.
+        self.assertEqual(self.value(t, "zagreus_runner_slots_used", runner_node="zag-amd64-01", set="zagreus-ci"), 1)
+
+    def test_a_listener_does_not_hide_an_unplaced_runner(self):
+        # A claimed runner whose pod is not bound yet is unplaced; the set's
+        # listener (bound, on cp1) must not be counted as its pod.
+        r = Rig()
+        self.add_listeners(r)
+        r.kube.ers["arc-runners"].append({"metadata": {"name": "zagreus-ci-runner-new",
+                                                       "labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {}})
+        snap = r.waker.observe()
+        self.assertEqual(snap["unplaced"]["zagreus-ci"], 1)
+
     def test_a_sleeping_node_reads_as_asleep_with_nothing_offered(self):
         r = Rig()
         r.put_all_to_sleep()
