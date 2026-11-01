@@ -145,7 +145,7 @@ clocks again. A failed Lease read reuses the last good answer for up to
 **Without AMT, "off" is weaker:** it means the kubelet's Lease has stopped,
 plus a 30 s margin, because Talos stops the kubelet before it powers off. A
 kubelet that crashes during a sleep, or a shutdown that hangs after the
-kubelet stops, is taken as off. Both nodes have AMT today, and AMT's power
+kubelet stops, is taken as off. Every listed node has AMT, and AMT's power
 state is the confirmation whenever it answers. The
 kubelet renews it every 10 s, and the Lease stops the moment the node loses
 power. The Ready condition takes ~40 s to notice, and never notices if
@@ -246,19 +246,26 @@ What each failure looks like:
 
 | Node | Memory (allocatable) | `zagreus-ci` | `zagreus-ci-x64` | `zagreus-docker-amd64` |
 |---|---|---|---|---|
-| zag-amd64-01 | 22.5 GiB | 1 | 1 | 1 |
-| zag-amd64-02 | 14.5 GiB | 2 | 0 | 0 |
-| **both** | | **3** | **1** | **1** (= the #223 ceilings) |
+| zag-amd64-01 | 30.3 GiB, 7.95 CPU | 2 | 1 | 1 |
+| zag-amd64-02 | 30.2 GiB, 7.95 CPU | 3 | 1 | 0 |
+| zag-amd64-03 | 14.4 GiB, 3.95 CPU | 2 | 0 | 0 |
+| **all three** | | **7** | **2** | **1** (= the ceilings) |
 
 A node's slots must fit on it even when everything else that can land there
-does. That means two light pods (768 MiB each), the bundle fill and coredns.
-A heavy pod requests 6 GiB. The builder requests 3 GiB plus its 768 MiB dind.
+does. That means two light pods (768 MiB, 250m each), the bundle fill,
+coredns and the DaemonSets: about 2.25 GiB and 0.76 CPU. A heavy pod requests
+6 GiB and 1.5 CPU. The builder requests 3.75 GiB and 1.25 CPU with its dind.
+Figures from 1 Nov 2026, after the RAM shuffle (01 and 02 at 32 GB, 03 at 16).
 
-- zag-amd64-01 alone carries two heavy pods and the builder: 12 + 3.75 + 2.25
-  = 18 GiB of 22.5.
-- zag-amd64-02 alone carries two heavy pods: 12 + 2.25 = 14.25 GiB of 14.5.
-  The builder's slot belongs to 01, so it never lands on 02 when 02 is the
-  only node awake.
+- zag-amd64-01 carries three heavy pods and the builder: 18 + 3.75 + 2.25 =
+  24 GiB of 30.3, and 4.5 + 1.25 + 0.76 = 6.51 CPU of 7.95. A fourth heavy
+  pod would need 8.01 CPU, so CPU binds, not memory.
+- zag-amd64-02 carries four heavy pods: 24 + 2.25 = 26.25 GiB, 6.76 CPU. A
+  fifth would need 8.26 CPU. The builder's slot belongs to 01, so it never
+  lands on 02 or 03 when they are the only nodes awake.
+- zag-amd64-03 (i5-7500, 4 threads) carries two: 12 + 2.25 = 14.25 GiB of
+  14.4, and 3.76 CPU of 3.95. It is last in the list, so it wakes last and
+  sleeps first.
 
 The configured slots are an upper bound, not a promise. Each pass, the
 waker also checks how much room each awake node has left, and offers a set
@@ -266,8 +273,8 @@ only what still fits. It counts:
 
 - **Room:** the node's allocatable, less the requests of every pod already
   there (Codex on #238). That catches another set's runner taking the room.
-  For example, with zag-amd64-01 gone and an e2e job on 02, `zagreus-ci`
-  is offered one slot there, not two.
+  For example (24 Oct, when 02 had 16 GB), with zag-amd64-01 gone and an
+  e2e job on 02, `zagreus-ci` was offered one slot there, not two.
 - **Requests:** each set's pod requests come from its AutoscalingRunnerSet
   template, with native sidecars counted in full (the builder's dind is
   one: 3.75 GiB).
@@ -282,8 +289,8 @@ only what still fits. It counts:
   don't tolerate counts nothing. That covers disk pressure, memory
   pressure and a cordon (Codex on #238).
 
-On 24 Oct, with two CI jobs running, this gave 3/1/1, the same as the
-static table.
+On 24 Oct, with two CI jobs running and two nodes, this gave 3/1/1, the
+same as the static table then.
 
 `tests/test_waker.py` (`test_configured_slots_fit_the_nodes`) checks these
 sums. Re-check whenever a request, a DaemonSet or a node changes. A node is
@@ -579,7 +586,7 @@ strands a real job:
      `kubectl -n arc-runners get ephemeralrunners -l
      actions.github.com/scale-set-name=zagreus-ci` stays empty, and the
      listener logs `max=0`.
-  4. Uncordon both nodes. Within 30 s the caps are back to 3/1/1.
+  4. Uncordon both nodes. Within 30 s the caps are back to the ceilings.
   5. Clean up: delete the branch.
 - **Wake and sleep (live, `full` mode, after the AMT proof):**
   1. With both nodes idle, set `idleMinutes` to 5 for the test. Watch
