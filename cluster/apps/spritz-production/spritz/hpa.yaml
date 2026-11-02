@@ -29,8 +29,11 @@ spec:
         name: cpu
         target:
           type: Utilization
-          # Against the 100m request. Steady state is ~22m total, so this sits
-          # at the floor of 2 and only moves under real load.
+          # Against the 400m request (app.yaml says why it is that): a 280m
+          # average is a pod doing real work. Steady state is ~25m a pod, so
+          # this sits at the floor of 2 and moves only under real load. It
+          # was against 100m until 2026-11-02, when renders in the request
+          # pinned it at max reading "156%".
           averageUtilization: 70
   behavior:
     scaleUp:
