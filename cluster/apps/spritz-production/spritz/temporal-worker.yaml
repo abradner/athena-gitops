@@ -19,7 +19,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/spritz:v202611021342-release-pr-1488-de9bb5a@sha256:de81ac7a57424ee74ce351661d64c15a9ee2872b85d03587337d41067ae747af
+          image: ghcr.io/abradner/spritz:v202611021430@sha256:52fbb579d3243731ee6c2a2394ad274c6200be2751dcbb1690dc372e0828b2e9
           imagePullPolicy: IfNotPresent
           args: ["bundle", "exec", "rake", "temporal:run_worker"]
           ports:
