@@ -130,6 +130,17 @@ metadata:
   namespace: spritz-production
 spec:
   replicas: 2
+  # Recreate, not a rolling update, because of the required anti-affinity
+  # below. A pod that is shutting down still counts for it, and a rolling
+  # update starts each new renderer while an old one is still terminating
+  # (Solid Queue drains its job first). So whenever an old renderer was on
+  # the GPU worker, no new one could land there, and the GPU worker was used
+  # only every other rollout: seen 2026-11-02, renderers on two Pis with the
+  # GPU worker free, then one back on it after the next rollout. Recreate
+  # waits until the old pods are gone before scheduling any. The gap costs
+  # nothing but speed: the supervisor's worker renders `variants` too.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: spritz-variant-worker
