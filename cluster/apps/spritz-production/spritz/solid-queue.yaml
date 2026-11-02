@@ -146,6 +146,12 @@ spec:
           operator: Equal
           value: intel
           effect: NoSchedule
+        # The two NVMe scratch workers are good renderers (see below); their
+        # PreferNoSchedule taint would otherwise score them last.
+        - key: athena.asn.casa/scratch
+          operator: Equal
+          value: nvme
+          effect: PreferNoSchedule
       affinity:
         # Preferred, never required: with the GPU worker down these render on
         # the arm workers as before.
@@ -157,6 +163,22 @@ spec:
                   - key: spritz.dev/gpu
                     operator: In
                     values: [intel]
+            # Away from the three original CM5 workers while their container
+            # storage is on eMMC. A render writes the downloaded original and
+            # libvips' scratch there, so it is disk-bound: measured on
+            # 2026-11-02, a renderer on talos-ig0-74s took 63 s for one thumb
+            # of a 50MP photo (all three variants 70-113 s, CPU near idle)
+            # where the one on NVMe-backed talos-goe-x5g took about 11 s for
+            # all three. node-exporter: mmcblk0 busy for days on hal-hk1,
+            # ig0-74s and qxb-ybi, nvme0n1 unused. Remove this term when
+            # their Talos 1.14 rebuild moves EPHEMERAL to NVMe, as it did for
+            # goe-x5g, p0p-jc7 and q2n-86d.
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: [talos-hal-hk1, talos-ig0-74s, talos-qxb-ybi]
         # Never two of these on one node. The CPU limit below is per pod, so
         # two renderers on the GPU worker would be 8 of its 10 vCPUs and undo
         # what the limit is for. Required, unlike the spread below: these may
