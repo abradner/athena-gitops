@@ -21,6 +21,17 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      # One web pod per node where the nodes allow it. Two on one Pi share
+      # its four cores and its memory, so one busy neighbour slows both and
+      # losing that node loses both. Soft: a pod beside another beats a pod
+      # left Pending while a node is down or the zone has only one (deimos).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: spritz-web
       containers:
         - name: web
           image: ghcr.io/abradner/spritz:v202611020851@sha256:924421397ab95fbfecd51e0ba6e1f23fccb18898fb02ca03128dbe7767f4e031
@@ -111,7 +122,17 @@ spec:
             periodSeconds: 30
           resources:
             requests:
-              cpu: 100m
+              # What one busy pod uses, not what an idle one does. A Puma
+              # process is one Ruby VM: three threads share one core at most,
+              # and a pod serving a busy page sits at a few hundred millicores.
+              # At 100m the scheduler packed two web pods, the queue
+              # supervisor and a renderer onto one 4-core Pi (85% busy,
+              # 2026-11-02) while other nodes idled, and the HPA's 70% target
+              # meant 70m, so it sat at max replicas reading "156%" of a
+              # number that described nothing. At 400m five replicas reserve
+              # two cores, spread, and 70% (280m average) is a pod that is
+              # actually working.
+              cpu: 400m
               # At or above observed steady state, so the scheduler reserves
               # what the pod actually holds rather than letting a node accept
               # neighbours it cannot honour.

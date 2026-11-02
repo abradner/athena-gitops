@@ -67,7 +67,12 @@ spec:
                 optional: true
           resources:
             requests:
-              cpu: 50m
+              # It runs every transactional job (mail, WhatsApp, Active
+              # Storage analysis) and renders variants too: 1.15 cores during
+              # a bulk library upload on 2026-11-02, on a node it shared with
+              # two web pods and a renderer because it asked for 50m. Half a
+              # core is a floor the scheduler can plan around.
+              cpu: 500m
               memory: 384Mi
             limits:
               # This pod renders guest photo variants as well as running the
@@ -202,9 +207,13 @@ spec:
                 optional: true
           resources:
             requests:
-              # A render uses every core libvips can get for a few seconds;
-              # the request is the idle floor, not the peak.
-              cpu: 100m
+              # A render uses every core libvips can get (up to the limit
+              # below) for seconds at a time, back to back through a backlog.
+              # At 100m a renderer looked free to the scheduler and landed
+              # beside the supervisor and two web pods on one Pi (2026-11-02).
+              # One core reserved keeps renderers off nodes that cannot give
+              # them one; the limit still lets a render use four.
+              cpu: 1000m
               memory: 384Mi
             limits:
               # Keep in step with VIPS_CONCURRENCY. See the header for why
