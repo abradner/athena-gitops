@@ -45,7 +45,10 @@ data:
   # GUEST_PHOTOS_RENDER_IN_WEB does for guest photos. Flip it only after the
   # existing library has been warmed (the app's .agents/deployment.md has the
   # order); the way back is "true" and a restart of spritz-web.
-  LIBRARY_IMAGES_RENDER_IN_WEB: "true"
+  #
+  # "false" since 2026-11-02 (Alex), once abradner/spritz#1486 was live and
+  # the library was warm (spritz:warm_asset_variants found nothing missing).
+  LIBRARY_IMAGES_RENDER_IN_WEB: "false"
   # How the app answers a request for an occasion picture's original, or for
   # a variant it no longer declares. "observe": serve it as before and log
   # what "enforce" would have refused. "enforce": redirect an original to its
