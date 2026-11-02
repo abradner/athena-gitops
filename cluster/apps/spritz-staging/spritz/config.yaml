@@ -25,6 +25,22 @@ data:
   # depend on the queue: with the queue down, none appear. If photos stop
   # appearing on the day, set this back to "true" and restart spritz-web.
   GUEST_PHOTOS_RENDER_IN_WEB: "true"
+  # The same switch for an occasion's LIBRARY images (Occasion#assets, the
+  # portal media page), read by abradner/spritz images from the "library
+  # variants off web" change onward: at boot, no default, only "true" or
+  # "false", so it is here before any image that needs it. Older images
+  # ignore it.
+  #
+  # "true" is what the app has always done: a web pod renders a library
+  # image's thumb/card/hero the first time one is asked for. On 2026-11-02 a
+  # bulk upload of a photographer's set put 122 such renders of camera
+  # originals into web requests in two hours (p95 11 s, worst 113 s, every
+  # other request on those pods waiting). "false" answers 503 for an
+  # unrendered library variant and leaves it to spritz-variant-workers, as
+  # GUEST_PHOTOS_RENDER_IN_WEB does for guest photos. Flip it only after the
+  # existing library has been warmed (the app's .agents/deployment.md has the
+  # order); the way back is "true" and a restart of spritz-web.
+  LIBRARY_IMAGES_RENDER_IN_WEB: "true"
   # How the app answers a request for an occasion picture's original, or for
   # a variant it no longer declares. "observe": serve it as before and log
   # what "enforce" would have refused. "enforce": redirect an original to its
