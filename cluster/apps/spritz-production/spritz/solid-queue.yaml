@@ -41,7 +41,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: jobs
-          image: ghcr.io/abradner/spritz:v202611021430@sha256:52fbb579d3243731ee6c2a2394ad274c6200be2751dcbb1690dc372e0828b2e9
+          image: ghcr.io/abradner/spritz:v202611030131@sha256:0d3f6ca93b04814b6e79094b4490f24878c61d57208ae684ca39ffa938bf33f8
           imagePullPolicy: IfNotPresent
           args: ["bin/jobs"]
           ports:
@@ -216,7 +216,7 @@ spec:
               spritz/render-pool: variants
       containers:
         - name: jobs
-          image: ghcr.io/abradner/spritz:v202611021430@sha256:52fbb579d3243731ee6c2a2394ad274c6200be2751dcbb1690dc372e0828b2e9
+          image: ghcr.io/abradner/spritz:v202611030131@sha256:0d3f6ca93b04814b6e79094b4490f24878c61d57208ae684ca39ffa938bf33f8
           imagePullPolicy: IfNotPresent
           args: ["bin/jobs"]
           env:
