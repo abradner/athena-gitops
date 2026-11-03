@@ -768,10 +768,10 @@ class SleepProcedure(unittest.TestCase):
         gaps = [b - a for a, b in zip(times, times[1:])]
         self.assertLessEqual(max(gaps), 60, gaps)
 
-    def test_all_asleep_means_every_driven_set_claims_nothing(self):
+    def test_all_asleep_means_every_driven_set_claims_nothing_beyond_its_floor(self):
         r = Rig()
         r.put_all_to_sleep()
-        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 1})  # the builder at its floor (Floor)
         self.assertEqual(sorted(r.talos.calls), ["zag-amd64-01", "zag-amd64-02"])
 
     def test_a_pod_landing_after_the_cordon_aborts_the_sleep(self):
@@ -855,7 +855,7 @@ class WakeProcedure(unittest.TestCase):
         r.kube.taint("zag-amd64-01", "example.com/maintenance")
         r.job(["zagreus-docker-amd64"], age_seconds=1)
         r.tick(advance=300)
-        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 1})  # the builder at its floor (Floor)
 
     def test_codex_p2_a_listed_node_with_no_node_object_is_still_audited(self):
         r = Rig()
@@ -1302,7 +1302,7 @@ class CapsCodexFindings(unittest.TestCase):
         r.kube.taint("zag-amd64-01", "node.kubernetes.io/disk-pressure")
         r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True
         r.tick(advance=60)
-        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 1})  # the builder at its floor (Floor)
 
     def test_a_prefer_noschedule_taint_does_not(self):
         r = Rig(mode="caps")
@@ -1483,7 +1483,7 @@ class CapsReviewLows(unittest.TestCase):
         r.kube.last_renew["zag-amd64-01"] = r.clock()
         r.kube.dead.add("zag-amd64-01")  # Ready stays True: only the Lease knows
         r.tick(advance=30)
-        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 0})
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 1})  # the builder at its floor (Floor)
 
     def test_low3_a_leftover_asleep_list_does_not_hold_a_ready_node_out_in_caps(self):
         r = Rig(mode="caps")
@@ -1624,7 +1624,7 @@ class LeaseFindings(unittest.TestCase):
         r.tick(advance=300)
         self.assertEqual(r.kube.nodes["zag-amd64-01"]["metadata"]["annotations"][w.ANNOTATION_STATE],
                          "wake-failed")
-        self.assertEqual(r.kube.caps()["zagreus-docker-amd64"], 0)
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 0, "zagreus-ci-x64": 0, "zagreus-docker-amd64": 1})  # the builder at its floor (Floor)
 
 
 class GitHubClient(unittest.TestCase):
@@ -2442,6 +2442,242 @@ class AsleepLabel(unittest.TestCase):
         self.assertRegex(exporter, rf"key: {re.escape(self.KEY)}, operator: DoesNotExist")
         self.assertNotIn(self.KEY, heartbeat)
         self.assertEqual(w.LABEL_ASLEEP, self.KEY)
+
+
+class Floor(unittest.TestCase):
+    """3 Nov 2026: two release jobs queued on zagreus-docker-amd64 while
+    its cap was 0 (nodes asleep). The waker woke 01 in 47 s and raised the
+    cap 0 -> 1; that restarted the set's listener, and GitHub sent the fresh
+    session nothing for 32 minutes (56 on 30 Oct). A set whose jobs name it
+    gains nothing from cap 0 (no classic runner can take them), so its cap
+    stays at its floor: no cap change, no listener restart, the job is
+    claimed at once and its pod waits for the wake."""
+
+    SET = "zagreus-docker-amd64"
+
+    def docker_patches(self, r):
+        return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes
+                if v == "PATCH" and p.endswith("/autoscalingrunnersets/" + self.SET)]
+
+    def claim(self, r, age=0):
+        """GitHub has handed the set a job: an EphemeralRunner with no pod
+        on a node yet."""
+        r.kube.ers["arc-builders"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: self.SET},
+                                                        "creationTimestamp": iso(r.clock() - age)},
+                                           "status": {}})
+
+    def test_live_config_floors_only_the_builder(self):
+        floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 0, "zagreus-ci-x64": 0})
+
+    def test_a_negative_floor_is_refused(self):
+        cfg = production_config()
+        cfg["sets"][0]["floor"] = -1
+        with self.assertRaises(ValueError):
+            w.validate_config(cfg)
+
+    def test_floor_caps_lifts_to_the_floor_never_past_the_ceiling(self):
+        cfg = production_config()
+        for s in cfg["sets"]:
+            s["floor"] = 1
+        got = w.floor_caps(cfg, {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0},
+                           live={"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0},
+                           ceilings={"zagreus-docker-amd64": 1, "zagreus-ci": 3, "zagreus-ci-x64": 0})
+        self.assertEqual(got, {"zagreus-docker-amd64": 1, "zagreus-ci": 2, "zagreus-ci-x64": 0})
+
+    def test_floor_caps_with_no_ceiling_read_only_keeps_what_is_live(self):
+        # bound_caps' rule: with no ceiling ever read, only lower.
+        cfg = production_config()
+        got = w.floor_caps(cfg, {"zagreus-docker-amd64": 0, "zagreus-ci": 0, "zagreus-ci-x64": 0},
+                           live={"zagreus-docker-amd64": 0, "zagreus-ci": 0, "zagreus-ci-x64": 0},
+                           ceilings={"zagreus-docker-amd64": None, "zagreus-ci": 3, "zagreus-ci-x64": 1})
+        self.assertEqual(got["zagreus-docker-amd64"], 0)
+        got = w.floor_caps(cfg, {"zagreus-docker-amd64": 0, "zagreus-ci": 0, "zagreus-ci-x64": 0},
+                           live={"zagreus-docker-amd64": 1, "zagreus-ci": 0, "zagreus-ci-x64": 0},
+                           ceilings={"zagreus-docker-amd64": None, "zagreus-ci": 3, "zagreus-ci-x64": 1})
+        self.assertEqual(got["zagreus-docker-amd64"], 1)
+
+    def test_no_floor_while_a_node_without_its_slots_is_awake(self):
+        # 01 (the builder's only slot) down, 02 up: a floor claim would land
+        # on 02 and preempt CI there. The cap is 01's room: none.
+        cfg = production_config()
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True}, "zag-amd64-02": {}})
+        zero = {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0}
+        got = w.floor_caps(cfg, zero, live=zero, ceilings=CEILINGS, node_states=st)
+        self.assertEqual(got["zagreus-docker-amd64"], 0)
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True}})
+        got = w.floor_caps(cfg, zero, live=zero, ceilings=CEILINGS, node_states=st)
+        self.assertEqual(got["zagreus-docker-amd64"], 1)
+
+    def test_with_01_failing_to_wake_and_02_up_the_builder_offers_nothing(self):
+        r = Rig()
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.job(["zagreus-ci"], age_seconds=120)
+        for _ in range(4):
+            r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()[self.SET], 0)
+
+    def test_01_idle_beside_a_busy_02_stays_awake_for_the_floor(self):
+        # Review of 42173aa: the idle node sleeps, not the last in the list.
+        # 01 asleep with 02 up stands the floor down (1 -> 0, a listener
+        # restart), and the next builder job is held after the raise.
+        r = Rig()
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        r.tick(advance=61 * 60)
+        r.tick(advance=1)
+        self.assertNotIn("zag-amd64-01", r.talos.calls)
+        self.assertEqual(self.docker_patches(r), [])
+        # Once 02 is idle and asleep, 01 sleeps; the cap never moved.
+        r.kube.pods = [p for p in r.kube.pods if not p["metadata"]["name"].startswith("zagreus-ci-runner")]
+        r.tick(advance=1)
+        r.tick(advance=61 * 60)
+        r.tick(advance=1)
+        r.tick(advance=1)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+        self.assertEqual(self.docker_patches(r), [])
+
+    def test_holds_a_floor_only_for_the_last_slot_holder_beside_a_slotless_node(self):
+        cfg = production_config()
+        n01 = cfg["nodes"][0]
+        self.assertTrue(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+        self.assertFalse(w.holds_a_floor(cfg, n01, states(**{
+            "zag-amd64-01": {}, "zag-amd64-02": {"ready": False, "asleep": True}})))
+        self.assertFalse(w.holds_a_floor(cfg, cfg["nodes"][1], states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+        # With a second slot holder awake, either may sleep; the last one
+        # left beside the slotless node is held.
+        three = [dict(n, slots=dict(n["slots"])) for n in cfg["nodes"]] + [
+            {"name": "zag-amd64-03", "slots": {"zagreus-ci": 1, "zagreus-docker-amd64": 1}}]
+        cfg3 = dict(cfg, nodes=three)
+        all3 = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}})
+        self.assertFalse(w.holds_a_floor(cfg3, three[2], all3))
+        self.assertFalse(w.holds_a_floor(cfg3, three[0], all3))
+        # ...even one the waker could not sleep keeps the slots.
+        self.assertFalse(w.holds_a_floor(cfg3, three[0], all3, wakeable={"zag-amd64-01", "zag-amd64-02"}))
+        # A node the waker can never sleep does not pin 01 on.
+        self.assertFalse(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}}),
+                                         wakeable={"zag-amd64-01"}))
+        for s in cfg["sets"]:
+            s["floor"] = 0
+        self.assertFalse(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+
+    def test_known_gap_a_claim_made_asleep_can_bind_to_a_slotless_node(self):
+        # Review of 42173aa, declined in code: the stand-down stops new
+        # floor claims, not one made while everything slept. With 01
+        # refusing to wake and 02 woken for CI, that claim's pod binds to 02
+        # (the nodeSelector takes every amd64 node). The fix is pinning the
+        # builder's template to 01's slots, not the waker (README, "Floor").
+        # Asserted so a change to it is seen.
+        r = Rig()
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        self.claim(r)
+        r.job([self.SET], age_seconds=5)
+        r.job(["zagreus-ci"], age_seconds=120)
+        for _ in range(4):
+            r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()[self.SET], 1)  # placed on paper on 02
+
+    def test_sleep_and_wake_never_change_the_builder_cap(self):
+        r = Rig()
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.put_all_to_sleep()
+        self.assertEqual(r.kube.caps()[self.SET], 1)
+        r.job([self.SET], age_seconds=1)
+        r.tick(advance=300)
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+        r.tick(advance=120)
+        self.assertEqual(r.kube.caps()[self.SET], 1)
+        self.assertEqual(self.docker_patches(r), [])  # never written: its listener never restarts
+        # The other sets still follow the nodes.
+        self.assertGreater(r.kube.caps()["zagreus-ci"], 0)
+
+    def test_from_cap_zero_the_floor_is_written_once(self):
+        r = Rig()  # the fake starts every set at 0, as a set fresh from Argo would be once lowered
+        r.put_all_to_sleep()
+        self.assertEqual(self.docker_patches(r), [1])
+        self.assertEqual(r.kube.caps()[self.SET], 1)
+
+    def test_a_queued_job_on_an_asleep_floor_set_wakes_at_once(self):
+        # The 3 Nov timeline, before GitHub's claim lands: cap 1, nothing
+        # awake. The floor slot is not room, so the job is unmet.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        r.job([self.SET], age_seconds=1)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+
+    def test_a_fresh_claim_on_an_asleep_floor_set_wakes_without_the_stuck_grace(self):
+        # After the claim: the job is still queued in GitHub's list, and the
+        # runner has no node. Its claim exists only because of the floor, so
+        # it is a real need now, not a stuck claim after the grace.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.calls.clear()
+        r.clock.sleep(r.cfg["wakeCooldownSeconds"])
+        r.job([self.SET], age_seconds=5)
+        self.claim(r, age=5)
+        r.tick()
+        self.assertEqual([c for c in r.amt.calls if c[1] == w.POWER_ON], [("zag-amd64-01", w.POWER_ON)])
+
+    def test_a_job_waiting_on_an_asleep_floor_set_is_not_orphaned(self):
+        # The floor's spare slot must not read as "room offered and not
+        # taken": with 01 refusing to wake, the job waits, and stays demand.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        # Job ages are wall time, so it starts past the held window; the
+        # fake clock runs the lasting-spare clock past heldForSeconds.
+        r.job([self.SET], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(int((r.cfg["heldForSeconds"] + 600) / 60)):
+            r.tick(advance=60)
+        self.assertEqual(r.waker.orphans, {})
+
+    def test_spare_beside_a_held_job_on_an_awake_floor_set_still_orphans(self):
+        # The orphan rule itself still holds where the slot is real room.
+        r = Rig()
+        r.job([self.SET], age_seconds=r.cfg["heldAfterSeconds"] + r.cfg["heldForSeconds"] + 60)
+        for _ in range(int(r.cfg["heldForSeconds"] / 30) + 4):
+            r.tick(advance=30)
+        self.assertEqual(len(r.waker.orphans), 1)
+
+    def test_no_sleep_while_a_floor_claim_waits_after_the_cordon(self):
+        # A job claimed in the assert lead (cordoned, not yet off) leaves a
+        # runner with no node: shutting down then would only wake it again.
+        r = Rig()
+        r.tick()
+        r.tick(advance=61 * 60)  # 02 sleeps
+        claimed = []
+
+        def claim_on_assert(verb, path, body):
+            if (not claimed and path.startswith("/api/v1/namespaces/log-heartbeat/configmaps")
+                    and "zag-amd64-01" in body["data"]["asleep"].split()):
+                claimed.append(1)
+                self.claim(r)
+        r.kube.on_write = claim_on_assert
+        r.tick(advance=1)  # tries 01
+        self.assertTrue(claimed)
+        self.assertNotIn("zag-amd64-01", r.talos.calls)
+        self.assertNotIn("zag-amd64-01", r.kube.asleep())
+
+    def test_a_shared_label_job_the_floor_set_could_claim_is_logged(self):
+        # A floor set claims whatever it matches. docker-amd64 carries class
+        # labels, and no spritz job asks for only those today; one that did
+        # would be claimed while the nodes sleep and wait for a wake rather
+        # than run on an idle classic runner. Say so in the log.
+        r = Rig()
+        r.job(["self-hosted", "linux", "X64"], age_seconds=1)
+        with self.assertLogs("waker", level="WARNING") as logs:
+            r.tick()
+        self.assertTrue(any("floor" in m and self.SET in m for m in logs.output), logs.output)
 
 
 class Heartbeat(unittest.TestCase):

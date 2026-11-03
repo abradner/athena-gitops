@@ -33,6 +33,9 @@ boot instead of going to an idle classic runner. The rule `waker.py` enforces
 
 > **live `maxRunners` = base + the slots of every node that is Ready,
 > schedulable and not asleep, never above the ceiling.**
+>
+> One exception, a set's `floor` (below): `zagreus-docker-amd64` stays at 1
+> while its nodes sleep.
 
 The ceiling is the `maxRunners` written in the set's Argo Application, which
 stays the static cap from athena-gitops#223. Each of those Applications
@@ -47,6 +50,78 @@ which carries `MaxRunners`, against the live one, in
 `resourcebuilder.go`. A direct patch therefore behaves like the probe's
 `helm upgrade`. Never remove the field: ARC reads a missing `maxRunners` as
 unlimited (`resourcebuilder.go`, `math.MaxInt32`).
+
+## Floor
+
+A set may carry `"floor": n` in `waker.conf`: the least `maxRunners` the
+waker writes for it, offered while its nodes sleep. Only
+`zagreus-docker-amd64` has one (1).
+
+**Why.** A job that queues while its set is at 0 can be held by GitHub
+after the waker wakes a node and raises the cap: the raise restarts the
+listener (above), and the new session can poll empty for a long time.
+
+| Date | Set | Wake to Ready | Job waited |
+|---|---|---|---|
+| 28, 29 Oct 2026 | `zagreus-docker-amd64` | about 1 min | 6 to 34 min |
+| 30 Oct | `zagreus-docker-amd64` | 47 s | 56 min ("Queue watchdog", below) |
+| 3 Nov | `zagreus-docker-amd64` | 47 s | 32 min, release v202611030131; the second job was unstuck by cancel and re-run |
+
+Cap 0 is there so a sleeping set sends its jobs to the classic runners. The
+builder's jobs name the set (`runs-on: zagreus-docker-amd64`, through the
+spritz variable `RUNNER_DOCKER_AMD64`), and no classic runner carries that
+name, so for this set cap 0 sends nothing anywhere: it only sets up the
+hold. At its floor the cap never changes across a sleep and a wake, the
+listener never restarts, GitHub hands the job over at once, and its pod
+waits, Pending, for the node.
+
+**The floor is not room.** The caps the waker counts on for demand, spare
+and orphans (`spare_caps`) take the floor back off: a sleeping set's floor
+slot is a claim with no node, not a free slot. So:
+
+- A job queued on a sleeping floor set is unmet demand and wakes a node at
+  once, as before.
+- A claim the floor made with no room awake (`floor_claims`) is a need on
+  the same pass, not a stuck claim waiting out `saturationGraceSeconds`.
+- The floor's slot never reads as "room offered and not taken", so a job
+  waiting on a node that will not wake is not set aside as an orphan.
+- The sleep procedure checks for an unbound claim again after the assert
+  lead, just before the shutdown: the floor keeps claiming through it.
+
+**When it stands down.** While an awake node has no slots for the set. The
+runner pods' nodeSelector takes every amd64 node, so with 01 (the builder's
+only slot) down and 02 or 03 up, a floor claim would land on 02 and, at
+`ci-release` priority, preempt a CI pod there. The cap is then 01's room,
+0, as before. To keep that rare, 01 does not sleep while 02 or 03 is up
+(`holds_a_floor`): the idle node is the one that sleeps, not the last in the
+list, so 01 idle beside a busy 02 would otherwise sleep first, drop the cap
+to 0, and set up the hold for the next builder job. A node the waker can
+never sleep (no way to wake it) does not pin 01 on. What is left is 01
+failing to wake, or cordoned, while 02 or 03 is up.
+
+**Known gap.** The stand-down stops new floor claims, not one made while
+everything slept. If 01 then fails to wake and 02 wakes for CI, that
+claim's pod binds to 02 and may preempt a CI pod there (a test pins this
+down). The fix is to pin the builder's pod template to the node that
+carries its slot, not the waker; not done here.
+
+**Wakes it drives.** An unbound floor claim is unmet demand, so it is not
+held to the stuck path's one node per episode. That is bounded today
+because only 01 has builder slots, and choose_wakes wakes only nodes with
+slots for the set. A floor on a set with slots on several nodes, and a
+claim that can never bind, would wake each of them in turn.
+
+**What it costs.** A floor set claims every job it matches, asleep or not.
+`zagreus-docker-amd64` also carries class labels (`self-hosted, linux, X64,
+docker-amd64`): a job asking for only those would be claimed while the
+nodes sleep and wait for a wake (a minute or two) rather than run on an
+idle classic runner. No spritz job asks for that today. The waker logs a
+warning, once a job, for any queued job a floor set matches by shared
+labels alone. Only give a floor to a set whose jobs name it.
+
+**Undo.** Set `floor` to 0 (or remove it) in `waker.conf`. The
+ConfigMap's name hash rolls the waker pod on the Argo sync; the cap returns
+to 0 at the next sleep.
 
 ## Choice: a bespoke controller, not cluster-autoscaler
 
@@ -262,7 +337,8 @@ Figures from 1 Nov 2026, after the RAM shuffle (01 and 02 at 32 GB, 03 at 16).
   pod would need 8.01 CPU, so CPU binds, not memory.
 - zag-amd64-02 carries four heavy pods: 24 + 2.25 = 26.25 GiB, 6.76 CPU. A
   fifth would need 8.26 CPU. The builder's slot belongs to 01, so it never
-  lands on 02 or 03 when they are the only nodes awake.
+  lands on 02 or 03 when they are the only nodes awake (its floor stands
+  down then too: "Floor").
 - zag-amd64-03 (i5-7500, 4 threads) carries two: 12 + 2.25 = 14.25 GiB of
   14.4, and 3.76 CPU of 3.95. It is last in the list, so it wakes last and
   sleeps first.
@@ -474,7 +550,11 @@ Ready 47 s later and the cap went 0 to 1 in the same second. The set's
 listener restarted on that change and opened a fresh session, and GitHub's
 broker answered every long poll for 56 minutes with nothing (`totalAssignedJobs=0`,
 no message), then delivered the first job. ARC's listener reports only
-assigned jobs, so nothing in the cluster could see the wait. Earlier wakes
+assigned jobs, so nothing in the cluster could see the wait. (The builder's
+floor, above, removes the cap change behind this. If a named-set job is held
+anyway: `gh run cancel <run>`, then `gh run rerun <run> --failed` once
+nothing else in the run is in progress, since a cancel stops every job in
+the run. On 3 Nov the re-queued job was taken within a minute.) Earlier wakes
 show the same shape at shorter lengths (first job 375 s to 2058 s after a wake
 on 28 and 29 Oct, against the usual 89 s). Why GitHub held the jobs is not
 known from the cluster side.
