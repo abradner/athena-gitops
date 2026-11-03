@@ -2549,6 +2549,16 @@ class Floor(unittest.TestCase):
         self.assertFalse(w.holds_a_floor(cfg, n01, states(**{
             "zag-amd64-01": {}, "zag-amd64-02": {"ready": False, "asleep": True}})))
         self.assertFalse(w.holds_a_floor(cfg, cfg["nodes"][1], states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+        # With a second slot holder awake, either may sleep; the last one
+        # left beside the slotless node is held.
+        three = [dict(n, slots=dict(n["slots"])) for n in cfg["nodes"]] + [
+            {"name": "zag-amd64-03", "slots": {"zagreus-ci": 1, "zagreus-docker-amd64": 1}}]
+        cfg3 = dict(cfg, nodes=three)
+        all3 = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}})
+        self.assertFalse(w.holds_a_floor(cfg3, three[2], all3))
+        self.assertFalse(w.holds_a_floor(cfg3, three[0], all3))
+        # ...even one the waker could not sleep keeps the slots.
+        self.assertFalse(w.holds_a_floor(cfg3, three[0], all3, wakeable={"zag-amd64-01", "zag-amd64-02"}))
         # A node the waker can never sleep does not pin 01 on.
         self.assertFalse(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}}),
                                          wakeable={"zag-amd64-01"}))

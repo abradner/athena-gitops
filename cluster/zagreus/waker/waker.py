@@ -789,7 +789,7 @@ def holds_a_floor(cfg, node, node_states, wakeable=None):
     good. The floor then stands down while that one stays up."""
     def awake(n):
         st = node_states.get(n["name"])
-        return st is not None and node_awake(st) and (wakeable is None or n["name"] in wakeable)
+        return st is not None and node_awake(st)
     for s in cfg["sets"]:
         name = s["name"]
         if int(s.get("floor", 0)) <= 0 or int(node.get("slots", {}).get(name, 0)) <= 0:
@@ -797,7 +797,8 @@ def holds_a_floor(cfg, node, node_states, wakeable=None):
         others = [n for n in cfg["nodes"] if n["name"] != node["name"] and awake(n)]
         if any(int(n.get("slots", {}).get(name, 0)) > 0 for n in others):
             continue  # another node keeps the set's slots
-        if any(int(n.get("slots", {}).get(name, 0)) <= 0 for n in others):
+        if any(int(n.get("slots", {}).get(name, 0)) <= 0 and (wakeable is None or n["name"] in wakeable)
+               for n in others):
             return True
     return False
 
