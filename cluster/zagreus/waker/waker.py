@@ -7,7 +7,8 @@ README.md beside this file is the design. In short:
 - maxRunners is what GitHub offers a scale set, whether or not its pods can
   schedule, so a set must claim nothing while its nodes sleep. The caps are
   always "base + slots of the awake, schedulable nodes", never above the
-  ceiling in the set's Argo Application.
+  ceiling in the set's Argo Application; except a set's floor, held while
+  its nodes sleep (README, "Floor").
 - Wake when a job a driven set could take has waited in GitHub's queue past
   the grace (shared labels: a classic runner would have taken it by now) or
   names a set outright (no classic runner can take it).
@@ -174,6 +175,8 @@ def validate_config(cfg):
                 raise ValueError(f"set {s!r} needs {key}")
         if int(s.get("base", 0)) < 0:
             raise ValueError(f"set {s['name']}: base must be >= 0")
+        if int(s.get("floor", 0)) < 0:
+            raise ValueError(f"set {s['name']}: floor must be >= 0")
     nodes = [n["name"] for n in cfg["nodes"]]
     if len(set(nodes)) != len(nodes):
         raise ValueError("duplicate node in nodes")
@@ -609,6 +612,66 @@ def bound_caps(wanted, live, ceilings):
             out[name] = want
         else:
             out[name] = None
+    return out
+
+
+def floor_caps(cfg, target, live, ceilings, node_states=None):
+    """Lift each set to its floor: the least maxRunners the waker writes,
+    offered while its nodes sleep (README, "Floor"). Never past the
+    ceiling; and with no ceiling ever read, never past what is live
+    (bound_caps' rule: only lower until a ceiling can be read). A set with
+    no maxRunners at all (live None, ARC's unlimited) is left as it is.
+
+    Not while an awake node has no slots for the set: the runner pods'
+    nodeSelector takes every amd64 node, so a claim with no room on its own
+    nodes would land there (and the builder, at ci-release priority, would
+    preempt CI to do it). That is only 01 down with 02 or 03 up.
+
+    The floor is not room: unmet, spare and orphans read spare_caps, which
+    takes it back off."""
+    out = dict(target)
+    awake = [n for n in cfg["nodes"]
+             if node_states and n["name"] in node_states and node_awake(node_states[n["name"]])]
+    for s in cfg["sets"]:
+        name, floor = s["name"], int(s.get("floor", 0))
+        want = out.get(name)
+        if floor <= 0 or want is None:
+            continue
+        if any(int(n.get("slots", {}).get(name, 0)) <= 0 for n in awake):
+            continue
+        bound = ceilings.get(name)
+        if bound is None:
+            bound = live.get(name)
+        out[name] = max(want, floor if bound is None else min(floor, bound))
+    return out
+
+
+def spare_caps(cfg, live, room):
+    """The caps unmet, spare and orphans may count on: live, but for a set
+    with a floor no more than the room its awake nodes give (room: the caps
+    before the floor). The floor slot of a set whose nodes sleep holds a
+    claim's pod on no node: counted as spare it would hide that set's
+    queued jobs from the wake, and set them aside as orphans."""
+    out = dict(live)
+    for s in cfg["sets"]:
+        name = s["name"]
+        if int(s.get("floor", 0)) > 0 and out.get(name) is not None and room.get(name) is not None:
+            out[name] = min(out[name], room[name])
+    return out
+
+
+def floor_claims(cfg, runners, unplaced, room):
+    """Claims of a floored set beyond the room its awake nodes give, that
+    have no node yet: each holds a job that only the floor let the set
+    claim, so it needs a node woken now, not after the stuck grace."""
+    out = {}
+    for s in cfg["sets"]:
+        name = s["name"]
+        if int(s.get("floor", 0)) <= 0 or room.get(name) is None:
+            continue
+        n = min(unplaced.get(name, 0), max(0, runners.get(name, 0) - room[name]))
+        if n:
+            out[name] = n
     return out
 
 
@@ -1137,6 +1200,7 @@ class Waker:
         self.queue_stats = {}  # per set: queued jobs and the oldest's age, orphans included
         self.alts = {}  # (counted set, other matching set) -> jobs, from the last read
         self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
+        self.floor_warned = set()  # job ids warn_floor_matches has logged
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
         self.asleep_labelled = {}  # node -> whether LABEL_ASLEEP was last written on it
@@ -1469,7 +1533,10 @@ class Waker:
         and found stale is not uncertain, and lowers at once. force: lower
         now (the sleep procedure, before a cordon)."""
         wanted = compute_caps(self.cfg, states or snap["states"], snap.get("requests"), snap.get("unplaced"))
-        target = bound_caps(wanted, snap["live"], snap["ceilings"])
+        room = bound_caps(wanted, snap["live"], snap["ceilings"])
+        target = floor_caps(self.cfg, room, snap["live"], snap["ceilings"], states or snap["states"])
+        if states is None:
+            snap["room"] = room
         changed = {}
         for s in self.cfg["sets"]:
             name = s["name"]
@@ -1627,13 +1694,17 @@ class Waker:
             return
         self.last_demand_ok = now
         self.publish_queue_metrics(snap["labels"])
-        unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
+        self.warn_floor_matches(snap)
+        spare = spare_caps(self.cfg, snap["live"], snap.get("room", {}))
+        unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
         if self.mark_orphans(snap):
             self.alts = {}
             demand = demand_by_set(self.cfg, self.jobs, snap["labels"], dt.datetime.now(dt.timezone.utc),
                                    alts=self.alts)
-            unmet = unmet_by_set(demand, snap["live"], snap["runners"], snap["unstarted"])
-        unmet = share_overlap(unmet, demand, self.alts, snap["live"], snap["runners"], snap["unstarted"])
+            unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
+        unmet = share_overlap(unmet, demand, self.alts, spare, snap["runners"], snap["unstarted"])
+        for name, n in floor_claims(self.cfg, snap["runners"], snap["unplaced"], snap.get("room", {})).items():
+            unmet[name] = unmet.get(name, 0) + n
         for name in snap.get("blind", ()):
             unmet[name] = 0
         if any(demand.values()):
@@ -1743,9 +1814,10 @@ class Waker:
         now = dt.datetime.now(dt.timezone.utc)
         t = self.clock()
         new = set()
+        caps = spare_caps(self.cfg, snap["live"], snap.get("room", {}))
         for s in self.cfg["sets"]:
             name = s["name"]
-            cap = snap["live"].get(name)
+            cap = caps.get(name)
             spare = 0 if (cap is None or name in snap.get("blind", ()) or snap.get("degraded")) \
                 else cap - snap["runners"].get(name, 0)
             if spare <= 0:
@@ -1773,6 +1845,24 @@ class Waker:
             self.orphans.update(dict.fromkeys(new, t))
             self.jobs = [j for j in self.jobs if j.get("id") not in new]
         return bool(new)
+
+    def warn_floor_matches(self, snap):
+        """A floored set claims every job it matches, nodes asleep or not. A
+        queued job it matches by shared labels alone could have run on an
+        idle classic runner; once claimed it waits for a wake instead. No
+        spritz job does that today (they name the set): log it, once a job,
+        so a new one shows."""
+        floored = {s["name"] for s in self.cfg["sets"] if int(s.get("floor", 0)) > 0}
+        if not floored:
+            return
+        for j in self.jobs:
+            name = first_set(self.cfg, j, snap["labels"])
+            if name in floored and j.get("id") not in self.floor_warned and \
+                    not job_match(j["labels"], name, snap["labels"].get(name, []))[1]:
+                self.floor_warned.add(j.get("id"))
+                LOG.warning("job %s (%s) matches %s by shared labels only: with the set's floor it may "
+                            "be claimed while the nodes sleep and wait for a wake", j.get("id"),
+                            ",".join(j["labels"]), name)
 
     def _room_if_awake(self, snap, nodes):
         """Caps the nodes would add once awake, from their room on paper."""
@@ -1915,6 +2005,10 @@ class Waker:
         self._pause(cfg["assertLeadSeconds"])
         if self._busy(node):
             return self._abort_sleep(node, snap, "a pod landed after the cordon", unassert=True)
+        # A set with a floor keeps claiming through the lead: a claim now
+        # would only wake this node again once it is off.
+        if self._unplaced():
+            return self._abort_sleep(node, snap, "a driven set has a runner not yet on a node", unassert=True)
         # 4. Shut down, and confirm through AMT. The time goes on the node
         #    first: until it has been Ready since then, its Ready is stale.
         ip = snap["ips"].get(node)
