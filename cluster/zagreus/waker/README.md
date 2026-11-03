@@ -92,8 +92,24 @@ slot is a claim with no node, not a free slot. So:
 runner pods' nodeSelector takes every amd64 node, so with 01 (the builder's
 only slot) down and 02 or 03 up, a floor claim would land on 02 and, at
 `ci-release` priority, preempt a CI pod there. The cap is then 01's room,
-0, as before. Nodes wake in list order and sleep in reverse, so this is
-only 01 failing to wake (or cordoned) while 02 or 03 is up.
+0, as before. To keep that rare, 01 does not sleep while 02 or 03 is up
+(`holds_a_floor`): the idle node is the one that sleeps, not the last in the
+list, so 01 idle beside a busy 02 would otherwise sleep first, drop the cap
+to 0, and set up the hold for the next builder job. A node the waker can
+never sleep (no way to wake it) does not pin 01 on. What is left is 01
+failing to wake, or cordoned, while 02 or 03 is up.
+
+**Known gap.** The stand-down stops new floor claims, not one made while
+everything slept. If 01 then fails to wake and 02 wakes for CI, that
+claim's pod binds to 02 and may preempt a CI pod there (a test pins this
+down). The fix is to pin the builder's pod template to the node that
+carries its slot, not the waker; not done here.
+
+**Wakes it drives.** An unbound floor claim is unmet demand, so it is not
+held to the stuck path's one node per episode. That is bounded today
+because only 01 has builder slots, and choose_wakes wakes only nodes with
+slots for the set. A floor on a set with slots on several nodes, and a
+claim that can never bind, would wake each of them in turn.
 
 **What it costs.** A floor set claims every job it matches, asleep or not.
 `zagreus-docker-amd64` also carries class labels (`self-hosted, linux, X64,

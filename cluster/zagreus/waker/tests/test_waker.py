@@ -2521,6 +2521,60 @@ class Floor(unittest.TestCase):
         self.assertNotIn("zag-amd64-02", r.kube.asleep())
         self.assertEqual(r.kube.caps()[self.SET], 0)
 
+    def test_01_idle_beside_a_busy_02_stays_awake_for_the_floor(self):
+        # Review of 42173aa: the idle node sleeps, not the last in the list.
+        # 01 asleep with 02 up stands the floor down (1 -> 0, a listener
+        # restart), and the next builder job is held after the raise.
+        r = Rig()
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
+        r.tick()
+        r.tick(advance=61 * 60)
+        r.tick(advance=1)
+        self.assertNotIn("zag-amd64-01", r.talos.calls)
+        self.assertEqual(self.docker_patches(r), [])
+        # Once 02 is idle and asleep, 01 sleeps; the cap never moved.
+        r.kube.pods = [p for p in r.kube.pods if not p["metadata"]["name"].startswith("zagreus-ci-runner")]
+        r.tick(advance=1)
+        r.tick(advance=61 * 60)
+        r.tick(advance=1)
+        r.tick(advance=1)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-01", "zag-amd64-02"})
+        self.assertEqual(self.docker_patches(r), [])
+
+    def test_holds_a_floor_only_for_the_last_slot_holder_beside_a_slotless_node(self):
+        cfg = production_config()
+        n01 = cfg["nodes"][0]
+        self.assertTrue(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+        self.assertFalse(w.holds_a_floor(cfg, n01, states(**{
+            "zag-amd64-01": {}, "zag-amd64-02": {"ready": False, "asleep": True}})))
+        self.assertFalse(w.holds_a_floor(cfg, cfg["nodes"][1], states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+        # A node the waker can never sleep does not pin 01 on.
+        self.assertFalse(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}}),
+                                         wakeable={"zag-amd64-01"}))
+        for s in cfg["sets"]:
+            s["floor"] = 0
+        self.assertFalse(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+
+    def test_known_gap_a_claim_made_asleep_can_bind_to_a_slotless_node(self):
+        # Review of 42173aa, declined in code: the stand-down stops new
+        # floor claims, not one made while everything slept. With 01
+        # refusing to wake and 02 woken for CI, that claim's pod binds to 02
+        # (the nodeSelector takes every amd64 node). The fix is pinning the
+        # builder's template to 01's slots, not the waker (README, "Floor").
+        # Asserted so a change to it is seen.
+        r = Rig()
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        self.claim(r)
+        r.job([self.SET], age_seconds=5)
+        r.job(["zagreus-ci"], age_seconds=120)
+        for _ in range(4):
+            r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertEqual(r.kube.caps()[self.SET], 1)  # placed on paper on 02
+
     def test_sleep_and_wake_never_change_the_builder_cap(self):
         r = Rig()
         r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1

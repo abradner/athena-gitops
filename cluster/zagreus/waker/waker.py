@@ -620,7 +620,8 @@ def floor_caps(cfg, target, live, ceilings, node_states=None):
     offered while its nodes sleep (README, "Floor"). Never past the
     ceiling; and with no ceiling ever read, never past what is live
     (bound_caps' rule: only lower until a ceiling can be read). A set with
-    no maxRunners at all (live None, ARC's unlimited) is left as it is.
+    neither (no maxRunners live, ARC's unlimited, and no ceiling read) gets
+    at least the floor, beside the slot sum bound_caps writes for it.
 
     Not while an awake node has no slots for the set: the runner pods'
     nodeSelector takes every amd64 node, so a claim with no room on its own
@@ -769,8 +770,36 @@ def choose_sleep(cfg, node_states, idle_since, unmet, backoff_until, now_s,
             continue
         if any(int(n.get("slots", {}).get(s, 0)) > 0 for s in hungry):
             continue
+        if holds_a_floor(cfg, n, node_states, wakeable):
+            continue
         return n["name"]
     return None
+
+
+def holds_a_floor(cfg, node, node_states, wakeable=None):
+    """The node is the last awake one with slots for a floored set, and an
+    awake node with none for it would be left: sleeping it would make the
+    floor stand down (floor_caps), and the cap change restart the set's
+    listener, the very thing the floor is for. It sleeps once those have
+    (idleness, not list order, picks the node to sleep: 01 idle beside a
+    busy 02, 3 Nov review).
+
+    Only nodes the waker could put to sleep count as the ones left: a node
+    it can never sleep (no way to wake it again) would pin this one on for
+    good. The floor then stands down while that one stays up."""
+    def awake(n):
+        st = node_states.get(n["name"])
+        return st is not None and node_awake(st) and (wakeable is None or n["name"] in wakeable)
+    for s in cfg["sets"]:
+        name = s["name"]
+        if int(s.get("floor", 0)) <= 0 or int(node.get("slots", {}).get(name, 0)) <= 0:
+            continue
+        others = [n for n in cfg["nodes"] if n["name"] != node["name"] and awake(n)]
+        if any(int(n.get("slots", {}).get(name, 0)) > 0 for n in others):
+            continue  # another node keeps the set's slots
+        if any(int(n.get("slots", {}).get(name, 0)) <= 0 for n in others):
+            return True
+    return False
 
 
 def heartbeat_lines(asleep, emitter, node_name, renewed, now_s, ttl):
@@ -1855,6 +1884,7 @@ class Waker:
         floored = {s["name"] for s in self.cfg["sets"] if int(s.get("floor", 0)) > 0}
         if not floored:
             return
+        self.floor_warned &= {j.get("id") for j in self.jobs}  # only jobs still queued
         for j in self.jobs:
             name = first_set(self.cfg, j, snap["labels"])
             if name in floored and j.get("id") not in self.floor_warned and \
