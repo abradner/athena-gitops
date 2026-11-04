@@ -56,6 +56,14 @@ def production_config():
     return cfg
 
 
+def unpin(cfg):
+    """The builder as it was before its template named its node: its pods
+    could land on any amd64 node."""
+    for s in cfg["sets"]:
+        s.pop("pinnedToSlots", None)
+    return cfg
+
+
 def cfg_with(**over):
     cfg = production_config()
     cfg.update(over)
@@ -1244,7 +1252,7 @@ class CapsCodexFindings(unittest.TestCase):
     def test_p2_1_another_sets_runner_on_the_surviving_node_takes_its_room(self):
         # 01 is gone; an x64 job (6 Gi) is running on 02. 02 has room for one
         # more heavy pod, not two: zagreus-ci may be offered one.
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=True)
         r.kube.set_ready("zag-amd64-01", False)
         r.kube.dead.add("zag-amd64-01")
         r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci-x64")
@@ -1255,7 +1263,7 @@ class CapsCodexFindings(unittest.TestCase):
     def test_p2_1_a_builder_on_the_surviving_node_takes_its_room(self):
         # The builder (3.75 Gi with dind) running on 02 leaves room for one
         # heavy pod there, not two.
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=True)
         r.kube.set_ready("zag-amd64-01", False)
         r.kube.dead.add("zag-amd64-01")
         r.kube.add_runner_pod("zag-amd64-02", "zagreus-docker-amd64")
@@ -1266,7 +1274,7 @@ class CapsCodexFindings(unittest.TestCase):
         # Codex on e341ef3: 01 is gone and an already-claimed x64 runner has
         # no pod bound yet. It will need 6 Gi somewhere, so 02 can take one
         # zagreus-ci, not two.
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=True)
         r.kube.set_ready("zag-amd64-01", False)
         r.kube.dead.add("zag-amd64-01")
         r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci-x64"}},
@@ -1368,14 +1376,14 @@ class CapsReviewLows(unittest.TestCase):
             self.assertAlmostEqual(w.parse_qty(v), want, msg=v)
 
     def test_an_unparseable_pod_offers_nothing_new_on_its_node_and_does_not_stop_the_pass(self):
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=True)
         r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci-x64")
         r.kube.pods[-1]["spec"]["containers"][0]["resources"]["requests"]["memory"] = "6 bogus"
         r.tick()
         self.assertEqual(r.kube.caps()["zagreus-ci"], 1)  # 01's slot; 02 offers nothing new
 
     def test_a_node_without_allocatable_does_not_count_its_own_runner_twice(self):
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=True)
         del r.kube.nodes["zag-amd64-02"]["status"]["allocatable"]
         r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
         r.tick()
@@ -1396,11 +1404,13 @@ class CapsReviewLows(unittest.TestCase):
     def test_one_bad_template_costs_only_its_own_set(self):
         # Delta review of 0507bac: an unparseable builder template (filled
         # first) turned every node's free room into NaN and every set to 0.
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=True)
         r.kube.ars[("arc-builders", "zagreus-docker-amd64")]["spec"]["template"]["spec"]["containers"][0][
             "resources"]["requests"]["memory"] = "768 bogus"
         r.tick()
-        self.assertEqual(r.kube.caps(), {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 0})
+        # The builder's room is 0; pinned to its slot's node, its floor still
+        # offers the one claim (Floor).
+        self.assertEqual(r.kube.caps(), {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1})
 
     def test_an_unreadable_node_costs_only_that_node(self):
         r = Rig(mode="caps")
@@ -1797,7 +1807,7 @@ class ReofferFindings(unittest.TestCase):
         # Review of 27905470, P2: slots were counted per set, but the
         # builder and a CI runner share 01's memory. With room for only the
         # builder there, 02 must wake in the same pass, not a pass later.
-        r = Rig()
+        r = Rig(roomCaps=True)
         r.put_all_to_sleep()
         r.kube.nodes["zag-amd64-01"]["status"]["allocatable"]["memory"] = "8Gi"
         r.kube.writes.clear()
@@ -1910,7 +1920,7 @@ class ReofferFindings(unittest.TestCase):
         # Delta review of dc38d10d, P3: 02 was chosen for the stuck CI claim
         # and failed; 01 woke for the builder with no room left for CI. The
         # CI episode must stay open, not be spent by 01's mere slot.
-        r = Rig()
+        r = Rig(roomCaps=True)
         r.put_all_to_sleep()
         r.kube.nodes["zag-amd64-01"]["status"]["allocatable"]["memory"] = "8Gi"
         r.amt.refuse_on.add("zag-amd64-02")
@@ -2500,7 +2510,7 @@ class Floor(unittest.TestCase):
     def test_no_floor_while_a_node_without_its_slots_is_awake(self):
         # 01 (the builder's only slot) down, 02 up: a floor claim would land
         # on 02 and preempt CI there. The cap is 01's room: none.
-        cfg = production_config()
+        cfg = unpin(production_config())
         st = states(**{"zag-amd64-01": {"ready": False, "asleep": True}, "zag-amd64-02": {}})
         zero = {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0}
         got = w.floor_caps(cfg, zero, live=zero, ceilings=CEILINGS, node_states=st)
@@ -2512,6 +2522,7 @@ class Floor(unittest.TestCase):
 
     def test_with_01_failing_to_wake_and_02_up_the_builder_offers_nothing(self):
         r = Rig()
+        unpin(r.cfg)  # the stand-down is for a builder whose pods may land anywhere
         r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
         r.put_all_to_sleep()
         r.amt.refuse_on.add("zag-amd64-01")
@@ -2526,6 +2537,7 @@ class Floor(unittest.TestCase):
         # 01 asleep with 02 up stands the floor down (1 -> 0, a listener
         # restart), and the next builder job is held after the raise.
         r = Rig()
+        unpin(r.cfg)  # the stand-down is for a builder whose pods may land anywhere
         r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
         r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")
         r.tick()
@@ -2543,7 +2555,7 @@ class Floor(unittest.TestCase):
         self.assertEqual(self.docker_patches(r), [])
 
     def test_holds_a_floor_only_for_the_last_slot_holder_beside_a_slotless_node(self):
-        cfg = production_config()
+        cfg = unpin(production_config())
         n01 = cfg["nodes"][0]
         self.assertTrue(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
         self.assertFalse(w.holds_a_floor(cfg, n01, states(**{
@@ -2567,12 +2579,10 @@ class Floor(unittest.TestCase):
         self.assertFalse(w.holds_a_floor(cfg, n01, states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
 
     def test_known_gap_a_claim_made_asleep_can_bind_to_a_slotless_node(self):
-        # Review of 42173aa, declined in code: the stand-down stops new
-        # floor claims, not one made while everything slept. With 01
-        # refusing to wake and 02 woken for CI, that claim's pod binds to 02
-        # (the nodeSelector takes every amd64 node). The fix is pinning the
-        # builder's template to 01's slots, not the waker (README, "Floor").
-        # Asserted so a change to it is seen.
+        # Review of 42173aa: with the builder able to land on any amd64
+        # node, a claim made while everything slept would bind to 02 if 01
+        # failed to wake. Closed on 4 Nov by pinning its template to 01
+        # (PoolMerge): the pod waits for 01. The waker keeps its floor.
         r = Rig()
         r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
         r.put_all_to_sleep()
@@ -2678,6 +2688,141 @@ class Floor(unittest.TestCase):
         with self.assertLogs("waker", level="WARNING") as logs:
             r.tick()
         self.assertTrue(any("floor" in m and self.SET in m for m in logs.output), logs.output)
+
+
+class PoolMerge(unittest.TestCase):
+    """4 Nov 2026: with the builder able to land on any amd64 node, its floor
+    stood down whenever 03 was up, and its cap then followed 01's free room:
+    73 builder cap changes in 48 h, and zagreus-ci moved 7 <-> 6 the same
+    way. Each change restarts the set's listener, and the waker logged jobs
+    "held by GitHub?" beside free slots on about 70 passes. Now the builder
+    is pinned to 01 and caps come from the configured slots alone."""
+
+    SET = "zagreus-docker-amd64"
+
+    def patches(self, r, name):
+        return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes
+                if v == "PATCH" and p.endswith("/autoscalingrunnersets/" + name)]
+
+    def test_live_config_takes_caps_from_slots_and_pins_only_the_builder(self):
+        cfg = live_config()
+        self.assertTrue(cfg["roomCaps"])  # slots off for now: see README, "Caps from slots"
+        self.assertEqual([s["name"] for s in cfg["sets"] if s.get("pinnedToSlots")], [self.SET])
+
+    def test_a_pinned_sets_template_names_exactly_its_slot_nodes(self):
+        # "pinnedToSlots" is a promise about the pod template; hold it to it.
+        cfg = live_config()
+        for s in cfg["sets"]:
+            if not s.get("pinnedToSlots"):
+                continue
+            with open(os.path.join(LiveConfig.RUNNERS, LiveConfig.CEILING_FILES[s["name"]])) as f:
+                text = f.read()
+            pinned = re.findall(r"^\s+kubernetes\.io/hostname: (\S+)$", text, re.M)
+            slots = [n["name"] for n in cfg["nodes"] if n["slots"].get(s["name"], 0) > 0]
+            self.assertEqual(pinned, slots, s["name"])
+
+    def test_the_pinned_floor_holds_beside_an_awake_slotless_node(self):
+        cfg = production_config()
+        st = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})
+        zero = {self.SET: 0, "zagreus-ci": 3, "zagreus-ci-x64": 2}
+        self.assertEqual(w.floor_caps(cfg, zero, live=zero, ceilings=CEILINGS, node_states=st)[self.SET], 1)
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True}, "zag-amd64-02": {}})
+        self.assertEqual(w.floor_caps(cfg, zero, live=zero, ceilings=CEILINGS, node_states=st)[self.SET], 1)
+
+    def test_a_pinned_claim_wakes_01_at_once_beside_an_awake_02(self):
+        # Codex on #338: placed on paper on 02 (room there), the claim gave
+        # the builder room 1, so floor_claims saw no need and 01 waited out
+        # the stuck grace. Its pod can only bind to 01.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.job(["zagreus-ci"], age_seconds=120)
+        for _ in range(3):
+            r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertIn("zag-amd64-01", r.waker.backoff_until)
+        r.amt.refuse_on.clear()
+        r.github.jobs.clear()
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")  # keeps 02 busy, not asleep
+        r.clock.sleep(r.cfg["failureBackoffSeconds"])
+        r.tick()
+        r.amt.calls.clear()
+        r.clock.sleep(r.cfg["wakeCooldownSeconds"])
+        # A fresh claim: inside the stuck grace, so only floor_claims can wake.
+        r.kube.ers["arc-builders"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: self.SET},
+                                                        "creationTimestamp": iso(r.clock())}, "status": {}})
+        r.job([self.SET], age_seconds=5)
+        r.tick()
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
+    def test_compute_caps_places_a_pinned_claim_only_on_its_slot_nodes(self):
+        cfg = production_config()
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True}, "zag-amd64-02": {}})
+        for n, a in (("zag-amd64-02", ALLOCATABLE["zag-amd64-02"]),):
+            st[n]["free"] = [w.parse_qty(a["cpu"]), w.parse_qty(a["memory"])]
+            st[n]["own"] = {}
+        reqs = {name: w.pod_requests(TEMPLATES[name]) for name in TEMPLATES}
+        caps = w.compute_caps(cfg, st, reqs, {self.SET: 1})
+        self.assertEqual(caps[self.SET], 0)
+
+    def test_a_pinned_floor_does_not_keep_01_awake(self):
+        cfg = production_config()
+        self.assertFalse(w.holds_a_floor(cfg, cfg["nodes"][0], states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))
+
+    def test_ci_pods_coming_and_going_change_no_cap(self):
+        # The 18:02 burst on 4 Nov, in miniature: both nodes up, runner pods
+        # filling and emptying 01 and 02. Caps follow the awake nodes only.
+        r = Rig(mode="caps", roomCaps=False)
+        r.tick()
+        r.kube.writes.clear()
+        for i in range(6):
+            for node in ("zag-amd64-01", "zag-amd64-02"):
+                r.kube.add_runner_pod(node, "zagreus-ci", name=f"ci-{node}-{i}")
+            r.tick(advance=30)
+            r.kube.pods = [p for p in r.kube.pods if not p["metadata"]["name"].startswith("ci-")]
+            r.tick(advance=30)
+        self.assertEqual([p for v, p, b in r.kube.writes if p.endswith("/autoscalingrunnersets/zagreus-ci")
+                          or p.endswith("/autoscalingrunnersets/zagreus-ci-x64")
+                          or p.endswith("/autoscalingrunnersets/" + self.SET)], [])
+
+    def test_with_03_awake_beside_01_the_builder_cap_stays_put(self):
+        r = Rig(mode="caps")
+        r.kube.ars[("arc-builders", self.SET)]["spec"]["maxRunners"] = 1
+        r.tick()
+        for i in range(4):  # 01 fills with CI pods, then empties
+            r.kube.add_runner_pod("zag-amd64-01", "zagreus-ci", name=f"ci-{i}")
+        r.tick(advance=30)
+        r.kube.pods = [p for p in r.kube.pods if not p["metadata"]["name"].startswith("ci-")]
+        r.tick(advance=30)
+        self.assertEqual(self.patches(r, self.SET), [])
+
+    def test_other_pods_taking_room_change_no_cap(self):
+        # Room shifts (a bundle fill, light pods, the builder) used to move
+        # zagreus-ci's cap; the slots already leave room for them.
+        r = Rig(mode="caps", roomCaps=False)
+        r.tick()
+        before = r.kube.caps()
+        r.kube.writes.clear()
+        for node in ("zag-amd64-01", "zag-amd64-02"):
+            r.kube.pods.append({
+                "metadata": {"name": f"fill-{node}", "namespace": "arc-runners",
+                             "ownerReferences": [{"kind": "Job", "name": "fill"}]},
+                "spec": {"nodeName": node, "containers": [
+                    {"name": "x", "resources": {"requests": {"cpu": "3", "memory": "8Gi"}}}]},
+                "status": {"phase": "Running"}})
+        r.tick(advance=30)
+        r.kube.pods = [p for p in r.kube.pods if not p["metadata"]["name"].startswith("fill-")]
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps(), before)
+        self.assertEqual([p for v, p, b in r.kube.writes if "/autoscalingrunnersets/" in p], [])
+
+    def test_a_cordoned_node_still_takes_its_slots_out(self):
+        r = Rig(mode="caps", roomCaps=False)
+        r.tick()
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
+        r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps()["zagreus-ci"], 1)
 
 
 class Heartbeat(unittest.TestCase):

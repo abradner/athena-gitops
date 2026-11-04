@@ -1,7 +1,7 @@
-# spritz general CI (`runs-on: zagreus-ci`): rspec, vitest, lint, the full
-# browser matrix shards, everything that may run on either architecture.
-# Prefers the amd64 nodes and falls back to any arm64 runner nodes, so a job could start while the amd64 nodes are still asleep. (Only e2e is pinned to
-# amd64; it has its own scale set, ci-x64.yaml.)
+# spritz CI on the amd64 nodes (`runs-on: zagreus-ci`): rspec, vitest, lint,
+# the browser matrix shards, and since 4 Nov 2026 the x64 class jobs too (e2e,
+# e2e_moments), beside the classic runners. amd64 nodes only. ci-x64.yaml is
+# the older x64-only set, kept until spritz stops naming it.
 #
 # Sizing from measured peaks (2026-10-19): e2e 5.5 GiB / 3.6 CPU (Rails,
 # Postgres and Chromium in one container), a full-matrix shard 5.1 GiB, rspec
@@ -29,7 +29,11 @@ spec:
         # (README, "Runners"). ARC writes them only when it CREATES the scale
         # set: after a change here, delete the AutoscalingRunnerSet and let
         # Argo recreate it, or GitHub keeps the old labels.
-        scaleSetLabels: [self-hosted, linux, spritz-ci, playwright-full]
+        # X64 too (4 Nov 2026): every node this set runs on is amd64, so it
+        # also takes the x64 class jobs (e2e, e2e_moments) instead of leaving
+        # them to the five x64 slots. Hence amd64 nodes only, below: e2e
+        # captures the Chromatic archives and must never rasterise on arm64.
+        scaleSetLabels: [self-hosted, linux, X64, spritz-ci, playwright-full]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
@@ -77,14 +81,8 @@ spec:
                     - matchExpressions:
                         - key: zagreus.asn.casa/role
                           operator: In
-                          values: [amd64-runner, arm-runner]
-                preferredDuringSchedulingIgnoredDuringExecution:
-                  - weight: 100
-                    preference:
-                      matchExpressions:
-                        - key: zagreus.asn.casa/role
-                          operator: In
                           values: [amd64-runner]
+                preferredDuringSchedulingIgnoredDuringExecution:
                   # Heavy jobs scale with cores (Vitest workers, parallel
                   # rspec): prefer the two 8-thread i7s over the 4-thread
                   # i5 (zag-amd64-03), which still takes jobs once they are

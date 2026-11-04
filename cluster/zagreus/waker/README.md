@@ -88,22 +88,25 @@ slot is a claim with no node, not a free slot. So:
 - The sleep procedure checks for an unbound claim again after the assert
   lead, just before the shutdown: the floor keeps claiming through it.
 
-**When it stands down.** While an awake node has no slots for the set. The
-runner pods' nodeSelector takes every amd64 node, so with 01 (the builder's
-only slot) down and 02 or 03 up, a floor claim would land on 02 and, at
-`ci-release` priority, preempt a CI pod there. The cap is then 01's room,
-0, as before. To keep that rare, 01 does not sleep while 02 or 03 is up
-(`holds_a_floor`): the idle node is the one that sleeps, not the last in the
-list, so 01 idle beside a busy 02 would otherwise sleep first, drop the cap
-to 0, and set up the hold for the next builder job. A node the waker can
-never sleep (no way to wake it) does not pin 01 on. What is left is 01
-failing to wake, or cordoned, while 02 or 03 is up.
+**Pinned, so it never stands down (4 Nov 2026).** The builder's template
+names 01, the one node with its slot (`kubernetes.io/hostname` in
+`../runners/spritz/docker-amd64.yaml`; `"pinnedToSlots": true` in
+`waker.conf`, and a test checks the two agree). A floor claim made while 01
+sleeps waits for 01; it can never land on 02 or 03 and preempt CI there.
 
-**Known gap.** The stand-down stops new floor claims, not one made while
-everything slept. If 01 then fails to wake and 02 wakes for CI, that
-claim's pod binds to 02 and may preempt a CI pod there (a test pins this
-down). The fix is to pin the builder's pod template to the node that
-carries its slot, not the waker; not done here.
+Before the pin, the floor stood down whenever a node without the builder's
+slot was awake (that is still the rule for a set without `pinnedToSlots`):
+the claim would have landed there. Then the cap followed 01's free room, and
+with 03 up on 4 Nov it went 1 -> 0 -> 1 about nine times in one burst (73
+builder cap changes in 48 hours), each a listener restart. For an unpinned
+floor set, `holds_a_floor` also keeps its last slot node awake while a
+slotless node it could sleep is up; a pinned set needs neither.
+
+**When 01 is down for good.** With 02 or 03 up and 01 failing to wake (in
+back-off), a builder job is still claimed, its pod waits for 01, and an
+unbound claim blocks every sleep, so 02 and 03 stay up until 01 returns or
+the job is cancelled. The builder's jobs could not run anywhere else anyway;
+the queue alerts (15 and 45 minutes) report it.
 
 **Wakes it drives.** An unbound floor claim is unmet demand, so it is not
 held to the stuck path's one node per episode. That is bounded today
@@ -122,6 +125,22 @@ labels alone. Only give a floor to a set whose jobs name it.
 **Undo.** Set `floor` to 0 (or remove it) in `waker.conf`. The
 ConfigMap's name hash rolls the waker pod on the Argo sync; the cap returns
 to 0 at the next sleep.
+
+## Caps from slots (built, not enabled)
+
+`"roomCaps": false` would make a set's cap `base` plus the configured slots
+of the awake nodes (cordon and untolerated taints still count), instead of
+following each node's free room. Room moves with every pod that comes and
+goes, and each cap change restarts the set's listener: on 4 Nov zagreus-ci
+went 7 -> 6 -> 7 in a burst, and the waker logged jobs "held by GitHub?"
+beside free slots on about 70 passes in two days.
+
+It stays off (`"roomCaps": true`) because the slots are per node only on
+paper. CI pods may land on any amd64 node, so the scheduler can put four
+heavy pods on 01; the builder, pinned there at `ci-release` priority, then
+preempts a running CI job. Room counting is what keeps the builder's room
+free today. Turning this on needs the per-node split enforced first (a
+non-preempting priority for the builder, or a spread limit on CI pods).
 
 ## Choice: a bespoke controller, not cluster-autoscaler
 
@@ -326,6 +345,12 @@ What each failure looks like:
 | zag-amd64-03 | 14.4 GiB, 3.95 CPU | 2 | 0 | 0 |
 | **all three** | | **7** | **2** | **1** (= the ceilings) |
 
+Since 4 Nov 2026 `zagreus-ci` carries `X64` too (every node it runs on is
+amd64), so its 7 slots take the x64 class jobs (e2e, e2e_moments) as well as
+the general ones, and GitHub hands each job to whichever matching runner is
+free. `zagreus-ci-x64` stays, with its 2 slots, while spritz still names it
+for bot PRs.
+
 A node's slots must fit on it even when everything else that can land there
 does. That means two light pods (768 MiB, 250m each), the bundle fill,
 coredns and the DaemonSets: about 2.25 GiB and 0.76 CPU. A heavy pod requests
@@ -337,8 +362,7 @@ Figures from 1 Nov 2026, after the RAM shuffle (01 and 02 at 32 GB, 03 at 16).
   pod would need 8.01 CPU, so CPU binds, not memory.
 - zag-amd64-02 carries four heavy pods: 24 + 2.25 = 26.25 GiB, 6.76 CPU. A
   fifth would need 8.26 CPU. The builder's slot belongs to 01, so it never
-  lands on 02 or 03 when they are the only nodes awake (its floor stands
-  down then too: "Floor").
+  lands on 02 or 03 (its template names 01: "Floor").
 - zag-amd64-03 (i5-7500, 4 threads) carries two: 12 + 2.25 = 14.25 GiB of
   14.4, and 3.76 CPU of 3.95. It is last in the list, so it wakes last and
   sleeps first.
