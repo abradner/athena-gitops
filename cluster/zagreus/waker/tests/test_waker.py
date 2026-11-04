@@ -2729,6 +2729,42 @@ class PoolMerge(unittest.TestCase):
         st = states(**{"zag-amd64-01": {"ready": False, "asleep": True}, "zag-amd64-02": {}})
         self.assertEqual(w.floor_caps(cfg, zero, live=zero, ceilings=CEILINGS, node_states=st)[self.SET], 1)
 
+    def test_a_pinned_claim_wakes_01_at_once_beside_an_awake_02(self):
+        # Codex on #338: placed on paper on 02 (room there), the claim gave
+        # the builder room 1, so floor_claims saw no need and 01 waited out
+        # the stuck grace. Its pod can only bind to 01.
+        r = Rig()
+        r.put_all_to_sleep()
+        r.amt.refuse_on.add("zag-amd64-01")
+        r.job(["zagreus-ci"], age_seconds=120)
+        for _ in range(3):
+            r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertNotIn("zag-amd64-02", r.kube.asleep())
+        self.assertIn("zag-amd64-01", r.waker.backoff_until)
+        r.amt.refuse_on.clear()
+        r.github.jobs.clear()
+        r.kube.add_runner_pod("zag-amd64-02", "zagreus-ci")  # keeps 02 busy, not asleep
+        r.clock.sleep(r.cfg["failureBackoffSeconds"])
+        r.tick()
+        r.amt.calls.clear()
+        r.clock.sleep(r.cfg["wakeCooldownSeconds"])
+        # A fresh claim: inside the stuck grace, so only floor_claims can wake.
+        r.kube.ers["arc-builders"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: self.SET},
+                                                        "creationTimestamp": iso(r.clock())}, "status": {}})
+        r.job([self.SET], age_seconds=5)
+        r.tick()
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
+    def test_compute_caps_places_a_pinned_claim_only_on_its_slot_nodes(self):
+        cfg = production_config()
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True}, "zag-amd64-02": {}})
+        for n, a in (("zag-amd64-02", ALLOCATABLE["zag-amd64-02"]),):
+            st[n]["free"] = [w.parse_qty(a["cpu"]), w.parse_qty(a["memory"])]
+            st[n]["own"] = {}
+        reqs = {name: w.pod_requests(TEMPLATES[name]) for name in TEMPLATES}
+        caps = w.compute_caps(cfg, st, reqs, {self.SET: 1})
+        self.assertEqual(caps[self.SET], 0)
+
     def test_a_pinned_floor_does_not_keep_01_awake(self):
         cfg = production_config()
         self.assertFalse(w.holds_a_floor(cfg, cfg["nodes"][0], states(**{"zag-amd64-01": {}, "zag-amd64-02": {}})))

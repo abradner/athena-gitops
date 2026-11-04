@@ -571,7 +571,10 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             req = set_requests.get(name, (0, 0))
             for _ in range(int((unplaced or {}).get(name, 0))):
                 order = sorted(room_nodes, key=lambda x: -int(x[0].get("slots", {}).get(name, 0)))
-                spot = next((x for x in order if fits(x[2], req)), None)
+                # A pinned set's pod binds only where it has slots (Codex on
+                # #338: placed on 02, it hid the need to wake 01).
+                spot = next((x for x in order if fits(x[2], req) and not (
+                    pinned_to_slots(s) and int(x[0].get("slots", {}).get(name, 0)) <= 0)), None)
                 if spot is None:
                     # Fits nowhere: offering it a slot could only strand it.
                     continue
