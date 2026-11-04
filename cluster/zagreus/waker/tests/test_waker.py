@@ -2706,7 +2706,7 @@ class PoolMerge(unittest.TestCase):
 
     def test_live_config_takes_caps_from_slots_and_pins_only_the_builder(self):
         cfg = live_config()
-        self.assertFalse(cfg["roomCaps"])
+        self.assertTrue(cfg["roomCaps"])  # slots off for now: see README, "Caps from slots"
         self.assertEqual([s["name"] for s in cfg["sets"] if s.get("pinnedToSlots")], [self.SET])
 
     def test_a_pinned_sets_template_names_exactly_its_slot_nodes(self):
@@ -2736,7 +2736,7 @@ class PoolMerge(unittest.TestCase):
     def test_ci_pods_coming_and_going_change_no_cap(self):
         # The 18:02 burst on 4 Nov, in miniature: both nodes up, runner pods
         # filling and emptying 01 and 02. Caps follow the awake nodes only.
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=False)
         r.tick()
         r.kube.writes.clear()
         for i in range(6):
@@ -2763,7 +2763,7 @@ class PoolMerge(unittest.TestCase):
     def test_other_pods_taking_room_change_no_cap(self):
         # Room shifts (a bundle fill, light pods, the builder) used to move
         # zagreus-ci's cap; the slots already leave room for them.
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=False)
         r.tick()
         before = r.kube.caps()
         r.kube.writes.clear()
@@ -2781,7 +2781,7 @@ class PoolMerge(unittest.TestCase):
         self.assertEqual([p for v, p, b in r.kube.writes if "/autoscalingrunnersets/" in p], [])
 
     def test_a_cordoned_node_still_takes_its_slots_out(self):
-        r = Rig(mode="caps")
+        r = Rig(mode="caps", roomCaps=False)
         r.tick()
         self.assertEqual(r.kube.caps()["zagreus-ci"], 3)
         r.kube.nodes["zag-amd64-02"]["spec"]["unschedulable"] = True

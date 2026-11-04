@@ -102,6 +102,12 @@ builder cap changes in 48 hours), each a listener restart. For an unpinned
 floor set, `holds_a_floor` also keeps its last slot node awake while a
 slotless node it could sleep is up; a pinned set needs neither.
 
+**When 01 is down for good.** With 02 or 03 up and 01 failing to wake (in
+back-off), a builder job is still claimed, its pod waits for 01, and an
+unbound claim blocks every sleep, so 02 and 03 stay up until 01 returns or
+the job is cancelled. The builder's jobs could not run anywhere else anyway;
+the queue alerts (15 and 45 minutes) report it.
+
 **Wakes it drives.** An unbound floor claim is unmet demand, so it is not
 held to the stuck path's one node per episode. That is bounded today
 because only 01 has builder slots, and choose_wakes wakes only nodes with
@@ -120,23 +126,21 @@ labels alone. Only give a floor to a set whose jobs name it.
 ConfigMap's name hash rolls the waker pod on the Argo sync; the cap returns
 to 0 at the next sleep.
 
-## Caps from slots
+## Caps from slots (built, not enabled)
 
-`"roomCaps": false` in `waker.conf` (4 Nov 2026): a set's cap is `base` plus
-the configured slots of the nodes that are awake, cordon and untolerated
-taints included, and nothing else. It no longer follows each node's free
-room. Room moved with every pod that came and went (a bundle fill, light
-pods, the builder), so caps moved too: on 4 Nov zagreus-ci went 7 -> 6 -> 7
-during a burst, and the waker logged jobs "held by GitHub?" beside free
-slots on about 70 passes in two days. A cap now changes only when a node
-wakes, sleeps, is cordoned or takes an untolerated taint.
+`"roomCaps": false` would make a set's cap `base` plus the configured slots
+of the awake nodes (cordon and untolerated taints still count), instead of
+following each node's free room. Room moves with every pod that comes and
+goes, and each cap change restarts the set's listener: on 4 Nov zagreus-ci
+went 7 -> 6 -> 7 in a burst, and the waker logged jobs "held by GitHub?"
+beside free slots on about 70 passes in two days.
 
-The slots are sized to fit beside everything else that may land on a node
-(`test_configured_slots_fit_the_nodes`, "Slots" below), so a claim within
-them has room. If it briefly has not (a pod beyond those sums), the claimed
-pod waits for room rather than the cap dropping and the listener
-restarting. The room count stays for the slot metrics' "used" side and for
-`"roomCaps": true`, which brings back the old behaviour.
+It stays off (`"roomCaps": true`) because the slots are per node only on
+paper. CI pods may land on any amd64 node, so the scheduler can put four
+heavy pods on 01; the builder, pinned there at `ci-release` priority, then
+preempts a running CI job. Room counting is what keeps the builder's room
+free today. Turning this on needs the per-node split enforced first (a
+non-preempting priority for the builder, or a spread limit on CI pods).
 
 ## Choice: a bespoke controller, not cluster-autoscaler
 
@@ -358,8 +362,7 @@ Figures from 1 Nov 2026, after the RAM shuffle (01 and 02 at 32 GB, 03 at 16).
   pod would need 8.01 CPU, so CPU binds, not memory.
 - zag-amd64-02 carries four heavy pods: 24 + 2.25 = 26.25 GiB, 6.76 CPU. A
   fifth would need 8.26 CPU. The builder's slot belongs to 01, so it never
-  lands on 02 or 03 when they are the only nodes awake (its floor stands
-  down then too: "Floor").
+  lands on 02 or 03 (its template names 01: "Floor").
 - zag-amd64-03 (i5-7500, 4 threads) carries two: 12 + 2.25 = 14.25 GiB of
   14.4, and 3.76 CPU of 3.95. It is last in the list, so it wakes last and
   sleeps first.
