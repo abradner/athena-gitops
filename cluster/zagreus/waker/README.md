@@ -88,22 +88,19 @@ slot is a claim with no node, not a free slot. So:
 - The sleep procedure checks for an unbound claim again after the assert
   lead, just before the shutdown: the floor keeps claiming through it.
 
-**When it stands down.** While an awake node has no slots for the set. The
-runner pods' nodeSelector takes every amd64 node, so with 01 (the builder's
-only slot) down and 02 or 03 up, a floor claim would land on 02 and, at
-`ci-release` priority, preempt a CI pod there. The cap is then 01's room,
-0, as before. To keep that rare, 01 does not sleep while 02 or 03 is up
-(`holds_a_floor`): the idle node is the one that sleeps, not the last in the
-list, so 01 idle beside a busy 02 would otherwise sleep first, drop the cap
-to 0, and set up the hold for the next builder job. A node the waker can
-never sleep (no way to wake it) does not pin 01 on. What is left is 01
-failing to wake, or cordoned, while 02 or 03 is up.
+**Pinned, so it never stands down (4 Nov 2026).** The builder's template
+names 01, the one node with its slot (`kubernetes.io/hostname` in
+`../runners/spritz/docker-amd64.yaml`; `"pinnedToSlots": true` in
+`waker.conf`, and a test checks the two agree). A floor claim made while 01
+sleeps waits for 01; it can never land on 02 or 03 and preempt CI there.
 
-**Known gap.** The stand-down stops new floor claims, not one made while
-everything slept. If 01 then fails to wake and 02 wakes for CI, that
-claim's pod binds to 02 and may preempt a CI pod there (a test pins this
-down). The fix is to pin the builder's pod template to the node that
-carries its slot, not the waker; not done here.
+Before the pin, the floor stood down whenever a node without the builder's
+slot was awake (that is still the rule for a set without `pinnedToSlots`):
+the claim would have landed there. Then the cap followed 01's free room, and
+with 03 up on 4 Nov it went 1 -> 0 -> 1 about nine times in one burst (73
+builder cap changes in 48 hours), each a listener restart. For an unpinned
+floor set, `holds_a_floor` also keeps its last slot node awake while a
+slotless node it could sleep is up; a pinned set needs neither.
 
 **Wakes it drives.** An unbound floor claim is unmet demand, so it is not
 held to the stuck path's one node per episode. That is bounded today
@@ -122,6 +119,24 @@ labels alone. Only give a floor to a set whose jobs name it.
 **Undo.** Set `floor` to 0 (or remove it) in `waker.conf`. The
 ConfigMap's name hash rolls the waker pod on the Argo sync; the cap returns
 to 0 at the next sleep.
+
+## Caps from slots
+
+`"roomCaps": false` in `waker.conf` (4 Nov 2026): a set's cap is `base` plus
+the configured slots of the nodes that are awake, cordon and untolerated
+taints included, and nothing else. It no longer follows each node's free
+room. Room moved with every pod that came and went (a bundle fill, light
+pods, the builder), so caps moved too: on 4 Nov zagreus-ci went 7 -> 6 -> 7
+during a burst, and the waker logged jobs "held by GitHub?" beside free
+slots on about 70 passes in two days. A cap now changes only when a node
+wakes, sleeps, is cordoned or takes an untolerated taint.
+
+The slots are sized to fit beside everything else that may land on a node
+(`test_configured_slots_fit_the_nodes`, "Slots" below), so a claim within
+them has room. If it briefly has not (a pod beyond those sums), the claimed
+pod waits for room rather than the cap dropping and the listener
+restarting. The room count stays for the slot metrics' "used" side and for
+`"roomCaps": true`, which brings back the old behaviour.
 
 ## Choice: a bespoke controller, not cluster-autoscaler
 
@@ -325,6 +340,12 @@ What each failure looks like:
 | zag-amd64-02 | 30.2 GiB, 7.95 CPU | 3 | 1 | 0 |
 | zag-amd64-03 | 14.4 GiB, 3.95 CPU | 2 | 0 | 0 |
 | **all three** | | **7** | **2** | **1** (= the ceilings) |
+
+Since 4 Nov 2026 `zagreus-ci` carries `X64` too (every node it runs on is
+amd64), so its 7 slots take the x64 class jobs (e2e, e2e_moments) as well as
+the general ones, and GitHub hands each job to whichever matching runner is
+free. `zagreus-ci-x64` stays, with its 2 slots, while spritz still names it
+for bot PRs.
 
 A node's slots must fit on it even when everything else that can land there
 does. That means two light pods (768 MiB, 250m each), the bundle fill,

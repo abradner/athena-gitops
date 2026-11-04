@@ -101,6 +101,11 @@ DEFAULTS = {
     # last week is not demand).
     "runLookbackHours": 72,
     "idleMinutes": 60,
+    # Caps from each awake node's free room (true) or from its configured
+    # slots alone (false). Room tracks every pod that comes and goes, and
+    # every cap change restarts the set's listener, after which GitHub can
+    # hold queued jobs (README, "Caps from slots").
+    "roomCaps": True,
     "wakeCooldownSeconds": 180,
     # A job a set turned down for want of room is held about ten minutes
     # before GitHub offers it again, even once the set has room (26 Oct
@@ -615,6 +620,13 @@ def bound_caps(wanted, live, ceilings):
     return out
 
 
+def pinned_to_slots(s):
+    """The set's pod template keeps its pods on the nodes that have slots
+    for it (waker.conf "pinnedToSlots", checked against the template by
+    tests/test_waker.py), so an awake node without them is no risk."""
+    return bool(s.get("pinnedToSlots"))
+
+
 def floor_caps(cfg, target, live, ceilings, node_states=None):
     """Lift each set to its floor: the least maxRunners the waker writes,
     offered while its nodes sleep (README, "Floor"). Never past the
@@ -638,7 +650,7 @@ def floor_caps(cfg, target, live, ceilings, node_states=None):
         want = out.get(name)
         if floor <= 0 or want is None:
             continue
-        if any(int(n.get("slots", {}).get(name, 0)) <= 0 for n in awake):
+        if not pinned_to_slots(s) and any(int(n.get("slots", {}).get(name, 0)) <= 0 for n in awake):
             continue
         bound = ceilings.get(name)
         if bound is None:
@@ -792,7 +804,7 @@ def holds_a_floor(cfg, node, node_states, wakeable=None):
         return st is not None and node_awake(st)
     for s in cfg["sets"]:
         name = s["name"]
-        if int(s.get("floor", 0)) <= 0 or int(node.get("slots", {}).get(name, 0)) <= 0:
+        if int(s.get("floor", 0)) <= 0 or int(node.get("slots", {}).get(name, 0)) <= 0 or pinned_to_slots(s):
             continue
         others = [n for n in cfg["nodes"] if n["name"] != node["name"] and awake(n)]
         if any(int(n.get("slots", {}).get(name, 0)) > 0 for n in others):
@@ -1334,7 +1346,7 @@ class Waker:
             return
         try:
             offered = {}
-            compute_caps(self.cfg, snap["states"], snap.get("requests"), snap.get("unplaced"), per_node=offered)
+            compute_caps(self.cfg, snap["states"], self.cap_requests(snap), snap.get("unplaced"), per_node=offered)
             usage = slot_usage(self.cfg, snap["states"], snap.get("pods_by_node") or {}, offered,
                                snap.get("runner_jobs") or {})
             text = render_slot_metrics(usage, self.clock())
@@ -1555,6 +1567,14 @@ class Waker:
 
     # ----- caps
 
+    def cap_requests(self, snap):
+        """The pod requests compute_caps counts room with, or None for caps
+        from the configured slots alone (roomCaps false). The slots are
+        sized so they fit beside everything else that may land on a node
+        (test_configured_slots_fit_the_nodes), so they need no room check;
+        a cordon or an untolerated taint still takes a node out."""
+        return snap.get("requests") if self.cfg["roomCaps"] else None
+
     def apply_caps(self, snap, states=None, force=False):
         """Raise at once. Lower at once too, unless this pass could not read
         some node's Lease and had no earlier reading to go on (the first
@@ -1562,7 +1582,7 @@ class Waker:
         it, so one failed read does not flap the listeners. A Lease read
         and found stale is not uncertain, and lowers at once. force: lower
         now (the sleep procedure, before a cordon)."""
-        wanted = compute_caps(self.cfg, states or snap["states"], snap.get("requests"), snap.get("unplaced"))
+        wanted = compute_caps(self.cfg, states or snap["states"], self.cap_requests(snap), snap.get("unplaced"))
         room = bound_caps(wanted, snap["live"], snap["ceilings"])
         target = floor_caps(self.cfg, room, snap["live"], snap["ceilings"], states or snap["states"])
         if states is None:
@@ -1908,8 +1928,8 @@ class Waker:
         # Unplaced claims are need (the caller adds them), not room: placed
         # on paper only in `after`, each would count as a slot the node may
         # not have (delta review of 723c5352).
-        before = compute_caps(self.cfg, states, snap.get("requests"))
-        after = compute_caps(self.cfg, hyp, snap.get("requests"))
+        before = compute_caps(self.cfg, states, self.cap_requests(snap))
+        after = compute_caps(self.cfg, hyp, self.cap_requests(snap))
         return {s: after[s] - before.get(s, 0) for s in after}
 
     def wake(self, node, snap):

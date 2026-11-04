@@ -54,8 +54,14 @@ spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 120
             priorityClassName: ci-release
+            # The one node with the builder's slot (../../waker/waker.conf).
+            # Pinned so a claim made while 01 sleeps waits for 01 rather than
+            # landing on 02 or 03 and, at ci-release priority, preempting CI
+            # there; that is what lets the waker hold its floor whatever else
+            # is awake (README, "Floor"; "pinnedToSlots" in waker.conf).
             nodeSelector:
               zagreus.asn.casa/role: amd64-runner
+              kubernetes.io/hostname: zag-amd64-01
             initContainers:
               - name: init-dind-externals
                 # Same pin as the runner container; see ci.yaml.
