@@ -1,0 +1,106 @@
+# Simplytics light lane (`runs-on: zagreus-simplytics-light`, through
+# Simplytics' RUNNER_CI_LIGHT repository variable): the short gating jobs.
+# Org-level. Placed as spritz's ci-light.yaml (read it for why): always on,
+# on the always-on arm64 nodes, falling back to amd64, one runner kept warm.
+# Not driven by the node waker.
+#
+# Room on the arm64 builder (6.85 GiB allocatable, 5 Nov 2026): a build
+# (3.75 GiB with its dind) plus spritz's two light pods and these two
+# (768 MiB each) is 6.75 GiB of requests, beside the DaemonSets. It fits,
+# with little to spare: raise neither light set's maxRunners without
+# re-checking.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-simplytics-ci-light
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: simplytics-ci-light
+      valuesObject:
+        runnerScaleSetName: zagreus-simplytics-light
+        # Written only when ARC creates the scale set (spritz's ci-light.yaml).
+        scaleSetLabels: [self-hosted, linux, simplytics-light]
+        githubConfigUrl: https://github.com/Simplytics
+        githubConfigSecret: arc-github-app-simplytics
+        # No runnerGroup: GitHub Free has only the Default group.
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 1
+        maxRunners: 2
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 30
+            priorityClassName: ci-light
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [arm-runner, arm-builder, amd64-runner]
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    preference:
+                      matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [arm-runner]
+                  - weight: 50
+                    preference:
+                      matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [arm-builder]
+            tolerations:
+              - key: zagreus.asn.casa/role
+                operator: Equal
+                value: arm-builder
+                effect: NoSchedule
+            containers:
+              - name: runner
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                resources:
+                  requests: {cpu: 250m, memory: 768Mi, ephemeral-storage: 2Gi}
+                  limits: {cpu: "2", memory: 1536Mi, ephemeral-storage: 10Gi}
+                volumeMounts:
+                  - {name: pg, mountPath: /var/lib/postgresql}
+            volumes:
+              - {name: pg, emptyDir: {}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -27,6 +27,7 @@ Modes (config "mode"):
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -156,6 +157,16 @@ DEFAULTS = {
     # Taint keys the runner pods tolerate (none do today). Any other
     # NoSchedule or NoExecute taint takes a node out of the caps.
     "toleratedTaintKeys": [],
+    # GitHub Apps whose installation tokens read a set's queue (a set's
+    # "github"), by name: {"name": {"dir": path}}. The directory holds the
+    # App's Secret as ARC's own (github_app_id, github_app_installation_id,
+    # github_app_private_key). "default" is the GITHUB_TOKEN.
+    "githubApps": {},
+    # A set sharing a pool keeps, for this long, as many slots as it last
+    # used, while no other set's queued jobs want them: a run's next job
+    # then finds the slot already offered instead of restarting both sets'
+    # listeners (README, "Sharing").
+    "shareHoldSeconds": 600,
 }
 
 
@@ -174,14 +185,33 @@ def validate_config(cfg):
     names = [s["name"] for s in cfg["sets"]]
     if len(set(names)) != len(names):
         raise ValueError("duplicate scale set in sets")
+    by_name = {s["name"]: s for s in cfg["sets"]}
+    credentials = {"default"} | set(cfg.get("githubApps") or {})
     for s in cfg["sets"]:
-        for key in ("name", "namespace", "application", "repo"):
+        for key in ("name", "namespace", "application"):
             if not s.get(key):
                 raise ValueError(f"set {s!r} needs {key}")
+        # The queue it reads: one repository, or every repository of an org
+        # (an org-level scale set serves them all).
+        if bool(s.get("repo")) == bool(s.get("org")):
+            raise ValueError(f"set {s['name']}: needs exactly one of repo and org")
+        if s.get("github", "default") not in credentials:
+            raise ValueError(f"set {s['name']}: unknown github credential {s.get('github')!r}")
         if int(s.get("base", 0)) < 0:
             raise ValueError(f"set {s['name']}: base must be >= 0")
         if int(s.get("floor", 0)) < 0:
             raise ValueError(f"set {s['name']}: floor must be >= 0")
+        shared = s.get("sharesSlotsOf")
+        if shared is not None:
+            if shared == s["name"] or shared not in by_name or by_name[shared].get("sharesSlotsOf"):
+                raise ValueError(f"set {s['name']}: sharesSlotsOf must name another set that shares no one's")
+    for key, members in shared_pools(cfg).items():
+        for m in members:
+            # A floor holds a cap while the nodes sleep; a pin is a promise
+            # about where one set's pods land. Neither has a meaning yet for
+            # slots another set may be handed.
+            if int(by_name[m].get("floor", 0)) > 0 or by_name[m].get("pinnedToSlots"):
+                raise ValueError(f"set {m}: no floor or pinnedToSlots in a shared pool")
     nodes = [n["name"] for n in cfg["nodes"]]
     if len(set(nodes)) != len(nodes):
         raise ValueError("duplicate node in nodes")
@@ -191,8 +221,51 @@ def validate_config(cfg):
         for set_name, slots in n.get("slots", {}).items():
             if set_name not in names:
                 raise ValueError(f"node {n['name']}: slots for unknown set {set_name}")
+            if by_name[set_name].get("sharesSlotsOf"):
+                raise ValueError(f"node {n['name']}: {set_name} uses {by_name[set_name]['sharesSlotsOf']}'s "
+                                 "slots and has none of its own")
             if int(slots) < 0:
                 raise ValueError(f"node {n['name']}: negative slots for {set_name}")
+
+
+def slot_key(s):
+    """The node slots a set draws on: its own, or (sharesSlotsOf) another
+    set's, shared with it (README, "Sharing")."""
+    return s.get("sharesSlotsOf") or s["name"]
+
+
+def node_slots(cfg, node, set_name):
+    """The node's configured slots a set may use. For a set in a shared
+    pool, the pool's slots, which its other sets may also be using."""
+    s = next((x for x in cfg["sets"] if x["name"] == set_name), None)
+    return int(node.get("slots", {}).get(slot_key(s) if s else set_name, 0))
+
+
+def shared_pools(cfg):
+    """{slot key: [set names, waker.conf order]} for every pool of slots
+    that more than one set draws on."""
+    pools = {}
+    for s in cfg["sets"]:
+        pools.setdefault(slot_key(s), []).append(s["name"])
+    return {k: v for k, v in pools.items() if len(v) > 1}
+
+
+def owns(s, job):
+    """The job is in the set's queue: its repository, or any repository of
+    its org."""
+    repo = job["repo"].lower()
+    if s.get("org"):
+        return repo.split("/", 1)[0] == s["org"].lower()
+    return repo == s["repo"].lower()
+
+
+def share_need(cfg, demand, unstarted):
+    """Per set in a shared pool: queued jobs it has not claimed yet, the
+    slots it would take now. A claimed job's runner already holds its slot
+    (compute_caps counts it as the set's own)."""
+    pooled = {m for members in shared_pools(cfg).values() for m in members}
+    return {name: max(0, d - min(unstarted.get(name, 0), d))
+            for name, d in demand.items() if name in pooled}
 
 
 # --------------------------------------------------------------------------
@@ -220,8 +293,7 @@ def parse_time(value):
 def first_set(cfg, job, set_labels):
     """The set a job counts for: the first in waker.conf order it matches."""
     for s in cfg["sets"]:
-        if job["repo"].lower() == s["repo"].lower() and \
-                job_match(job["labels"], s["name"], set_labels.get(s["name"], []))[0]:
+        if owns(s, job) and job_match(job["labels"], s["name"], set_labels.get(s["name"], []))[0]:
             return s["name"]
     return None
 
@@ -239,7 +311,7 @@ def demand_by_set(cfg, jobs, set_labels, now, max_age=None, alts=None):
         if max_age is not None and age >= max_age:
             continue
         for s in cfg["sets"]:
-            if job["repo"].lower() != s["repo"].lower():
+            if not owns(s, job):
                 continue
             ok, by_name = job_match(job["labels"], s["name"], set_labels.get(s["name"], []))
             if not ok:
@@ -249,7 +321,7 @@ def demand_by_set(cfg, jobs, set_labels, now, max_age=None, alts=None):
                 out[s["name"]] += 1
                 if alts is not None:
                     for o in cfg["sets"]:
-                        if o["name"] != s["name"] and o["repo"].lower() == s["repo"].lower() and \
+                        if o["name"] != s["name"] and owns(o, job) and \
                                 job_match(job["labels"], o["name"], set_labels.get(o["name"], []))[0]:
                             key = (s["name"], o["name"])
                             alts[key] = alts.get(key, 0) + 1
@@ -365,7 +437,9 @@ def slot_usage(cfg, states, pods_by_node, offered, runner_jobs):
     sets_seen = sorted(set(driven) | {s for c in used.values() for s in c})
     used = {node: {s: c.get(s, 0) for s in sets_seen} for node, c in used.items()}
     state = {node: node_state_name(states.get(node)) for node in listed}
-    configured = {n["name"]: {s: int(n.get("slots", {}).get(s, 0)) for s in driven} for n in cfg["nodes"]}
+    # A set sharing a pool shows the pool's slots: the same slots as its
+    # other sets, not more.
+    configured = {n["name"]: {s: node_slots(cfg, n, s) for s in driven} for n in cfg["nodes"]}
     offer = {node: {s: (offered.get(node, {}).get(s, 0) if state[node] == "awake" else 0) for s in driven}
              for node in listed if state[node] != "unknown"}
     jobs = []
@@ -511,9 +585,10 @@ def untolerated_taint(node, tolerated_keys=()):
     return None
 
 
-def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=None):
+def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=None,
+                 need=None, sticky=None, turn=None, ceilings=None):
     """base + what each awake node can still take, per driven set (no
-    ceiling).
+    ceiling, but see ceilings below).
 
     With set_requests (each set's pod requests) and each node's free room
     (allocatable minus every pod already on it), a node offers a set no more
@@ -533,11 +608,32 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
     preempts CI pods) gets its room before CI does. Without set_requests:
     the configured slots, as written.
 
+    Shared pools (sharesSlotsOf; README, "Sharing"): the sets of a pool draw
+    on one set of slots per node, so together they are never offered more
+    than its slots (and its room). Where the pool's first set falls in
+    waker.conf order, with need given:
+      1. need (per pool set: queued jobs not yet claimed) is served one slot
+         at a time, each to the set holding the fewest slots so far; a tie
+         to the set whose oldest queued job is oldest (turn: its age in
+         seconds), then to waker.conf order;
+      2. sticky (per pool set: slots it used lately) the same way, after
+         every queued job;
+      3. whatever is left goes to each pool set at its own place in
+         waker.conf order, as for any set. So with no other set's demand,
+         the pool's first set gets what it would have had alone.
+    ceilings (shared pool sets only): a pool set is offered nothing past
+    its ceiling, so a slot it could not use goes to the others.
+
     per_node: a dict to fill with what each awake node offers each set
     ({node: {set: n}}, its own runners included); the caps are its sums
     plus base. For the slot metrics only: the caps never read it."""
     caps = {s["name"]: int(s.get("base", 0)) for s in cfg["sets"]}
-    room_nodes = []  # (node config, own counts, [free cpu, free mem]) for room-aware awake nodes
+    pools = shared_pools(cfg)
+    pooled = {name: key for key, names in pools.items() for name in names}
+    rank = {s["name"]: i for i, s in enumerate(cfg["sets"])}
+    by_name = {s["name"]: s for s in cfg["sets"]}
+    # [node config, own counts, [free cpu, free mem] or None (slots alone)]
+    entries = []
     for n in cfg["nodes"]:
         st = node_states.get(n["name"])
         if st is None or not node_awake(st):
@@ -546,14 +642,16 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             # stops a busy runner because its set's cap went down.
             continue
         if set_requests is None or "free" not in st:
-            for set_name, slots in n.get("slots", {}).items():
-                caps[set_name] += int(slots)
-                if per_node is not None:
-                    per_node.setdefault(n["name"], {})[set_name] = int(slots)
-            continue
-        room_nodes.append((n, dict(st.get("own") or {}), list(st["free"])))
+            # Slots alone: offered as configured whatever runs there, except
+            # in a shared pool, where one set's runners hold the slots the
+            # others would be offered.
+            entries.append([n, {k: v for k, v in (st.get("own") or {}).items() if k in pooled}, None])
+        else:
+            entries.append([n, dict(st.get("own") or {}), list(st["free"])])
 
     def fits(free, req, k=1):
+        if free is None:
+            return max(0, k)
         cpu, mem = req
         if cpu == float("inf") or mem == float("inf"):
             return 0
@@ -564,17 +662,21 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             n = min(n, int(max(0.0, free[1]) // mem))
         return max(0, n)
 
+    def req_of(name):
+        return (set_requests or {}).get(name, (0, 0))
+
     if set_requests is not None:
         # Claimed, unbound runners first: they hold room already.
+        room_entries = [e for e in entries if e[2] is not None]
         for s in cfg["sets"]:
             name = s["name"]
-            req = set_requests.get(name, (0, 0))
+            req = req_of(name)
             for _ in range(int((unplaced or {}).get(name, 0))):
-                order = sorted(room_nodes, key=lambda x: -int(x[0].get("slots", {}).get(name, 0)))
+                order = sorted(room_entries, key=lambda x: -node_slots(cfg, x[0], name))
                 # A pinned set's pod binds only where it has slots (Codex on
                 # #338: placed on 02, it hid the need to wake 01).
                 spot = next((x for x in order if fits(x[2], req) and not (
-                    pinned_to_slots(s) and int(x[0].get("slots", {}).get(name, 0)) <= 0)), None)
+                    pinned_to_slots(s) and node_slots(cfg, x[0], name) <= 0)), None)
                 if spot is None:
                     # Fits nowhere: offering it a slot could only strand it.
                     continue
@@ -582,22 +684,115 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                 spot[2][0] -= req[0]
                 spot[2][1] -= req[1]
 
-    for n, own, free in room_nodes:
-        for set_name in caps:
-            caps[set_name] += own.get(set_name, 0)
+    given = {}  # (node, set) -> slots offered on top of its own runners
+    for n, own, _ in entries:
+        for name in caps:
+            caps[name] += own.get(name, 0)
             if per_node is not None:
-                per_node.setdefault(n["name"], {})[set_name] = own.get(set_name, 0)
-        for s in cfg["sets"]:
-            name = s["name"]
-            req = set_requests.get(name, (0, 0))
-            room = int(n.get("slots", {}).get(name, 0)) - own.get(name, 0)
-            fit = fits(free, req, room) if room > 0 else 0
-            if fit:
-                free[0] -= fit * req[0]
-                free[1] -= fit * req[1]
-                caps[name] += fit
-                if per_node is not None:
-                    per_node[n["name"]][name] += fit
+                per_node.setdefault(n["name"], {})[name] = own.get(name, 0)
+
+    def slots_left(e, name):
+        n, own = e[0], e[1]
+        members = pools.get(pooled.get(name), [name])
+        used = sum(own.get(m, 0) + given.get((n["name"], m), 0) for m in members)
+        return node_slots(cfg, n, name) - used
+
+    def offer(e, name, k):
+        k = min(k, slots_left(e, name))
+        if name in capped:
+            k = min(k, capped[name] - caps[name])
+        if name in pooled and ceilings and ceilings.get(name) is not None:
+            k = min(k, ceilings[name] - caps[name])
+        if k <= 0:
+            return 0
+        req = req_of(name)
+        fit = fits(e[2], req, k)
+        if fit:
+            if e[2] is not None:
+                e[2][0] -= fit * req[0]
+                e[2][1] -= fit * req[1]
+            key = (e[0]["name"], name)
+            given[key] = given.get(key, 0) + fit
+            caps[name] += fit
+            if per_node is not None:
+                per_node[e[0]["name"]][name] += fit
+        return fit
+
+    def share(members, want):
+        """Serve want one slot at a time; return what could not be served."""
+        want = {m: int(want.get(m, 0)) for m in members if int(want.get(m, 0)) > 0}
+        short = {}
+        while want:
+            m = min(want, key=lambda x: (caps[x], -float((turn or {}).get(x, 0)), rank[x]))
+            if not any(offer(e, m, 1) for e in entries):
+                short[m] = want.pop(m)  # nowhere left for this set; the others may still fit
+                continue
+            want[m] -= 1
+            if want[m] <= 0:
+                del want[m]
+        return short
+
+    capped = {}  # pool set -> the most it may be offered this pass (fair_cap)
+
+    def fair_cap(members, short):
+        """A set whose queued jobs found no free slot, holding less than
+        its fair share of the pool, would wait for ever behind a busy
+        neighbour: ARC hands the neighbour's freed slot to its next queued
+        job within seconds, long before the next pass sees it free. So the
+        neighbour's cap drops to its own fair share, below the runners it
+        has if need be (ARC never stops a busy runner for that). It claims
+        nothing more until it is under its share; the slot its next
+        finished job frees is then free at the next pass, and the
+        sharing rule hands it to the starved set.
+
+        Fair share: the pool's slots now held, split one at a time to the
+        set holding fewest that still wants one (wanting: what it holds
+        plus its unserved jobs, up to its ceiling), a tie to the oldest
+        queue, then waker.conf order."""
+        total = sum(caps[m] - int(by_name[m].get("base", 0)) for m in members)
+        wants = {}
+        for m in members:
+            held = caps[m] - int(by_name[m].get("base", 0))
+            w = held + short.get(m, 0)
+            if m in pooled and ceilings and ceilings.get(m) is not None:
+                w = min(w, ceilings[m] - int(by_name[m].get("base", 0)))
+            wants[m] = max(0, w)
+        fair = dict.fromkeys(members, 0)
+        for _ in range(total):
+            open_ = [m for m in members if fair[m] < wants[m]]
+            if not open_:
+                break
+            m = min(open_, key=lambda x: (fair[x], -float((turn or {}).get(x, 0)), rank[x]))
+            fair[m] += 1
+        starved = [m for m in members if short.get(m) and caps[m] - int(by_name[m].get("base", 0)) < fair[m]]
+        if not starved:
+            return
+        for m in members:
+            base = int(by_name[m].get("base", 0))
+            excess = caps[m] - base - fair[m]
+            if excess <= 0:
+                continue
+            LOG.info("%s held to %s of the shared slots so %s gets its share", m, fair[m], ", ".join(starved))
+            caps[m] -= excess
+            capped[m] = caps[m]
+            if per_node is not None:
+                for e in reversed(entries):
+                    cut = min(excess, per_node[e[0]["name"]][m])
+                    per_node[e[0]["name"]][m] -= cut
+                    excess -= cut
+
+    served = set()
+    for s in cfg["sets"]:
+        name = s["name"]
+        key = pooled.get(name)
+        if key is not None and key not in served and (need or sticky):
+            served.add(key)
+            short = share(pools[key], need or {})
+            if short:
+                fair_cap(pools[key], short)
+            share(pools[key], sticky or {})
+        for e in entries:
+            offer(e, name, slots_left(e, name))
     return caps
 
 
@@ -653,7 +848,7 @@ def floor_caps(cfg, target, live, ceilings, node_states=None):
         want = out.get(name)
         if floor <= 0 or want is None:
             continue
-        if not pinned_to_slots(s) and any(int(n.get("slots", {}).get(name, 0)) <= 0 for n in awake):
+        if not pinned_to_slots(s) and any(node_slots(cfg, n, name) <= 0 for n in awake):
             continue
         bound = ceilings.get(name)
         if bound is None:
@@ -708,8 +903,8 @@ def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
             out = {}
             for n in cfg["nodes"]:
                 if n["name"] in nodes:
-                    for s, k in n.get("slots", {}).items():
-                        out[s] = out.get(s, 0) + int(k)
+                    for s in cfg["sets"]:
+                        out[s["name"]] = out.get(s["name"], 0) + node_slots(cfg, n, s["name"])
             return out
     want = {name: u for name, u in unmet.items() if u > 0}
     need = dict(want)
@@ -726,8 +921,7 @@ def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
             continue
         if backoff_until.get(n["name"], 0) > now_s:
             continue
-        slots = n.get("slots", {})
-        if not any(int(slots.get(s, 0)) > 0 for s in need):
+        if not any(node_slots(cfg, n, s) > 0 for s in need):
             continue
         out.append(n["name"])
         got = room(out)
@@ -783,7 +977,7 @@ def choose_sleep(cfg, node_states, idle_since, unmet, backoff_until, now_s,
         since = idle_since.get(n["name"])
         if since is None or now_s - since < cfg["idleMinutes"] * 60:
             continue
-        if any(int(n.get("slots", {}).get(s, 0)) > 0 for s in hungry):
+        if any(node_slots(cfg, n, s) > 0 for s in hungry):
             continue
         if holds_a_floor(cfg, n, node_states, wakeable):
             continue
@@ -807,12 +1001,12 @@ def holds_a_floor(cfg, node, node_states, wakeable=None):
         return st is not None and node_awake(st)
     for s in cfg["sets"]:
         name = s["name"]
-        if int(s.get("floor", 0)) <= 0 or int(node.get("slots", {}).get(name, 0)) <= 0 or pinned_to_slots(s):
+        if int(s.get("floor", 0)) <= 0 or node_slots(cfg, node, name) <= 0 or pinned_to_slots(s):
             continue
         others = [n for n in cfg["nodes"] if n["name"] != node["name"] and awake(n)]
-        if any(int(n.get("slots", {}).get(name, 0)) > 0 for n in others):
+        if any(node_slots(cfg, n, name) > 0 for n in others):
             continue  # another node keeps the set's slots
-        if any(int(n.get("slots", {}).get(name, 0)) <= 0 and (wakeable is None or n["name"] in wakeable)
+        if any(node_slots(cfg, n, name) <= 0 and (wakeable is None or n["name"] in wakeable)
                for n in others):
             return True
     return False
@@ -965,8 +1159,11 @@ class GitHub:
 
     MAX_PAGES = 10
 
-    def __init__(self, token, api, clock=time.time):
+    def __init__(self, token, api, clock=time.time, auth=None):
+        """token: a fixed token (the default credential); or auth, a
+        callable returning a current one (GitHubApp.token)."""
         self.token = token
+        self.auth = auth
         self.api = api.rstrip("/")
         self.clock = clock
         self.etags = {}  # path -> (etag, data)
@@ -978,7 +1175,7 @@ class GitHub:
             raise RuntimeError(f"GitHub rate limited for {int(self.blocked_until - self.clock())} s more")
         self.used.add(path)
         req = urllib.request.Request(self.api + path)
-        req.add_header("Authorization", f"Bearer {self.token}")
+        req.add_header("Authorization", f"Bearer {self.auth() if self.auth else self.token}")
         req.add_header("Accept", "application/vnd.github+json")
         req.add_header("X-GitHub-Api-Version", "2022-11-28")
         cached = self.etags.get(path)
@@ -1042,6 +1239,122 @@ class GitHub:
         # Forget runs no longer queued or in progress, so the cache stays small.
         self.etags = {k: v for k, v in self.etags.items() if not k.startswith(prefix) or k in self.used}
         return jobs
+
+    def org_queued_jobs(self, org, lookback_hours, now):
+        """Every queued job in the org's private repositories this
+        installation can see (an org-level scale set serves them all).
+        Archived ones run nothing and are skipped. One repository that
+        cannot be read makes the whole org's queue unreadable."""
+        repos = self._get_all("/installation/repositories", "repositories")
+        jobs = []
+        for r in repos:
+            if (r.get("owner") or {}).get("login", "").lower() != org.lower() or r.get("archived"):
+                continue
+            # Public repositories: zagreus never runs their jobs (a fork's PR
+            # would run code here), and the Default runner group keeps them
+            # off org runners anyway, so their queue is never demand.
+            if not r.get("private", False):
+                continue
+            jobs.extend(self.queued_jobs(r["full_name"], lookback_hours, now))
+        return jobs
+
+
+# A GitHub App's installation token, minted with the standard library alone:
+# a JWT signed RS256 (RSASSA-PKCS1-v1_5 over SHA-256) with the App's key,
+# exchanged for a one-hour token. The key is PKCS#1, as GitHub issues it and
+# as the ExternalSecret's filterPEM writes it.
+
+SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def _der(buf, i):
+    """(tag, value, next offset) of the DER element at i."""
+    tag, ln = buf[i], buf[i + 1]
+    i += 2
+    if ln & 0x80:
+        k = ln & 0x7F
+        ln = int.from_bytes(buf[i:i + k], "big")
+        i += k
+    if i + ln > len(buf):
+        raise ValueError("truncated DER")
+    return tag, buf[i:i + ln], i + ln
+
+
+def rsa_private_key(pem):
+    """(n, e, d) from an "RSA PRIVATE KEY" (PKCS#1) PEM."""
+    m = re.search(r"-----BEGIN RSA PRIVATE KEY-----(.*?)-----END RSA PRIVATE KEY-----", pem, re.S)
+    if not m:
+        raise ValueError("no RSA PRIVATE KEY block")
+    der = base64.b64decode("".join(m.group(1).split()), validate=True)
+    tag, body, _ = _der(der, 0)
+    if tag != 0x30:
+        raise ValueError("RSA key is not a DER sequence")
+    ints, i = [], 0
+    while len(ints) < 4:
+        tag, v, i = _der(body, i)
+        if tag != 0x02:
+            raise ValueError("RSA key field is not an integer")
+        ints.append(int.from_bytes(v, "big"))
+    _, n, e, d = ints
+    return n, e, d
+
+
+def rs256(pem, data):
+    n, e, d = rsa_private_key(pem)
+    k = (n.bit_length() + 7) // 8
+    t = SHA256_DIGEST_INFO + hashlib.sha256(data).digest()
+    if k < len(t) + 11:
+        raise ValueError("RSA key too short")
+    m = int.from_bytes(b"\x00\x01" + b"\xff" * (k - len(t) - 3) + b"\x00" + t, "big")
+    sig = pow(m, d, n)
+    if pow(sig, e, n) != m:  # a wrong or damaged key signs garbage: say so here
+        raise ValueError("RSA signature does not verify")
+    return sig.to_bytes(k, "big")
+
+
+def _b64url(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+class GitHubApp:
+    """Installation tokens for one App installation, from its Secret
+    mounted as files (ARC's keys: github_app_id, github_app_installation_id,
+    github_app_private_key). Read on every mint, so a key rotated in the
+    vault (or a Secret that appears after the pod started) is picked up.
+    A token is reused until five minutes before it expires."""
+
+    def __init__(self, directory, api, clock=time.time, opener=None):
+        self.dir = directory
+        self.api = api.rstrip("/")
+        self.clock = clock
+        self.opener = opener or urllib.request.urlopen
+        self._token, self._expires = None, 0.0
+
+    def _read(self, name):
+        with open(os.path.join(self.dir, name)) as f:
+            return f.read()
+
+    def token(self):
+        if self._token and self.clock() < self._expires - 300:
+            return self._token
+        app_id = int(self._read("github_app_id").strip())
+        installation = int(self._read("github_app_installation_id").strip())
+        now = int(self.clock())
+        # iat a minute back for clock drift; GitHub refuses exp more than ten
+        # minutes after iat.
+        head = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        body = _b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": app_id}).encode())
+        sig = _b64url(rs256(self._read("github_app_private_key"), f"{head}.{body}".encode()))
+        req = urllib.request.Request(f"{self.api}/app/installations/{installation}/access_tokens",
+                                     data=b"", method="POST")
+        req.add_header("Authorization", f"Bearer {head}.{body}.{sig}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        with self.opener(req, timeout=30) as resp:
+            data = json.load(resp)
+        self._token = data["token"]
+        self._expires = parse_time(data["expires_at"]).timestamp()
+        return self._token
 
 
 # --------------------------------------------------------------------------
@@ -1220,7 +1533,10 @@ class Waker:
                  clock=time.time, sleep=time.sleep, my_node=None):
         self.cfg = cfg
         self.kube = kube
-        self.github = github
+        # One GitHub client per credential a set's queue is read with
+        # ({"default": ..., "simplytics": ...}); a lone client is "default".
+        self.githubs = dict(github) if isinstance(github, dict) else {"default": github}
+        self.github = self.githubs.get("default")
         self.amt = amt
         self.talos = talos
         self.wol = wol or {}
@@ -1249,6 +1565,12 @@ class Waker:
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
         self.asleep_labelled = {}  # node -> whether LABEL_ASLEEP was last written on it
+        # Sharing (README, "Sharing"): from the last demand read.
+        self.share = {}  # pool set -> queued jobs it has not claimed
+        self.share_turn = {}  # pool set -> age of its oldest queued job (s)
+        self.share_used = {}  # pool set -> [(time, slots it held or wanted)] over shareHoldSeconds
+        self.share_sticky = {}  # pool set -> slots to keep for it while no queue wants them
+        self.blind_sets = set()  # sets whose queue could not be read on the last pass
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep."""
@@ -1339,7 +1661,11 @@ class Waker:
         if unreadable:
             LOG.warning("not publishing queue metrics: labels of %s unreadable", ", ".join(unreadable))
             return
-        self.write_metrics_file(QUEUE_METRIC_FILE, render_queue_metrics(self.queue_stats, self.clock()))
+        # A set whose queue could not be read is left out (absent, never a
+        # false 0); the other queues' gauges stay live. The waker logs the
+        # unread queue every pass, and keeps every node awake meanwhile.
+        stats = {k: v for k, v in self.queue_stats.items() if k not in self.blind_sets}
+        self.write_metrics_file(QUEUE_METRIC_FILE, render_queue_metrics(stats, self.clock()))
 
     def publish_slot_metrics(self, snap):
         """Write the slot gauges (slot_usage) every pass, GitHub readable or
@@ -1349,7 +1675,8 @@ class Waker:
             return
         try:
             offered = {}
-            compute_caps(self.cfg, snap["states"], self.cap_requests(snap), snap.get("unplaced"), per_node=offered)
+            compute_caps(self.cfg, snap["states"], self.cap_requests(snap), snap.get("unplaced"), per_node=offered,
+                         **self.share_args(snap))
             usage = slot_usage(self.cfg, snap["states"], snap.get("pods_by_node") or {}, offered,
                                snap.get("runner_jobs") or {})
             text = render_slot_metrics(usage, self.clock())
@@ -1547,11 +1874,39 @@ class Waker:
                 "runner_jobs": runner_jobs,
                 "requests": requests if len(requests) == len(live) else None}
 
+    def queues(self):
+        """{(credential, "repo" or "org", name): [set names]}: each queue
+        read once a pass, through its own credential."""
+        out = {}
+        for s in self.cfg["sets"]:
+            kind = "org" if s.get("org") else "repo"
+            out.setdefault((s.get("github", "default"), kind, s[kind]), []).append(s["name"])
+        return out
+
     def demand(self, labels):
+        """Demand per set, from every queue. A queue that cannot be read
+        leaves its sets blind (blind_sets: no demand, and the pass puts no
+        node to sleep), and the others still count; with none readable it
+        raises, and the pass holds."""
         now = dt.datetime.now(dt.timezone.utc)
-        jobs = []
-        for repo in sorted({s["repo"] for s in self.cfg["sets"]}):
-            jobs.extend(self.github.queued_jobs(repo, self.cfg["runLookbackHours"], now))
+        jobs, blind = [], set()
+        queues = self.queues()
+        for (cred, kind, name), sets in sorted(queues.items()):
+            try:
+                gh = self.githubs.get(cred)
+                if gh is None:
+                    raise RuntimeError(f"no GitHub credential {cred!r}")
+                read = gh.org_queued_jobs if kind == "org" else gh.queued_jobs
+                jobs.extend(read(name, self.cfg["runLookbackHours"], now))
+            except Exception as e:
+                if len(queues) == 1:
+                    raise
+                LOG.warning("queue %s %s unreadable (%s): %s wake nothing, and nothing sleeps",
+                            kind, name, e, ", ".join(sets))
+                blind.update(sets)
+        if blind and blind >= {s["name"] for s in self.cfg["sets"]}:
+            raise RuntimeError("no queue readable")
+        self.blind_sets = blind
         queued, t = {j.get("id") for j in jobs}, self.clock()
         self.queue_stats = oldest_queued_by_set(self.cfg, jobs, labels, now)
         self.orphans = {i: at for i, at in self.orphans.items()
@@ -1568,6 +1923,45 @@ class Waker:
                                   max_age=self.cfg["heldAfterSeconds"] + self.cfg["heldForSeconds"])
         return demand_by_set(self.cfg, jobs, labels, now, alts=self.alts)
 
+    # ----- sharing
+
+    def update_share(self, demand, snap):
+        """From this pass's demand: each pool set's queued jobs not yet
+        claimed, the age of its oldest queued job (the tie-break), and the
+        slots it has used over the last shareHoldSeconds (sticky). A blind
+        set keeps what it had."""
+        now = self.clock()
+        need = share_need(self.cfg, demand, snap.get("unstarted", {}))
+        hold = self.cfg["shareHoldSeconds"]
+        for name, n in need.items():
+            if name in self.blind_sets:
+                # Its queue unread: it asks for nothing new and keeps
+                # nothing back, so a stale share cannot squeeze the others
+                # for the whole outage. Its running runners keep their slots.
+                self.share[name] = 0
+                self.share_sticky[name] = 0
+                self.share_turn[name] = 0
+                self.share_used.pop(name, None)
+                continue
+            self.share[name] = n
+            self.share_turn[name] = self.queue_stats.get(name, {}).get("oldest", 0)
+            used = snap.get("runners", {}).get(name, 0) + n
+            hist = [(t, u) for t, u in self.share_used.get(name, []) if now - t < hold] + [(now, used)]
+            self.share_used[name] = hist
+            self.share_sticky[name] = max(0, max(u for _, u in hist) - used)
+
+    def share_args(self, snap):
+        """compute_caps' sharing arguments for this waker's state."""
+        if not self.share:
+            return {}
+        # A pool set whose ceiling was never read is bounded by its live
+        # cap (bound_caps' rule): handed more here, the slots would be
+        # clamped away afterwards and reserved for no one.
+        ceilings = {name: (c if c is not None else snap.get("live", {}).get(name))
+                    for name, c in (snap.get("ceilings") or {}).items()}
+        return {"need": dict(self.share), "sticky": dict(self.share_sticky),
+                "turn": dict(self.share_turn), "ceilings": ceilings}
+
     # ----- caps
 
     def cap_requests(self, snap):
@@ -1578,20 +1972,31 @@ class Waker:
         a cordon or an untolerated taint still takes a node out."""
         return snap.get("requests") if self.cfg["roomCaps"] else None
 
-    def apply_caps(self, snap, states=None, force=False):
+    def apply_caps(self, snap, states=None, force=False, recount=True):
         """Raise at once. Lower at once too, unless this pass could not read
         some node's Lease and had no earlier reading to go on (the first
         pass after a start, say): then only if the next pass still wants
         it, so one failed read does not flap the listeners. A Lease read
         and found stale is not uncertain, and lowers at once. force: lower
-        now (the sleep procedure, before a cordon)."""
-        wanted = compute_caps(self.cfg, states or snap["states"], self.cap_requests(snap), snap.get("unplaced"))
+        now (the sleep procedure, before a cordon). recount False: a second
+        apply in the same pass, which must not count as the next pass."""
+        wanted = compute_caps(self.cfg, states or snap["states"], self.cap_requests(snap), snap.get("unplaced"),
+                              **self.share_args(snap))
         room = bound_caps(wanted, snap["live"], snap["ceilings"])
         target = floor_caps(self.cfg, room, snap["live"], snap["ceilings"], states or snap["states"])
         if states is None:
             snap["room"] = room
         changed = {}
-        for s in self.cfg["sets"]:
+
+        def raising(s):
+            live, want = snap["live"].get(s["name"]), target.get(s["name"])
+            return live is not None and want is not None and want > live
+        # Lowers before raises: when a shared slot moves from one set to
+        # another, the set giving it up is lowered first, so the two are
+        # never offered the slot at once, even between two patches.
+        pool_of = {m: k for k, members in shared_pools(self.cfg).items() for m in members}
+        held_back = set()  # pools with a lower deferred this pass: no raise in them either
+        for s in sorted(self.cfg["sets"], key=raising):
             name = s["name"]
             want = target.get(name)
             if want is None or name not in snap["live"] or snap["live"][name] == want:
@@ -1600,11 +2005,18 @@ class Waker:
             live = snap["live"][name]
             if snap.get("degraded") and live is not None and want > live:
                 continue
+            if live is not None and want > live and pool_of.get(name) in held_back:
+                LOG.info("%s maxRunners %s -> %s wanted; held until its pool's lower goes through",
+                         name, live, want)
+                continue
             if live is not None and want < live and not force and snap.get("uncertain"):
-                self.lower_streak[name] = self.lower_streak.get(name, 0) + 1
-                if self.lower_streak[name] < 2:
+                if recount:
+                    self.lower_streak[name] = self.lower_streak.get(name, 0) + 1
+                if self.lower_streak.get(name, 0) < 2:
                     LOG.info("%s maxRunners %s -> %s wanted; lowering on the next pass if still so",
                              name, live, want)
+                    if name in pool_of:
+                        held_back.add(pool_of[name])
                     continue
             self.lower_streak.pop(name, None)
             # A changed cap restarts the listener: spare from it is on paper
@@ -1736,16 +2148,28 @@ class Waker:
                 self.idle_since.pop(name, None)
         self.note_first_jobs(snap)
 
+        # Caps follow the nodes first, before any GitHub call that may be
+        # slow, with the shares from the last demand read. Once demand is
+        # read, a shared pool's slots move to the sets now asking, in a
+        # second apply that writes only what the new shares changed.
         self.apply_caps(snap)
-        self.publish_slot_metrics(snap)
-
         try:
             demand = self.demand(snap["labels"])
         except Exception as e:
+            demand = None
+            err = e
+        else:
+            before = self.share_args(snap)
+            self.update_share(demand, snap)
+            if self.share_args(snap) != before:
+                self.apply_caps(snap, recount=False)
+        self.publish_slot_metrics(snap)
+        if demand is None:
             # Demand unknown: neither wake nor sleep on a guess.
-            LOG.warning("GitHub demand unreadable, holding: %s", e)
+            LOG.warning("GitHub demand unreadable, holding: %s", err)
             return
-        self.last_demand_ok = now
+        if not self.blind_sets:
+            self.last_demand_ok = now
         self.publish_queue_metrics(snap["labels"])
         self.warn_floor_matches(snap)
         spare = spare_caps(self.cfg, snap["live"], snap.get("room", {}))
@@ -1760,6 +2184,14 @@ class Waker:
             unmet[name] = unmet.get(name, 0) + n
         for name in snap.get("blind", ()):
             unmet[name] = 0
+        # A pool set capped below the pool's slots (its ceiling) can use no
+        # more nodes than its ceiling allows: past it, a wake would only
+        # give the room to another set.
+        pooled = {m for members in shared_pools(self.cfg).values() for m in members}
+        for name in pooled:
+            ceiling, live = snap["ceilings"].get(name), snap["live"].get(name)
+            if ceiling is not None and live is not None:
+                unmet[name] = min(unmet.get(name, 0), max(0, ceiling - live))
         if any(demand.values()):
             LOG.info("demand %s unmet %s runners %s caps %s", demand, unmet, snap["runners"], snap["live"])
 
@@ -1819,7 +2251,10 @@ class Waker:
             LOG.warning("jobs queued over %ss beside spare slots (held by GitHub?): %s",
                         self.cfg["heldAfterSeconds"], held)
         keep = {name: max(unmet.get(name, 0), held.get(name, 0)) for name in set(unmet) | set(held)}
-        sleep = None if snap.get("degraded") else choose_sleep(
+        if self.blind_sets:
+            # A queue unread: jobs in it might need the node.
+            LOG.warning("not sleeping anything: queue of %s unreadable", ", ".join(sorted(self.blind_sets)))
+        sleep = None if snap.get("degraded") or self.blind_sets else choose_sleep(
                              self.cfg, states, self.idle_since, keep, self.backoff_until, now,
                              wakeable=self.wakeable(), unplaced=sum(snap["unplaced"].values()))
         if not sleep:
@@ -1881,7 +2316,7 @@ class Waker:
                 continue
             old = sorted((j for j in self.jobs
                           if j.get("id") is not None and j["id"] not in new
-                          and j["repo"].lower() == s["repo"].lower()
+                          and owns(s, j)
                           and (now - j["created_at"]).total_seconds() >= limit
                           # The set it counts for, not any it matches: x64's
                           # spare must not orphan zagreus-ci's backlog.
@@ -1931,8 +2366,9 @@ class Waker:
         # Unplaced claims are need (the caller adds them), not room: placed
         # on paper only in `after`, each would count as a slot the node may
         # not have (delta review of 723c5352).
-        before = compute_caps(self.cfg, states, self.cap_requests(snap))
-        after = compute_caps(self.cfg, hyp, self.cap_requests(snap))
+        share = self.share_args(snap)
+        before = compute_caps(self.cfg, states, self.cap_requests(snap), **share)
+        after = compute_caps(self.cfg, hyp, self.cap_requests(snap), **share)
         return {s: after[s] - before.get(s, 0) for s in after}
 
     def wake(self, node, snap):
@@ -2253,6 +2689,9 @@ class Waker:
 
 def build(cfg):
     token = os.environ.get("GITHUB_TOKEN", "")
+    githubs = {"default": GitHub(token, cfg["githubApi"])}
+    for name, app in (cfg.get("githubApps") or {}).items():
+        githubs[name] = GitHub(None, cfg["githubApi"], auth=GitHubApp(app["dir"], cfg["githubApi"]).token)
     amt = AMT(env_map(os.environ.get("AMT_HOSTS")), os.environ.get("AMT_USER", ""),
               os.environ.get("AMT_PASSWORD", ""))
     wol = env_map(os.environ.get("WOL_MACS"))
@@ -2260,7 +2699,7 @@ def build(cfg):
         wol["_broadcast"] = os.environ["WOL_BROADCAST"]
     talos = Talos(os.environ.get("TALOSCTL", "/talosctl/talosctl"),
                   os.environ.get("TALOSCONFIG", "/secrets/talosconfig"))
-    return Waker(cfg, Kube(), GitHub(token, cfg["githubApi"]), amt, talos, wol), token
+    return Waker(cfg, Kube(), githubs, amt, talos, wol), token
 
 
 def main(argv):

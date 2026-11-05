@@ -50,7 +50,23 @@ TWO_NODES = [
 ]
 
 
+# spritz's driven sets. The behaviour tests run on these alone: the frozen
+# spritz world they were written for, and with them the proof that sharing
+# changed nothing while no other set is configured. Sharing between spritz
+# and Simplytics has its own tests (test_sharing.py), on shared_config().
+SPRITZ_SETS = ("zagreus-docker-amd64", "zagreus-ci", "zagreus-ci-x64")
+
+
 def production_config():
+    cfg = live_config()
+    cfg["sets"] = [s for s in cfg["sets"] if s["name"] in SPRITZ_SETS]
+    cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
+    return cfg
+
+
+def shared_config():
+    """waker.conf's sets as deployed, spritz and Simplytics, on the frozen
+    two-node world."""
     cfg = live_config()
     cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
     return cfg
@@ -112,7 +128,8 @@ class FakeKube:
                 "spec": {"maxRunners": 0, "runnerScaleSetLabels": SET_LABELS[s["name"]],
                          "template": {"spec": copy.deepcopy(TEMPLATES[s["name"]])}}}
             self.apps[s["application"]] = {
-                "spec": {"source": {"helm": {"valuesObject": {"maxRunners": CEILINGS[s["name"]]}}}}}
+                "spec": {"source": {"helm": {"valuesObject": {
+                    "maxRunners": {**CEILINGS, **SHARED_CEILINGS}[s["name"]]}}}}}
             self.ers[s["namespace"]] = []
         for n in cfg["nodes"]:
             self.add_node(n["name"], ready=True)
@@ -289,8 +306,12 @@ SET_LABELS = {
     "zagreus-ci": ["self-hosted", "linux", "spritz-ci", "playwright-full"],
     "zagreus-ci-x64": ["self-hosted", "linux", "X64", "spritz-ci"],
     "zagreus-docker-amd64": ["self-hosted", "linux", "X64", "docker-amd64"],
+    "zagreus-simplytics-ci": ["self-hosted", "linux", "simplytics-ci"],
 }
 CEILINGS = {"zagreus-ci": 3, "zagreus-ci-x64": 1, "zagreus-docker-amd64": 1}
+# Simplytics' set shares zagreus-ci's slots (three on the two frozen nodes)
+# and is capped below them, as its Application is.
+SHARED_CEILINGS = {"zagreus-simplytics-ci": 2}
 # As on the live cluster (23 Oct 2026): the runner pod templates' requests
 # (the builder's dind is a native sidecar, so it counts in full) and the
 # amd64 nodes' allocatable.
@@ -299,6 +320,7 @@ HEAVY = {"containers": [{"name": "runner", "resources": {"requests": {"cpu": "15
 TEMPLATES = {
     "zagreus-ci": HEAVY,
     "zagreus-ci-x64": HEAVY,
+    "zagreus-simplytics-ci": HEAVY,
     "zagreus-docker-amd64": {
         "containers": [{"name": "runner", "resources": {"requests": {"cpu": "250m", "memory": "768Mi"}}}],
         "initContainers": [{"name": "init-dind-externals"},
@@ -318,6 +340,11 @@ class FakeGitHub:
         if self.fail:
             raise RuntimeError("GitHub is down")
         return [j for j in self.jobs if j["repo"] == repo]
+
+    def org_queued_jobs(self, org, lookback_hours, now):
+        if self.fail:
+            raise RuntimeError("GitHub is down")
+        return [j for j in self.jobs if j["repo"].split("/")[0].lower() == org.lower()]
 
 
 class FakeAMT:
@@ -611,9 +638,10 @@ class LiveConfig(unittest.TestCase):
     """waker.conf, the RBAC in waker.yaml and the ceilings in the runner
     Applications have to agree, and nothing but a test makes them."""
 
-    RUNNERS = os.path.join(WAKER_DIR, "..", "runners", "spritz")
-    CEILING_FILES = {"zagreus-ci": "ci.yaml", "zagreus-ci-x64": "ci-x64.yaml",
-                     "zagreus-docker-amd64": "docker-amd64.yaml"}
+    RUNNERS = os.path.join(WAKER_DIR, "..", "runners")
+    CEILING_FILES = {"zagreus-ci": "spritz/ci.yaml", "zagreus-ci-x64": "spritz/ci-x64.yaml",
+                     "zagreus-docker-amd64": "spritz/docker-amd64.yaml",
+                     "zagreus-simplytics-ci": "simplytics/ci.yaml"}
 
     def test_the_rbac_names_every_listed_node_and_no_other(self):
         with open(os.path.join(WAKER_DIR, "waker.yaml")) as f:
@@ -629,8 +657,12 @@ class LiveConfig(unittest.TestCase):
         for s in cfg["sets"]:
             with open(os.path.join(self.RUNNERS, self.CEILING_FILES[s["name"]])) as f:
                 ceiling = int(re.search(r"^\s+maxRunners: (\d+)$", f.read(), re.M).group(1))
-            slots = s["base"] + sum(n["slots"].get(s["name"], 0) for n in cfg["nodes"])
-            self.assertEqual(ceiling, slots, s["name"])
+            slots = s["base"] + sum(n["slots"].get(w.slot_key(s), 0) for n in cfg["nodes"])
+            if s.get("sharesSlotsOf"):
+                # A set drawing on another's slots may be capped below them.
+                self.assertLessEqual(ceiling, slots, s["name"])
+            else:
+                self.assertEqual(ceiling, slots, s["name"])
 
 
 class ThreeNodes(unittest.TestCase):
@@ -657,19 +689,24 @@ class ThreeNodes(unittest.TestCase):
     FREE = {"zag-amd64-01": (7.95 - 0.76, 30.34 - 2.25),
             "zag-amd64-02": (7.95 - 0.76, 30.22 - 2.25),
             "zag-amd64-03": (3.95 - 0.76, 14.44 - 2.25)}
-    REQ = {"zagreus-ci": (1.5, 6.0), "zagreus-ci-x64": (1.5, 6.0), "zagreus-docker-amd64": (1.25, 3.75)}
+    REQ = {"zagreus-ci": (1.5, 6.0), "zagreus-ci-x64": (1.5, 6.0), "zagreus-docker-amd64": (1.25, 3.75),
+           "zagreus-simplytics-ci": (1.5, 6.0)}
 
     def test_room_counting_on_the_live_nodes_offers_the_ceilings(self):
         st = states(**{n: {"free": self.FREE[n]} for n in self.names})
         caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
-        self.assertEqual(caps, {"zagreus-docker-amd64": 1, "zagreus-ci": 7, "zagreus-ci-x64": 2})
+        # Simplytics, with no queue, gets none of the shared slots: spritz
+        # keeps exactly what it had before sharing.
+        self.assertEqual(caps, {"zagreus-docker-amd64": 1, "zagreus-ci": 7, "zagreus-ci-x64": 2,
+                                "zagreus-simplytics-ci": 0})
 
     def test_the_i5_alone_offers_its_two_heavy_slots(self):
         st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
                        "zag-amd64-02": {"ready": False, "asleep": True},
                        "zag-amd64-03": {"free": self.FREE["zag-amd64-03"]}})
         caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
-        self.assertEqual(caps, {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0})
+        self.assertEqual(caps, {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0,
+                                "zagreus-simplytics-ci": 0})
 
     def test_sleep_takes_the_last_node_first(self):
         st = states(**{n: {} for n in self.names})
@@ -2478,7 +2515,8 @@ class Floor(unittest.TestCase):
 
     def test_live_config_floors_only_the_builder(self):
         floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
-        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 0, "zagreus-ci-x64": 0})
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 0, "zagreus-ci-x64": 0,
+                                  "zagreus-simplytics-ci": 0})
 
     def test_a_negative_floor_is_refused(self):
         cfg = production_config()

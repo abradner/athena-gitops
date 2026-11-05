@@ -1,0 +1,130 @@
+# Simplytics CI on the amd64 nodes (`runs-on: zagreus-simplytics-ci`, through
+# Simplytics' RUNNER_CI repository variable). Org-level: one scale set serves
+# every repository in the Simplytics org. Modelled on spritz's ci.yaml (read
+# it for the sizing and the traps); the differences are the ones below.
+#
+# Capacity: it shares zagreus-ci's slots on the amd64 nodes. The node waker
+# hands the free ones to whichever of the two sets has queued jobs
+# (../../waker/README.md, "Sharing"), so there is no fixed split to keep in
+# step by hand.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-simplytics-ci
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: simplytics-ci
+      valuesObject:
+        runnerScaleSetName: zagreus-simplytics-ci
+        # ARC writes labels only when it CREATES the scale set: after a
+        # change here, delete the AutoscalingRunnerSet and let Argo recreate
+        # it (../../README.md, "Runners"). No classic runner carries these.
+        scaleSetLabels: [self-hosted, linux, simplytics-ci]
+        githubConfigUrl: https://github.com/Simplytics
+        githubConfigSecret: arc-github-app-simplytics
+        # No runnerGroup: the org is on GitHub Free, which has only the
+        # Default group.
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 0
+        # The waker's ceiling for this set (it owns the live value: 0 while
+        # the amd64 nodes sleep). Below the seven slots it shares with
+        # zagreus-ci, as a start: Simplytics re-measures after a week. The
+        # waker gives slots this set cannot use to zagreus-ci.
+        maxRunners: 3
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 60
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: zagreus.asn.casa/role
+                          operator: In
+                          values: [amd64-runner]
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 50
+                    preference:
+                      matchExpressions:
+                        - key: kubernetes.io/hostname
+                          operator: In
+                          values: [zag-amd64-01, zag-amd64-02]
+            containers:
+              - name: runner
+                # spritz's runner image for now (mise, with ruby, bun and
+                # node): Simplytics' toolchain action expects mise. Pinned by
+                # digest, like spritz's; move the two together.
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                env:
+                  - name: RUNNER_CACHE_DIRS
+                    value: /home/runner/.local/share/mise:/home/runner/.cache/ms-playwright:/home/runner/.bun/install/cache
+                  - name: PLAYWRIGHT_SKIP_BROWSER_GC
+                    value: "1"
+                  - name: MISE_CACHE_DIR
+                    value: /home/runner/.local/share/mise/.cache
+                # spritz's heavy-pod request, so the waker's slots (sized for
+                # it) hold for this set too. Same memory limit, no CPU limit.
+                resources:
+                  requests: {cpu: 1500m, memory: 6Gi, ephemeral-storage: 10Gi}
+                  limits: {memory: 8Gi, ephemeral-storage: 40Gi}
+                volumeMounts:
+                  - {name: mise, mountPath: /home/runner/.local/share/mise}
+                  - {name: playwright, mountPath: /home/runner/.cache/ms-playwright}
+                  - {name: bun, mountPath: /home/runner/.bun/install/cache}
+                  - {name: pg, mountPath: /var/lib/postgresql}
+                  - {name: shm, mountPath: /dev/shm}
+            volumes:
+              # Per-node caches of its own, apart from spritz's: a job in one
+              # org cannot leave something in the other's toolchain cache.
+              # No gem tree: spritz's bundle fill builds spritz's Gemfile only.
+              - {name: mise, hostPath: {path: /var/lib/ci-cache/simplytics/mise, type: DirectoryOrCreate}}
+              - {name: playwright, hostPath: {path: /var/lib/ci-cache/simplytics/ms-playwright, type: DirectoryOrCreate}}
+              - {name: bun, hostPath: {path: /var/lib/ci-cache/simplytics/bun, type: DirectoryOrCreate}}
+              - {name: pg, emptyDir: {}}
+              - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
+  # The node waker owns the live maxRunners; the value above is its ceiling.
+  # RespectIgnoreDifferences keeps a sync from writing the ceiling back over
+  # the waker's value (as on spritz's ci.yaml).
+  ignoreDifferences:
+    - group: actions.github.com
+      kind: AutoscalingRunnerSet
+      jsonPointers: [/spec/maxRunners]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -93,3 +93,42 @@ spec:
       remoteRef: {key: zagreus-arc-github-app/github_app_installation_id}
     - secretKey: github_app_private_key_pem
       remoteRef: {key: zagreus-arc-github-app/zagreus-arc.2026-10-19.private-key.pem}
+---
+# Simplytics' own GitHub App (simplytics-zagreus-arc, owned by the
+# Simplytics org): org Self-hosted runners read and write, repository
+# Metadata and Actions read, installed on every Simplytics repository. Its
+# scale sets are org-level (runners/simplytics/), so one registration serves
+# every repository in the org; GitHub Free allows only the Default runner
+# group, which by default keeps runners away from public repositories.
+# Same shape and the same guards as above. The waker reads Simplytics' queue
+# with the same App, from a copy of this Secret in its own namespace
+# (waker/waker.yaml).
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: arc-github-app-simplytics
+  namespace: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-ci
+  target:
+    name: arc-github-app-simplytics
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        github_app_id: '{{ .github_app_id }}'
+        github_app_installation_id: '{{ .github_app_installation_id }}'
+        github_app_private_key: '{{ $k := .github_app_private_key_pem | filterPEM "RSA PRIVATE KEY" }}{{ if not $k }}{{ fail "the .pem attached to simplytics-arc-github-app holds no RSA PRIVATE KEY block" }}{{ end }}{{ $k }}'
+  data:
+    - secretKey: github_app_id
+      remoteRef: {key: simplytics-arc-github-app/github_app_id}
+    - secretKey: github_app_installation_id
+      remoteRef: {key: simplytics-arc-github-app/github_app_installation_id}
+    - secretKey: github_app_private_key_pem
+      remoteRef: {key: simplytics-arc-github-app/simplytics-zagreus-arc.2026-11-05.private-key.pem}
