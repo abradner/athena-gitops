@@ -34,7 +34,7 @@ spec:
               app: spritz-web
       containers:
         - name: web
-          image: ghcr.io/abradner/spritz:v202611050018-release-comments-4732aef@sha256:5c33a3f056add90800ad28c9bd77e52017473d322d62fab01663badab61f7a90
+          image: ghcr.io/abradner/spritz:v202611050057@sha256:acd9af5783f5d663a5f95e1544f724528fe0d58ac137b848cb3ce377afadd34d
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
