@@ -386,10 +386,13 @@ slots and are untouched.
   job's slot is free at the next pass and goes to the waiting set.
 - **Running jobs are never stopped.** ARC never stops a busy runner because
   its set's cap went down; a capped set only stops claiming.
-- **Lowers go out before raises.** When a slot moves, the set giving it
-  up is patched first, so the two are never offered it at once, even
-  between two patches; a lower deferred by the first-pass rule ("Caps go
-  down") holds back the raises in its pool too.
+- **A moving slot is lowered one pass and raised the next.** The set
+  giving it up is patched first, and the set getting it waits for the
+  next pass (30 s): the lowered set's listener keeps offering its old cap
+  until ARC has restarted it (about 8 s), and may claim a job meanwhile,
+  which the next pass counts (Codex on #345). So the two are never
+  offered the slot at once. A lower deferred by the first-pass rule
+  ("Caps go down") holds the pool's raises back the same way.
 - **With Simplytics idle, spritz is exactly as before.** The leftover goes
   in `waker.conf` order, so `zagreus-ci` gets the whole pool, as it did
   alone (tests: `Shared.test_simplytics_idle_drives_spritz_exactly_as_alone`
@@ -412,7 +415,8 @@ slots and are untouched.
   lately, but only while no queued job of the other set wants them.
 
 **What it costs.** Every slot that moves between the sets is a cap change
-on both, so a listener restart on both. With the hold, that is about twice
+on both, so a listener restart on both, and it reaches the set getting it
+a pass after it leaves the other. With the hold, that is about twice
 per burst of Simplytics jobs, not twice per job. A spritz job queued just
 as a slot moves can wait for GitHub to offer it again, as at a wake.
 
@@ -919,7 +923,7 @@ that hold either way), then each mutation below run:
 | the second, share-moving apply counted as the next pass | `Shared.test_a_share_moved_after_demand_does_not_hasten_a_first_pass_lowering` |
 | no fair-share cap (the refill race starves the waiting set) | `ShareRule.test_a_busy_set_is_held_to_its_share_so_a_freed_slot_is_not_reclaimed`, `test_the_cap_rule_holds_both_ways` |
 | a blind queue keeps its last share | `Shared.test_a_blind_simplytics_queue_gives_its_share_back` |
-| raises patched before lowers | `Shared.test_a_slot_moving_between_sets_is_lowered_before_it_is_raised` |
+| raises patched before lowers, or in the same pass as a lower in the pool | `Shared.test_a_slot_moving_between_sets_is_lowered_before_it_is_raised` |
 | a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
 | public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
 | one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |

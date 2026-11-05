@@ -1991,11 +1991,14 @@ class Waker:
         def raising(s):
             live, want = snap["live"].get(s["name"]), target.get(s["name"])
             return live is not None and want is not None and want > live
-        # Lowers before raises: when a shared slot moves from one set to
-        # another, the set giving it up is lowered first, so the two are
-        # never offered the slot at once, even between two patches.
+        # Lowers before raises, and never in the same pass within a pool:
+        # a lowered set's listener keeps offering its old cap until ARC has
+        # restarted it (about 8 s, "Why maxRunners"), and it may claim a
+        # job meanwhile. So a pool's raises wait for the next pass, which
+        # recounts claims; the slot moves about one pass later, and the two
+        # sets are never offered it at once (Codex on #345).
         pool_of = {m: k for k, members in shared_pools(self.cfg).items() for m in members}
-        held_back = set()  # pools with a lower deferred this pass: no raise in them either
+        held_back = set()  # pools with a lower this pass (made or deferred): no raise in them
         for s in sorted(self.cfg["sets"], key=raising):
             name = s["name"]
             want = target.get(name)
@@ -2019,6 +2022,8 @@ class Waker:
                         held_back.add(pool_of[name])
                     continue
             self.lower_streak.pop(name, None)
+            if live is not None and want < live and name in pool_of:
+                held_back.add(pool_of[name])
             # A changed cap restarts the listener: spare from it is on paper
             # until GitHub has had its ~10 min to offer held jobs again.
             self.spare_since.pop(name, None)

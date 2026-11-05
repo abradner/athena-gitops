@@ -313,7 +313,12 @@ class Shared(unittest.TestCase):
             r.spritz_job(age=300)
         for _ in range(3):
             r.sim_job(age=120)
+        pool = []
+        r.kube.on_write = lambda v, p, b: pool.append(r.kube.caps()[CI] + r.kube.caps()[SIM]) \
+            if "/autoscalingrunnersets/" in p else None
         r.tick()
+        r.tick(advance=30)  # a slot moved from spritz is raised for Simplytics a pass later
+        self.assertLessEqual(max(pool), 3, pool)  # never over the pool, even between patches
         caps = r.kube.caps()
         self.assertGreaterEqual(caps[SIM], 1, caps)
         self.assertGreaterEqual(caps[CI], 1, caps)
@@ -421,9 +426,11 @@ class Shared(unittest.TestCase):
         for _ in range(3):
             r.sim_job(age=5)
         r.tick()
+        r.tick(advance=30)
         self.assertEqual(r.kube.caps()[SIM], SHARED_CEILINGS[SIM])
         r.simplytics.fail = True
         r.tick(advance=30)
+        r.tick(advance=30)  # Simplytics lowered, then spritz raised a pass later
         self.assertEqual((r.kube.caps()[CI], r.kube.caps()[SIM]), (3, 0))
 
     def test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live(self):
@@ -450,7 +457,13 @@ class Shared(unittest.TestCase):
             r.spritz_job(age=5)
         r.tick(advance=30)
         patches = [p.rsplit("/", 1)[1] for v, p, b in r.kube.writes if "/autoscalingrunnersets/" in p]
-        self.assertEqual(patches, [SIM, CI])
+        # The donor only, this pass: its listener keeps its old cap until
+        # ARC restarts it (Codex on #345). The raise follows a pass later,
+        # once claims are recounted.
+        self.assertEqual(patches, [SIM])
+        self.assertEqual((r.kube.caps()[CI], r.kube.caps()[SIM]), (2, 0))
+        r.tick(advance=30)
+        self.assertEqual((r.kube.caps()[CI], r.kube.caps()[SIM]), (3, 0))
 
     def test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing(self):
         r = SharedRig(mode="caps")
@@ -465,11 +478,13 @@ class Shared(unittest.TestCase):
         r = SharedRig(mode="caps")
         r.sim_job(age=5)
         r.tick()
+        r.tick(advance=30)
         self.assertEqual(r.kube.caps()[SIM], 1)
         r.simplytics.jobs.clear()  # the job ran and finished
         r.tick(advance=60)
         self.assertEqual(r.kube.caps()[SIM], 1)  # held for the next job in the run
         r.tick(advance=r.cfg["shareHoldSeconds"])
+        r.tick(advance=30)
         self.assertEqual(r.kube.caps()[SIM], 0)
         self.assertEqual(r.kube.caps()[CI], 3)
 
