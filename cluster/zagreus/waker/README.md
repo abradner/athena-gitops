@@ -396,7 +396,11 @@ slots and are untouched.
   first-pass rule ("Caps go down") holds the pool's raises back the same
   way. Meanwhile the set waiting for its raise counts the slot as its
   own when the waker judges unmet demand, so it wakes no node for room
-  already on its way.
+  already on its way; and while its raise is held, or was made less than
+  `listenerSettleSeconds` plus two passes ago, its queued jobs keep its
+  nodes awake (a node idle for an hour must not sleep under the job its
+  raise is for). In observe mode nothing is raised, so none of this
+  applies there.
 - **With Simplytics idle, spritz is exactly as before.** The leftover goes
   in `waker.conf` order, so `zagreus-ci` gets the whole pool, as it did
   alone (tests: `Shared.test_simplytics_idle_drives_spritz_exactly_as_alone`
@@ -930,6 +934,8 @@ that hold either way), then each mutation below run:
 | raises patched before lowers, or in the same pass as a lower in the pool | `Shared.test_a_slot_moving_between_sets_is_lowered_before_it_is_raised` |
 | the pool hold reset between the pass's two applies | `Shared.test_a_pool_lowered_by_the_nodes_is_not_raised_by_the_share_in_the_same_pass` |
 | a held raise read from the live cap when judging unmet | `Shared.test_a_raise_held_for_a_pass_wakes_no_node`, `test_simplytics_at_its_ceiling_wakes_nothing_more` |
+| a held or fresh raise does not keep its node awake | `Shared.test_a_held_raise_keeps_its_node_awake` |
+| the held-raise allowance applied in observe mode | `Shared.test_observe_mode_still_reports_a_pool_sets_demand` |
 | a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
 | public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
 | one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |

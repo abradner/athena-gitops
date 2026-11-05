@@ -504,6 +504,35 @@ class Shared(unittest.TestCase):
         r.tick(advance=30)
         self.assertEqual(r.kube.caps()[SIM], 1)
 
+    def test_a_held_raise_keeps_its_node_awake(self):
+        # Delta review of d8dcdc6: 01 idle past idleMinutes, 02 asleep; a
+        # Simplytics job takes 01's spare pool slot. Its raise is held a
+        # pass, and 01 must not be put to sleep under it meanwhile.
+        r = SharedRig()
+        r.tick()
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+        r.clock.sleep(r.cfg["idleMinutes"] * 60)  # 01 idle long enough to sleep
+        r.sim_job(age=5)
+        r.tick()
+        self.assertNotIn("zag-amd64-01", r.kube.asleep())
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps()[SIM], 1)
+        self.assertNotIn("zag-amd64-01", r.kube.asleep())
+
+    def test_observe_mode_still_reports_a_pool_sets_demand(self):
+        # In observe nothing is raised, so a held raise never arrives: the
+        # waker must not count it as room and hide the would-be wake.
+        # Both nodes awake, so the waker would give Simplytics a slot (room
+        # 1), but observe never writes it: the live cap stays 0.
+        r = SharedRig(mode="observe")
+        r.tick()
+        r.sim_job(age=5)
+        with self.assertLogs("waker", "INFO") as logs:
+            r.tick(advance=30)
+        self.assertTrue(any(re.search(r"unmet \{[^}]*'zagreus-simplytics-ci': 1", m) for m in logs.output),
+                        logs.output)
+
     def test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing(self):
         r = SharedRig(mode="caps")
         r.kube.fail_get.append(r"/applications/zagreus-simplytics-ci$")

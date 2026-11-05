@@ -1572,6 +1572,7 @@ class Waker:
         self.share_sticky = {}  # pool set -> slots to keep for it while no queue wants them
         self.blind_sets = set()  # sets whose queue could not be read on the last pass
         self.pass_held = set()  # shared pools lowered this pass: their raises wait for the next
+        self.raised_at = {}  # pool set -> when its cap was last raised
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep."""
@@ -2036,6 +2037,8 @@ class Waker:
                 self.kube.merge_patch(ARS.format(ns=s["namespace"], name=name),
                                       {"spec": {"maxRunners": want}})
                 snap["live"][name] = want
+                if name in pool_of and (live is None or want > live):
+                    self.raised_at[name] = self.clock()
         for name, (old, new) in changed.items():
             LOG.info("%s maxRunners %s -> %s%s", name, old, new,
                      "" if self.may_patch_caps else " (observe: not applied)")
@@ -2186,11 +2189,14 @@ class Waker:
         # A pool set whose raise waits for the next pass (a lowered pool,
         # apply_caps) gets that room within a pass: counted as short, it
         # would wake a node for slots already on their way.
+        # (Caps and full modes only: in observe nothing is ever raised.)
         pooled = {m for members in shared_pools(self.cfg).values() for m in members}
-        for name in pooled:
+        pending = {}  # pool set -> slots its held raise will add next pass
+        for name in pooled if self.may_patch_caps else ():
             want = snap.get("room", {}).get(name)
-            if want is not None and spare.get(name) is not None:
-                spare[name] = max(spare[name], want)
+            if want is not None and spare.get(name) is not None and want > spare[name]:
+                pending[name] = want - spare[name]
+                spare[name] = want
         unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
         if self.mark_orphans(snap):
             self.alts = {}
@@ -2268,6 +2274,15 @@ class Waker:
             LOG.warning("jobs queued over %ss beside spare slots (held by GitHub?): %s",
                         self.cfg["heldAfterSeconds"], held)
         keep = {name: max(unmet.get(name, 0), held.get(name, 0)) for name in set(unmet) | set(held)}
+        # A pool set's raise held for a pass, or made so lately that its
+        # listener may still be restarting, is room on its way to queued
+        # jobs, not room to spare: its nodes stay awake for them (delta
+        # review of d8dcdc6: 01 slept under the job its raise was for).
+        settle = self.cfg["listenerSettleSeconds"] + 2 * self.cfg["pollSeconds"]
+        for name in pooled:
+            recent = now - self.raised_at.get(name, float("-inf")) < settle
+            if demand.get(name) and (name in pending or recent):
+                keep[name] = max(keep.get(name, 0), demand[name])
         if self.blind_sets:
             # A queue unread: jobs in it might need the node.
             LOG.warning("not sleeping anything: queue of %s unreadable", ", ".join(sorted(self.blind_sets)))
