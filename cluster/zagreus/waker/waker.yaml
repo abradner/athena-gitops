@@ -56,7 +56,7 @@ metadata:
 rules:
   - apiGroups: [actions.github.com]
     resources: [autoscalingrunnersets]
-    resourceNames: [zagreus-ci, zagreus-ci-x64]
+    resourceNames: [zagreus-ci, zagreus-ci-x64, zagreus-simplytics-ci]
     verbs: [get, patch]
   - apiGroups: [actions.github.com]
     resources: [ephemeralrunners]
@@ -103,7 +103,7 @@ metadata:
 rules:
   - apiGroups: [argoproj.io]
     resources: [applications]
-    resourceNames: [zagreus-spritz-ci, zagreus-spritz-ci-x64, zagreus-spritz-docker-amd64]
+    resourceNames: [zagreus-spritz-ci, zagreus-spritz-ci-x64, zagreus-spritz-docker-amd64, zagreus-simplytics-ci]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -241,6 +241,42 @@ spec:
     - secretKey: talosconfig
       remoteRef: {key: zagreus-waker/talosconfig.yaml}
 ---
+# Simplytics' queue is read through its GitHub App's installation (README,
+# "What it watches"): the same 1Password item, shape and guards as the copy
+# ARC uses in arc-runners (core/github-app.yaml, which explains them). The
+# App can also manage the Simplytics org's runners; the waker only lists
+# repositories, runs and jobs with it. Missing, the pod still starts (the
+# volume is optional), Simplytics' queue reads as unreadable, and the waker
+# puts no node to sleep until it can read it.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: arc-github-app-simplytics
+  namespace: zagreus-waker
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-ci
+  target:
+    name: arc-github-app-simplytics
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        github_app_id: '{{ .github_app_id }}'
+        github_app_installation_id: '{{ .github_app_installation_id }}'
+        github_app_private_key: '{{ $k := .github_app_private_key_pem | filterPEM "RSA PRIVATE KEY" }}{{ if not $k }}{{ fail "the .pem attached to simplytics-arc-github-app holds no RSA PRIVATE KEY block" }}{{ end }}{{ $k }}'
+  data:
+    - secretKey: github_app_id
+      remoteRef: {key: simplytics-arc-github-app/github_app_id}
+    - secretKey: github_app_installation_id
+      remoteRef: {key: simplytics-arc-github-app/github_app_installation_id}
+    - secretKey: github_app_private_key_pem
+      remoteRef: {key: simplytics-arc-github-app/simplytics-zagreus-arc.2026-11-05.private-key.pem}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -344,6 +380,9 @@ spec:
             - {name: code, mountPath: /opt/waker, readOnly: true}
             - {name: tools, mountPath: /tools, readOnly: true}
             - {name: secrets, mountPath: /secrets, readOnly: true}
+            # Not under /secrets: a mount point inside another secret volume
+            # cannot be created (that volume is read-only).
+            - {name: github-simplytics, mountPath: /github-apps/simplytics, readOnly: true}
             - {name: tmp, mountPath: /tmp}
       volumes:
         - name: code
@@ -364,6 +403,14 @@ spec:
             secretName: zagreus-waker
             optional: true
             items: [{key: talosconfig, path: talosconfig}]
+        # waker.conf githubApps.simplytics. Read on every token mint, so a
+        # Secret that appears after the pod started is picked up. Readable
+        # by the container's one user (no fsGroup, root-owned files).
+        - name: github-simplytics
+          secret:
+            secretName: arc-github-app-simplytics
+            optional: true
+            defaultMode: 0444
 ---
 # What the waker may reach: the API server, cluster DNS, the nodes' Talos API,
 # GitHub (443 anywhere outside the cluster) and AMT (16992, private addresses

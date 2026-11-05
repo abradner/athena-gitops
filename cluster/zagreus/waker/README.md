@@ -6,7 +6,8 @@ A guided tour of the source and its behaviour, with diagrams, is in
 One pod on the control plane. It keeps zagreus's amd64 runner nodes asleep
 until the classic runners can't keep up, wakes them through Intel AMT, and
 puts them back to sleep after an idle hour. It also sets each zagreus scale
-set's `maxRunners` to the slots on the nodes that are awake.
+set's `maxRunners` to the slots on the nodes that are awake, and shares
+the CI slots between spritz and Simplytics by their queues ("Sharing").
 
 - Code: `waker.py`, Python standard library only.
 - Configuration: `waker.conf` (JSON).
@@ -171,9 +172,18 @@ metrics describe a set that is already awake.
 
 ## What it watches
 
-**Demand** comes from GitHub's jobs API. The waker reads every queued job in
-spritz's queued and in-progress runs from the last 72 hours. A job is demand
-for a driven set when the set carries every label the job asks for:
+**Demand** comes from GitHub's jobs API. Each driven set names its queue
+in `waker.conf` and the credential it is read with:
+
+| Set | Queue | Credential |
+|---|---|---|
+| `zagreus-docker-amd64`, `zagreus-ci`, `zagreus-ci-x64` | `"repo": "abradner/spritz"` | `GITHUB_TOKEN` (the default) |
+| `zagreus-simplytics-ci` | `"org": "Simplytics"`: every private repository the App's installation lists, archived ones left out (public repositories never use zagreus) | `"github": "simplytics"`, the `simplytics-zagreus-arc` App's installation token |
+
+Each queue is read once a pass. The waker reads every queued job in its
+queued and in-progress runs from the last 72 hours. A job is demand for a
+driven set when it is in the set's queue and the set carries every label
+the job asks for:
 
 - If the job names the set (`runs-on: zagreus-ci`), it counts at once. No
   classic runner carries a set's name, so only zagreus can run it.
@@ -183,8 +193,19 @@ for a driven set when the set carries every label the job asks for:
   classic runner free.
 
 That age test stands in for "no idle classic runner matches", so the waker
-needs no runners API and no Administration permission. The token is a
-fine-grained one with **Actions: read on spritz only**.
+needs no runners API and no Administration permission. spritz's token is a
+fine-grained one with **Actions: read on spritz only**. Simplytics' queue is
+read with an installation token of the org's own ARC App (Actions: read,
+Metadata: read; "Credentials").
+
+**A queue it cannot read** leaves its sets blind for the pass: they count
+no demand and wake nothing, the others still do, and **nothing is put to
+sleep** while any queue is unread (a job in it might need the node). Its
+queue gauges are left out (absent, not 0); the others stay live. After
+`demandBlindSeconds` the waker stops vouching for sleeping nodes, as for a
+GitHub outage, so their heartbeat alerts fire. One unreadable repository
+makes the whole org's queue unreadable. With every queue unreadable the
+pass holds, as before.
 
 **Unmet demand** is demand the set's current caps can't absorb:
 
@@ -334,9 +355,97 @@ What each failure looks like:
 - **A node is woken by hand:** the waker sees it Ready and takes it off the
   list (`reconcile_ready_nodes`).
 
+## Sharing
+
+Alex, 5 Nov 2026: Simplytics may use zagreus "as long as it's shared
+without manual intervention to constantly rejuggle slots". So
+`zagreus-simplytics-ci` has no slots of its own. It carries
+`"sharesSlotsOf": "zagreus-ci"`, and draws on `zagreus-ci`'s slots on each
+node: the two sets together are never offered more than those slots, or
+than the node's room. `zagreus-ci-x64` and the builder keep their own
+slots and are untouched.
+
+**The rule** (`compute_caps`, each pass):
+
+> Each free slot in the pool goes to the set with queued jobs not yet
+> claimed that holds the fewest slots now; a tie goes to the set whose
+> oldest queued job has waited longest. Slots no queue asks for go to the
+> sets in `waker.conf` order, spritz first.
+
+- **Neither starves.** A set with jobs waiting and nothing held is served
+  before a set already holding slots, however long the other's backlog.
+- **A busy set is held to its fair share while the other waits.** ARC
+  hands a slot freed by a finished job to the same set's next queued job
+  within seconds, long before the waker's next pass, so "the next free
+  slot" alone would never reach the waiting set. When a set's queued jobs
+  find no free slot and it holds less than its fair share, the other
+  set's cap drops to *its* fair share, below the runners it has if need
+  be. The fair share splits the slots now held one at a time to whichever
+  set holds fewest and still wants one (up to its ceiling), ties to the
+  oldest queue. The busy set then claims nothing new; its next finished
+  job's slot is free at the next pass and goes to the waiting set.
+- **Running jobs are never stopped.** ARC never stops a busy runner because
+  its set's cap went down; a capped set only stops claiming.
+- **A moving slot is lowered one pass and raised the next.** The set
+  giving it up is patched first, and the set getting it waits for the
+  next pass (30 s): the lowered set's listener keeps offering its old cap
+  until ARC has restarted it (about 8 s), and may claim a job meanwhile,
+  which the next pass counts (Codex on #345). The hold lasts the whole
+  pass, across both of its applies (the nodes', then the shares'). So the
+  two are never offered the slot at once. A lower deferred by the
+  first-pass rule ("Caps go down") holds the pool's raises back the same
+  way. Meanwhile the set waiting for its raise counts the slot as its
+  own when the waker judges unmet demand, so it wakes no node for room
+  already on its way; and while its raise is held, or was made less than
+  `listenerSettleSeconds` plus two passes ago, its queued jobs keep its
+  nodes awake (a node idle for an hour must not sleep under the job its
+  raise is for). In observe mode nothing is raised, so none of this
+  applies there.
+- **With Simplytics idle, spritz is exactly as before.** The leftover goes
+  in `waker.conf` order, so `zagreus-ci` gets the whole pool, as it did
+  alone (tests: `Shared.test_simplytics_idle_drives_spritz_exactly_as_alone`
+  replays a wake and sleep with and without Simplytics configured and
+  compares every write).
+- **Ceilings bound the share, not the pool.** `zagreus-simplytics-ci`'s
+  ceiling (3, its Application) is below the pool's 7; past it, the waker
+  gives the free slots to `zagreus-ci`, and a Simplytics backlog past its
+  ceiling wakes no node. A pool set whose ceiling was never read is held
+  at its live cap (`bound_caps`' rule), so its share is not reserved for
+  nothing.
+- **A set whose queue is unread gives its share back.** It asks for
+  nothing and keeps no recent slots until its queue reads again; its
+  running runners keep theirs.
+- **A recently used slot is held for `shareHoldSeconds` (600).** A run's
+  jobs come in stages, and each slot handed back and forth changes both
+  sets' caps, which restarts both listeners; a job turned down meanwhile
+  can be held by GitHub for about ten minutes ("Floor", "Queue
+  watchdog"). So a set keeps, for ten minutes, as many slots as it used
+  lately, but only while no queued job of the other set wants them.
+
+**What it costs.** Every slot that moves between the sets is a cap change
+on both, so a listener restart on both, and it reaches the set getting it
+a pass after it leaves the other. With the hold, that is about twice
+per burst of Simplytics jobs, not twice per job. A spritz job queued just
+as a slot moves can wait for GitHub to offer it again, as at a wake.
+
+**Edges where a pool set differs from a set alone**, found by comparing
+20,000 random cases of the old and new `compute_caps`, and judged rare
+enough to keep. They apply only while a pool is configured. With
+Simplytics idle and production's numbers (`zagreus-ci`'s ceiling equal to
+its slots, `roomCaps` true) the caps were identical.
+- A pool set's ceiling is applied inside the allocation, so room it cannot
+  use goes to the next set (`zagreus-ci-x64`) instead of being clamped away.
+- In slot mode, a pool set's runners count towards its cap, as in room mode.
+
+**Undo.** Remove the set (and `githubApps`) from `waker.conf`; the pool is
+then `zagreus-ci`'s alone again. Its scale set keeps whatever cap the
+waker last wrote (see "Rollback").
+
 ## Slots
 
-`waker.conf` gives each node its slots per set. Wake order follows the list:
+`waker.conf` gives each node its slots per set. Wake order follows the list.
+`zagreus-simplytics-ci` has none of its own: it shares `zagreus-ci`'s
+("Sharing"):
 
 | Node | Memory (allocatable) | `zagreus-ci` | `zagreus-ci-x64` | `zagreus-docker-amd64` |
 |---|---|---|---|---|
@@ -379,7 +488,8 @@ only what still fits. It counts:
   template, with native sidecars counted in full (the builder's dind is
   one: 3.75 GiB).
 - **Order:** sets fill in `waker.conf` order. The builder is listed first,
-  because it preempts CI pods.
+  because it preempts CI pods. A shared pool is filled by the sharing rule
+  at its first set's place ("Sharing").
 - **Own runners:** a set's runners already on an awake node count towards
   its cap.
 - **Claimed but unbound runners:** a runner the set has already claimed
@@ -428,9 +538,9 @@ leaves the node awake, and its idle clock starts again.
   could patch any node could move them. Add a node to the ClusterRole in
   the same change that adds it to `waker.conf`.
 - **Pods:** list, cluster-wide.
-- **The three driven AutoscalingRunnerSets:** get and patch, by name, plus
+- **The four driven AutoscalingRunnerSets:** get and patch, by name, plus
   listing their EphemeralRunners.
-- **The three Applications:** get, by name, to read the ceilings.
+- **The four Applications:** get, by name, to read the ceilings.
 - **Its two ConfigMaps:** get, patch and create.
 
 ## Credentials (ESO, control plane only)
@@ -444,6 +554,15 @@ lists its fields: the GitHub token (Actions: read, spritz), the AMT login, a
 - AMT addresses stay in the vault, not in this repo.
 - `os:operator` can reboot and shut down any zagreus node, and nothing
   outside zagreus: its certificate comes from zagreus's own Talos CA.
+
+Simplytics' queue is read with the `simplytics-zagreus-arc` App, the one
+its runners register with (1Password item `simplytics-arc-github-app`,
+copied by its own ExternalSecret into the waker's namespace as
+`arc-github-app-simplytics`, mounted at `/github-apps/simplytics`). The
+waker signs the App's JWT itself (RS256 in the standard library, no
+third-party module) and exchanges it for a one-hour installation token,
+renewed five minutes before expiry. The App can also manage the org's
+self-hosted runners; the waker only lists repositories, runs and jobs.
 
 ## Footprint on the control plane
 
@@ -552,7 +671,12 @@ it, sets the waker had at 0 stay at 0, and jobs that name a set
    kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci --type merge -p '{"spec":{"maxRunners":3}}'
    kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci-x64 --type merge -p '{"spec":{"maxRunners":1}}'
    kubectl -n arc-builders patch autoscalingrunnerset zagreus-docker-amd64 --type merge -p '{"spec":{"maxRunners":1}}'
+   kubectl -n arc-runners patch autoscalingrunnerset zagreus-simplytics-ci --type merge -p '{"spec":{"maxRunners":0}}'
    ```
+
+   With no waker to share the pool, the slots stay with `zagreus-ci` and
+   the Simplytics set goes to 0: its jobs, which name it, queue until it
+   is given slots by hand (and `zagreus-ci` lowered by as many).
 
    The numbers are the `maxRunners` in each Application under
    `../runners/spritz/`. Check them there first.
@@ -614,7 +738,7 @@ modes), as a second file in the same ConfigMap (key `slots.prom`):
 | `zagreus_runner_node_state{runner_node,state}` | 1 for a managed node's current state: `awake`, `asleep`, `cordoned`, `not_ready` or `unknown` (unreadable this pass) |
 | `zagreus_runner_slots_used{runner_node,set}` | runner pods of the set on the node, finished ones left out. Every set, light ones too, on every node with pods |
 | `zagreus_runner_slots_offered{runner_node,set}` | what the waker would offer the set there now, its running runners included; 0 unless awake |
-| `zagreus_runner_slots_configured{runner_node,set}` | the node's slots in `waker.conf` |
+| `zagreus_runner_slots_configured{runner_node,set}` | the node's slots in `waker.conf`; for both sets of a shared pool, the pool's slots (the same slots, so never sum them) |
 | `zagreus_runner_job_info{runner_node,set,runner,repo,workflow_run,job}` | 1 per runner pod running a job: which job is in which slot (driven sets only; their EphemeralRunners are the ones the waker reads) |
 | `zagreus_runner_slots_sampled_timestamp_seconds` | when the waker last wrote the file |
 
@@ -784,6 +908,37 @@ The checks were run red-first: each mutation below makes the named tests fail.
 | without AMT, an unreadable Lease, or the shutdown stamp, confirms "off" | `LeaseFindings.test_without_amt_an_unreadable_lease_never_confirms_off`, `test_without_amt_a_hung_shutdown_with_a_live_kubelet_is_not_off` |
 | the wake counts a Ready node with no live kubelet | `LeaseFindings.test_a_woken_node_without_a_live_kubelet_is_a_failed_wake` |
 | the queue gauges never published | 6 of the `QueueWatchdog` tests (age, oldest of several, orphans included, drains to 0, sample time) |
+
+Sharing (`tests/test_sharing.py`, 5 Nov 2026). Written first and seen red
+(33 of the first 36 failed before the change; the three that passed are guards
+that hold either way), then each mutation below run:
+
+| Mutation in `waker.py` | Tests that go red |
+|---|---|
+| queued need never served (pool filled in `waker.conf` order only) | 9, among them `ShareRule.test_a_busy_queue_never_starves_the_other_to_zero` |
+| fewest-held ignored | `test_a_busy_queue_never_starves_the_other_to_zero`, `test_two_queues_at_once_split_the_free_slots`, `Shared.test_two_repo_contention_on_awake_nodes_gives_each_a_share` |
+| oldest-queue tie-break ignored | `test_two_queues_at_once_split_the_free_slots` |
+| a pool set's ceiling ignored | `test_simplytics_stops_at_its_ceiling_and_spritz_gets_the_rest` |
+| a pool's slots not shared per node | 11, among them `test_never_more_offered_than_the_awake_nodes_run` |
+| leftover to the later pool set first | 7, among them both "Simplytics idle" spritz regressions |
+| no hold of recently used slots | `test_recent_use_holds_a_slot_but_never_against_queued_jobs`, `test_sticky_slot_outlives_the_job_then_returns_to_spritz` |
+| one unreadable queue holds every set, or blind sets may sleep | `test_an_unreadable_simplytics_queue_still_lets_spritz_wake_but_nothing_sleeps` |
+| a backlog past its ceiling still wakes | `test_simplytics_at_its_ceiling_wakes_nothing_more` |
+| an org set owns any repository | `Owns` (2) |
+| claimed jobs counted as need | `ShareNeed.test_need_is_queued_jobs_not_yet_claimed_for_pool_sets_only` |
+| RS256 without its padding; the token never reused | `AppToken` (one each) |
+| demand read before the caps are applied (a slow GitHub delays a lower cap) | `Shared.test_caps_follow_the_nodes_before_github_is_read` |
+| the second, share-moving apply counted as the next pass | `Shared.test_a_share_moved_after_demand_does_not_hasten_a_first_pass_lowering` |
+| no fair-share cap (the refill race starves the waiting set) | `ShareRule.test_a_busy_set_is_held_to_its_share_so_a_freed_slot_is_not_reclaimed`, `test_the_cap_rule_holds_both_ways` |
+| a blind queue keeps its last share | `Shared.test_a_blind_simplytics_queue_gives_its_share_back` |
+| raises patched before lowers, or in the same pass as a lower in the pool | `Shared.test_a_slot_moving_between_sets_is_lowered_before_it_is_raised` |
+| the pool hold reset between the pass's two applies | `Shared.test_a_pool_lowered_by_the_nodes_is_not_raised_by_the_share_in_the_same_pass` |
+| a held raise read from the live cap when judging unmet | `Shared.test_a_raise_held_for_a_pass_wakes_no_node`, `test_simplytics_at_its_ceiling_wakes_nothing_more` |
+| a held or fresh raise does not keep its node awake | `Shared.test_a_held_raise_keeps_its_node_awake` |
+| the held-raise allowance applied in observe mode | `Shared.test_observe_mode_still_reports_a_pool_sets_demand` |
+| a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
+| public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
+| one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed

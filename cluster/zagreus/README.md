@@ -36,7 +36,10 @@ repo-server and redis to everything but Argo.
 
 ## Runners
 
-One Application per repository and runner class, under `runners/<repo>/`.
+One Application per repository (or org) and runner class, under
+`runners/<repo or org>/`: `runners/spritz/` for abradner/spritz, and
+`runners/simplytics/` for the Simplytics org, whose sets are org-level and
+registered with that org's own GitHub App (`core/github-app.yaml`).
 
 **Each scale set shares a class label set with the classic runners**
 (`scaleSetLabels`), so a job asking for a class's labels can go to whichever
@@ -48,9 +51,11 @@ on the live set takes effect within seconds (runs 39883352061 and 39883642252).
 So "classic first, zagreus for the overflow" comes from `maxRunners`: the
 node waker (`waker/README.md`) holds it at 0 while the amd64 nodes sleep and
 raises it to the awake nodes' slots when the classic runners are saturated.
-It drives `zagreus-ci`, `zagreus-ci-x64` and `zagreus-docker-amd64`; their
-Applications ignore `spec.maxRunners`, and the value written in each is the
-waker's ceiling. Until the waker leaves observe mode the static caps below
+It drives `zagreus-ci`, `zagreus-ci-x64`, `zagreus-docker-amd64` and
+`zagreus-simplytics-ci`; their Applications ignore `spec.maxRunners`, and
+the value written in each is the waker's ceiling. `zagreus-ci` and
+`zagreus-simplytics-ci` share one set of slots, handed to whichever has
+queued jobs (`waker/README.md`, "Sharing"). Until the waker leaves observe mode the static caps below
 apply as written, and with the amd64 nodes always on, `zagreus-ci` races the
 classic runners for up to seven jobs at a time rather than waiting for them
 to fill. Each job class matches at most one scale set; a job matching two
@@ -66,6 +71,8 @@ code runs, above).
 | `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-ci` | the x64 LXC runners (e2e asks for `X64, spritz-ci`) | amd64 only | 0–2 | e2e (must not rasterise on arm64) |
 | `zagreus-docker-arm64` | none: name only (`docker-arm64.yaml` says why) | none; the Mac builders keep `docker-arm64` | arm64 builder (always on) | 0–1 | bot-authored PR build checks; not release legs while they would share its data root |
 | `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
+| `zagreus-simplytics-light` | `self-hosted, linux, simplytics-light` | none | as `zagreus-ci-light` | 1 warm, up to 2 | Simplytics' gating jobs (org-level) |
+| `zagreus-simplytics-ci` | `self-hosted, linux, simplytics-ci` | none | amd64 only | 0–3, from the slots it shares with `zagreus-ci` | Simplytics CI (org-level) |
 
 Two rules keep the overflow honest:
 
@@ -108,8 +115,15 @@ Two rules keep the overflow honest:
 ARC runners themselves show no labels on GitHub's Runners page or in the
 runners API: the labels belong to the scale set (actions-runner-controller#4579).
 
-Scale-set names are registered per repository, so every repository onboarded
-later reuses the same five names under its own `runners/<repo>/`.
+Scale-set names are registered per repository (or per org, for an
+org-level set). Simplytics' names carry the org (`zagreus-simplytics-*`) so
+they read apart from spritz's in the cluster, where all of them share the
+`arc-runners` namespace.
+
+Simplytics' runners keep their own per-node caches
+(`/var/lib/ci-cache/simplytics/`), apart from spritz's, so a job in one org
+cannot leave anything in the other's toolchain cache; the trade below still
+holds within each org.
 
 **Shared state is a trade, made deliberately.** The caches and the builders'
 data roots are shared by every job on a node, PR and main alike, so one job can
