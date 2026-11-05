@@ -55,8 +55,9 @@ unlimited (`resourcebuilder.go`, `math.MaxInt32`).
 ## Floor
 
 A set may carry `"floor": n` in `waker.conf`: the least `maxRunners` the
-waker writes for it, offered while its nodes sleep. Only
-`zagreus-docker-amd64` has one (1).
+waker writes for it, offered while its nodes sleep. `zagreus-docker-amd64`
+has one (1), and since 6 Nov 2026 `zagreus-simplytics-ci` has one (1):
+"Simplytics' floor", below.
 
 **Why.** A job that queues while its set is at 0 can be held by GitHub
 after the waker wakes a node and raises the cap: the raise restarts the
@@ -126,6 +127,30 @@ labels alone. Only give a floor to a set whose jobs name it.
 **Undo.** Set `floor` to 0 (or remove it) in `waker.conf`. The
 ConfigMap's name hash rolls the waker pod on the Argo sync; the cap returns
 to 0 at the next sleep.
+
+### Simplytics' floor
+
+**Why (5 Nov 2026, Simplytics' first run on zagreus).**
+- A job naming `zagreus-simplytics-ci` was queued at 13:15:19Z while the set was at 0.
+- The waker woke the nodes, and raised the cap 0 -> 1 at 13:19:47 and 1 -> 2 at 13:20:52: two listener restarts.
+- The job was still queued, beside two free slots and no runner, when it was cancelled at 13:23. The waker logged "held by GitHub?" on every pass from 13:20:21.
+- The listener's own logs were gone by then (each cap change recreates the listener pod), so GitHub's side is not proven. The shape is the builder's (above).
+
+Its jobs name the set (`RUNNER_CI`), and no classic runner serves
+Simplytics, so a floor sends nothing away from anywhere: the README's
+condition for giving one.
+
+**How it sits in the shared pool.** Like the builder's, the floor is a
+claim on top of the room, not room. While the nodes sleep it holds the cap
+at 1: a job is handed over at once, its pod waits for the wake it causes
+(`floor_claims`), and the cap does not change across the wake. While the
+nodes are awake and spritz is using the whole pool, Simplytics can still
+claim one job. Its pod waits, Pending, for the next slot a spritz job
+frees; it is older than any new spritz pod, so it is scheduled first. With
+Simplytics idle, spritz keeps the whole pool, as before (the floor does
+not take a slot from it, `Shared.test_the_floor_does_not_take_an_idle_slot_from_spritz`).
+Unpinned: its pods may land on any amd64 node, and every amd64 node has
+pool slots, so the floor never stands down while a node is awake.
 
 ## Caps from slots (built, not enabled)
 
@@ -421,6 +446,15 @@ slots and are untouched.
   can be held by GitHub for about ten minutes ("Floor", "Queue
   watchdog"). So a set keeps, for ten minutes, as many slots as it used
   lately, but only while no queued job of the other set wants them.
+
+**Shares are totals.** The waker passes `compute_caps` each pool set's
+total (its runners plus its queued jobs not yet claimed, and the most it
+wanted over the hold), and the allocation serves each set up to its total.
+On 5 Nov the shares were increments, read against the runner count of the
+pass before: when a Simplytics runner appeared and ended, each pass's
+first apply flipped both caps (Simplytics 2 -> 1 -> 2, spritz 5 -> 4 -> 5,
+13:23-13:25), a restart on both each time. A runner appearing now only
+moves a slot from queued to held.
 
 **What it costs.** Every slot that moves between the sets is a cap change
 on both, so a listener restart on both, and it reaches the set getting it
@@ -936,6 +970,9 @@ that hold either way), then each mutation below run:
 | a held raise read from the live cap when judging unmet | `Shared.test_a_raise_held_for_a_pass_wakes_no_node`, `test_simplytics_at_its_ceiling_wakes_nothing_more` |
 | a held or fresh raise does not keep its node awake | `Shared.test_a_held_raise_keeps_its_node_awake` |
 | the held-raise allowance applied in observe mode | `Shared.test_observe_mode_still_reports_a_pool_sets_demand` |
+| shares as increments against an older runner count (6 Nov) | `Shared.test_a_runner_appearing_and_ending_moves_no_cap` |
+| a pin allowed in a shared pool | `Config.test_a_pin_in_a_shared_pool_is_refused` |
+| Simplytics' floor removed | `test_live_config_gives_simplytics_a_floor`, `test_the_simplytics_floor_holds_while_the_nodes_sleep_and_a_claim_wakes_one`, `test_the_floor_does_not_take_an_idle_slot_from_spritz` |
 | a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
 | public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
 | one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |

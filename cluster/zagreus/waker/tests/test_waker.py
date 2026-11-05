@@ -2513,10 +2513,10 @@ class Floor(unittest.TestCase):
                                                         "creationTimestamp": iso(r.clock() - age)},
                                            "status": {}})
 
-    def test_live_config_floors_only_the_builder(self):
+    def test_live_config_floors_the_builder_and_simplytics(self):
         floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
         self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 0, "zagreus-ci-x64": 0,
-                                  "zagreus-simplytics-ci": 0})
+                                  "zagreus-simplytics-ci": 1})
 
     def test_a_negative_floor_is_refused(self):
         cfg = production_config()
