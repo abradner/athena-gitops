@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 import waker as w  # noqa: E402
 from test_waker import (  # noqa: E402
-    ALLOCATABLE, CEILINGS, SET_LABELS, SHARED_CEILINGS, TEMPLATES, UTC, WAKER_DIR,
+    ALLOCATABLE, CEILINGS, SET_LABELS, iso, SHARED_CEILINGS, TEMPLATES, UTC, WAKER_DIR,
     Clock, FakeAMT, FakeGitHub, FakeKube, FakeTalos, T0, live_config, production_config,
     shared_config, states)
 
@@ -96,13 +96,20 @@ class Config(unittest.TestCase):
         with self.assertRaises(ValueError):
             w.validate_config(cfg)
 
-    def test_a_floor_in_a_shared_pool_is_refused(self):
-        # A floor holds a cap while the nodes sleep; in a pool that would
-        # hand one set a slot the others are counting on.
+    def test_a_pin_in_a_shared_pool_is_refused(self):
+        # A pin is a promise about where one set's pods land; a pool's
+        # slots may be handed to any of its sets.
         cfg = shared_config()
-        next(s for s in cfg["sets"] if s["name"] == SIM)["floor"] = 1
+        next(s for s in cfg["sets"] if s["name"] == SIM)["pinnedToSlots"] = True
         with self.assertRaises(ValueError):
             w.validate_config(cfg)
+
+    def test_live_config_gives_simplytics_a_floor(self):
+        # 5 Nov: a Simplytics job queued while its set was at 0 waited past
+        # the wake and two raises, held by GitHub (README, "Floor").
+        sim = next(s for s in live_config()["sets"] if s["name"] == SIM)
+        self.assertEqual(sim.get("floor"), 1)
+        w.validate_config(live_config())
 
 
 class Owns(unittest.TestCase):
@@ -126,9 +133,10 @@ class Owns(unittest.TestCase):
 class ShareRule(unittest.TestCase):
     """compute_caps with each pool set's queued need."""
 
-    def caps(self, st, need, turn=None, sticky=None, cfg=None, unplaced=None):
-        return w.compute_caps(cfg or shared_config(), st, REQS, unplaced, need=need, turn=turn,
-                              sticky=sticky, ceilings=ALL_CEILINGS)
+    def caps(self, st, want, turn=None, recent=None, cfg=None, unplaced=None):
+        """want/recent: each pool set's total, its runners included."""
+        return w.compute_caps(cfg or shared_config(), st, REQS, unplaced, want=want, turn=turn,
+                              recent=recent, ceilings=ALL_CEILINGS)
 
     def test_simplytics_idle_leaves_spritz_exactly_as_without_it(self):
         spritz = w.compute_caps(production_config(), both_awake(), REQS)
@@ -159,10 +167,11 @@ class ShareRule(unittest.TestCase):
         self.assertEqual((got[CI], got[SIM]), (2, 1))
 
     def test_the_fewest_held_goes_first_then_the_oldest_queue(self):
+        # Simplytics holds one and wants one more; spritz holds none and
+        # wants one: spritz (fewest held) is served first, though
+        # Simplytics' queue is older.
         st = both_awake(zag_amd64_02={SIM: 1})
-        # One slot left in the pool after Simplytics' runner and... nothing
-        # else: spritz holds none, so spritz gets the next one.
-        got = self.caps(st, {CI: 1, SIM: 1}, turn={CI: 1, SIM: 999})
+        got = self.caps(st, {CI: 1, SIM: 2}, turn={CI: 1, SIM: 999})
         self.assertEqual((got[CI], got[SIM]), (1, 2))
 
     def test_simplytics_stops_at_its_ceiling_and_spritz_gets_the_rest(self):
@@ -206,16 +215,16 @@ class ShareRule(unittest.TestCase):
         self.assertEqual((got[CI], got[SIM]), (2, 1))
 
     def test_recent_use_holds_a_slot_but_never_against_queued_jobs(self):
-        got = self.caps(both_awake(), {}, sticky={SIM: 1})
+        got = self.caps(both_awake(), {}, recent={SIM: 1})
         self.assertEqual((got[CI], got[SIM]), (2, 1))
-        got = self.caps(both_awake(), {CI: 3}, sticky={SIM: 1}, turn={CI: 5})
+        got = self.caps(both_awake(), {CI: 3}, recent={SIM: 1}, turn={CI: 5})
         self.assertEqual((got[CI], got[SIM]), (3, 0))
 
     def test_slot_mode_shares_the_pool_too(self):
         # roomCaps false: no room counted, so the pool's slots are the only
         # bound. Its two sets together never exceed them.
         st = states(**{"zag-amd64-01": {"own": {}}, "zag-amd64-02": {"own": {SIM: 1}}})
-        got = w.compute_caps(shared_config(), st, None, need={CI: 9, SIM: 0}, ceilings=ALL_CEILINGS)
+        got = w.compute_caps(shared_config(), st, None, want={CI: 9, SIM: 1}, ceilings=ALL_CEILINGS)
         self.assertEqual(got[CI] + got[SIM], 3)
         self.assertEqual(got[SIM], 1)
         # Spritz alone in slot mode: the configured slots, as before.
@@ -237,8 +246,8 @@ class ShareRule(unittest.TestCase):
             st = room_states(**kw)
             need = {CI: rnd.randint(0, 4), SIM: rnd.randint(0, 4)}
             per_node = {}
-            got = w.compute_caps(cfg, st, REQS, need=need, turn={CI: rnd.random(), SIM: rnd.random()},
-                                 sticky={CI: rnd.randint(0, 2), SIM: rnd.randint(0, 2)},
+            got = w.compute_caps(cfg, st, REQS, want=need, turn={CI: rnd.random(), SIM: rnd.random()},
+                                 recent={CI: rnd.randint(0, 4), SIM: rnd.randint(0, 4)},
                                  ceilings=ALL_CEILINGS, per_node=per_node)
             for node, offered in per_node.items():
                 # Never more than the pool's slots there, or than the
@@ -272,9 +281,14 @@ class SharedRig:
     """A waker on the shared config: spritz's queue through the default
     token, Simplytics' org queue through its own credential."""
 
-    def __init__(self, mode="full", **over):
+    def __init__(self, mode="full", floor=True, **over):
+        """floor False: Simplytics' set without its floor, for the tests of
+        the sharing itself (the floor holds its cap at 1 whatever the
+        shares say)."""
         self.cfg = shared_config()
         self.cfg.update(mode=mode, **over)
+        if not floor:
+            next(s for s in self.cfg["sets"] if s["name"] == SIM).pop("floor", None)
         self.clock = Clock()
         self.kube = FakeKube(self.cfg, self.clock)
         self.spritz = FakeGitHub()
@@ -308,7 +322,7 @@ class SharedRig:
 
 class Shared(unittest.TestCase):
     def test_two_repo_contention_on_awake_nodes_gives_each_a_share(self):
-        r = SharedRig(mode="caps")
+        r = SharedRig(mode="caps", floor=False)
         for _ in range(5):
             r.spritz_job(age=300)
         for _ in range(3):
@@ -348,7 +362,7 @@ class Shared(unittest.TestCase):
                     if SIM not in p and "/namespaces/node-power/" not in p]
         self.assertEqual(spritz_writes(shared.kube), spritz_writes(alone.kube))
         self.assertEqual(shared.amt.calls, alone.amt.calls)
-        self.assertEqual(shared.kube.caps()[SIM], 0)
+        self.assertEqual(shared.kube.caps()[SIM], 1)  # its floor, on top of the pool
 
     def test_a_simplytics_job_wakes_a_node_for_its_slot(self):
         r = SharedRig()
@@ -422,7 +436,7 @@ class Shared(unittest.TestCase):
     def test_a_blind_simplytics_queue_gives_its_share_back(self):
         # Independent review of a2b2e86: the share read before the outage
         # stayed in force, squeezing spritz for as long as it lasted.
-        r = SharedRig(mode="caps")
+        r = SharedRig(mode="caps", floor=False)
         for _ in range(3):
             r.sim_job(age=5)
         r.tick()
@@ -445,7 +459,7 @@ class Shared(unittest.TestCase):
     def test_a_slot_moving_between_sets_is_lowered_before_it_is_raised(self):
         # Simplytics' recently used slot goes back to spritz for a queued
         # job: Simplytics is lowered first, so the two never hold it at once.
-        r = SharedRig(mode="caps")
+        r = SharedRig(mode="caps", floor=False)
         r.sim_job(age=5)
         r.tick()
         r.simplytics.jobs.clear()
@@ -508,7 +522,7 @@ class Shared(unittest.TestCase):
         # Delta review of d8dcdc6: 01 idle past idleMinutes, 02 asleep; a
         # Simplytics job takes 01's spare pool slot. Its raise is held a
         # pass, and 01 must not be put to sleep under it meanwhile.
-        r = SharedRig()
+        r = SharedRig(floor=False)
         r.tick()
         r.tick(advance=61 * 60)
         self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
@@ -533,6 +547,37 @@ class Shared(unittest.TestCase):
         self.assertTrue(any(re.search(r"unmet \{[^}]*'zagreus-simplytics-ci': 1", m) for m in logs.output),
                         logs.output)
 
+    def test_a_runner_appearing_and_ending_moves_no_cap(self):
+        # 5 Nov 13:23-13:25 (live): a Simplytics job was claimed as its run
+        # was cancelled. Each pass's first apply used the last pass's
+        # shares, stored relative to the runner count of that pass, so the
+        # new runner flipped them: Simplytics 2 -> 1 -> 2 and spritz
+        # 5 -> 4 -> 5, a listener restart on both every time.
+        r = SharedRig(mode="caps", floor=False)
+        for _ in range(2):
+            r.sim_job(age=5)
+        for _ in range(3):
+            r.tick(advance=30)
+        settled = r.kube.caps()
+        self.assertEqual(settled[SIM], SHARED_CEILINGS[SIM])
+        r.kube.writes.clear()
+        # One job claimed and running; the run is cancelled, nothing queued.
+        r.simplytics.jobs.clear()
+        r.kube.add_runner_pod("zag-amd64-02", SIM, name="sim-run")
+        r.kube.ers["arc-runners"].append({"metadata": {"name": "sim-run", "labels": {w.SCALE_SET_LABEL: SIM}},
+                                          "status": {"jobRequestId": 99}})
+        r.tick(advance=30)
+        r.tick(advance=30)
+        # It ends.
+        r.kube.pods = [p for p in r.kube.pods if p["metadata"]["name"] != "sim-run"]
+        r.kube.ers["arc-runners"] = [e for e in r.kube.ers["arc-runners"]
+                                     if e["metadata"].get("name") != "sim-run"]
+        r.tick(advance=30)
+        r.tick(advance=30)
+        moved = [(p.rsplit("/", 1)[1], b["spec"]["maxRunners"]) for v, p, b in r.kube.writes
+                 if "/autoscalingrunnersets/" in p]
+        self.assertEqual(moved, [], moved)  # all inside shareHoldSeconds: nothing moves
+
     def test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing(self):
         r = SharedRig(mode="caps")
         r.kube.fail_get.append(r"/applications/zagreus-simplytics-ci$")
@@ -542,8 +587,33 @@ class Shared(unittest.TestCase):
         # bound_caps holds Simplytics at its live 0, so its share goes to spritz.
         self.assertEqual((r.kube.caps()[CI], r.kube.caps()[SIM]), (3, 0))
 
-    def test_sticky_slot_outlives_the_job_then_returns_to_spritz(self):
+    def test_the_simplytics_floor_holds_while_the_nodes_sleep_and_a_claim_wakes_one(self):
+        r = SharedRig()
+        sim = next(s for s in r.cfg["sets"] if s["name"] == SIM)
+        self.assertEqual(sim.get("floor"), 1)
+        r.put_all_to_sleep()
+        self.assertEqual(r.kube.caps()[SIM], 1)  # never 0: no restart on the first job
+        self.assertEqual(r.kube.caps()[CI], 0)
+        # The floor lets GitHub hand over the job at once; its pod waits
+        # for a node, and that claim wakes one.
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: SIM},
+                                                       "creationTimestamp": iso(r.clock())}, "status": {}})
+        r.sim_job(age=5)
+        r.amt.calls.clear()
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
+
+    def test_the_floor_does_not_take_an_idle_slot_from_spritz(self):
+        # Awake and idle, spritz keeps the whole pool, as before; the floor
+        # is a claim Simplytics may make on top (README, "Floor": the floor
+        # is not room).
         r = SharedRig(mode="caps")
+        r.tick()
+        r.tick(advance=30)
+        self.assertEqual((r.kube.caps()[CI], r.kube.caps()[SIM]), (3, 1))
+
+    def test_sticky_slot_outlives_the_job_then_returns_to_spritz(self):
+        r = SharedRig(mode="caps", floor=False)
         r.sim_job(age=5)
         r.tick()
         r.tick(advance=30)

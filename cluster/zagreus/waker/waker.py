@@ -207,11 +207,11 @@ def validate_config(cfg):
                 raise ValueError(f"set {s['name']}: sharesSlotsOf must name another set that shares no one's")
     for key, members in shared_pools(cfg).items():
         for m in members:
-            # A floor holds a cap while the nodes sleep; a pin is a promise
-            # about where one set's pods land. Neither has a meaning yet for
-            # slots another set may be handed.
-            if int(by_name[m].get("floor", 0)) > 0 or by_name[m].get("pinnedToSlots"):
-                raise ValueError(f"set {m}: no floor or pinnedToSlots in a shared pool")
+            # A pin is a promise about where one set's pods land; a pool's
+            # slots may be handed to any of its sets. (A floor is fine: it
+            # is a claim on top of the room, not room, README "Floor".)
+            if by_name[m].get("pinnedToSlots"):
+                raise ValueError(f"set {m}: no pinnedToSlots in a shared pool")
     nodes = [n["name"] for n in cfg["nodes"]]
     if len(set(nodes)) != len(nodes):
         raise ValueError("duplicate node in nodes")
@@ -586,7 +586,7 @@ def untolerated_taint(node, tolerated_keys=()):
 
 
 def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=None,
-                 need=None, sticky=None, turn=None, ceilings=None):
+                 want=None, recent=None, turn=None, ceilings=None):
     """base + what each awake node can still take, per driven set (no
     ceiling, but see ceilings below).
 
@@ -611,13 +611,18 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
     Shared pools (sharesSlotsOf; README, "Sharing"): the sets of a pool draw
     on one set of slots per node, so together they are never offered more
     than its slots (and its room). Where the pool's first set falls in
-    waker.conf order, with need given:
-      1. need (per pool set: queued jobs not yet claimed) is served one slot
-         at a time, each to the set holding the fewest slots so far; a tie
-         to the set whose oldest queued job is oldest (turn: its age in
+    waker.conf order, with want given:
+      1. want (per pool set: the slots it wants in all, those it holds plus
+         its queued jobs not yet claimed) is served one slot at a time, up
+         to that total, each to the set holding the fewest slots so far; a
+         tie to the set whose oldest queued job is oldest (turn: its age in
          seconds), then to waker.conf order;
-      2. sticky (per pool set: slots it used lately) the same way, after
-         every queued job;
+      2. recent (per pool set: the most slots it wanted in all lately) the
+         same way, after every queued job.
+         Both are totals, not increments, so a runner that appears or ends
+         between the demand read and this call moves a slot from queued to
+         held without changing what the set is offered (5 Nov, live: an
+         increment read against a newer runner count flipped both caps);
       3. whatever is left goes to each pool set at its own place in
          waker.conf order, as for any set. So with no other set's demand,
          the pool's first set gets what it would have had alone.
@@ -718,9 +723,11 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                 per_node[e[0]["name"]][name] += fit
         return fit
 
-    def share(members, want):
-        """Serve want one slot at a time; return what could not be served."""
-        want = {m: int(want.get(m, 0)) for m in members if int(want.get(m, 0)) > 0}
+    def share(members, totals):
+        """Serve each set up to its total, one slot at a time; return what
+        could not be served."""
+        want = {m: int(totals.get(m, 0)) - (caps[m] - int(by_name[m].get("base", 0))) for m in members}
+        want = {m: n for m, n in want.items() if n > 0}
         short = {}
         while want:
             m = min(want, key=lambda x: (caps[x], -float((turn or {}).get(x, 0)), rank[x]))
@@ -785,12 +792,12 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
     for s in cfg["sets"]:
         name = s["name"]
         key = pooled.get(name)
-        if key is not None and key not in served and (need or sticky):
+        if key is not None and key not in served and (want or recent):
             served.add(key)
-            short = share(pools[key], need or {})
+            short = share(pools[key], want or {})
             if short:
                 fair_cap(pools[key], short)
-            share(pools[key], sticky or {})
+            share(pools[key], recent or {})
         for e in entries:
             offer(e, name, slots_left(e, name))
     return caps
@@ -1566,10 +1573,10 @@ class Waker:
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
         self.asleep_labelled = {}  # node -> whether LABEL_ASLEEP was last written on it
         # Sharing (README, "Sharing"): from the last demand read.
-        self.share = {}  # pool set -> queued jobs it has not claimed
+        self.share = {}  # pool set -> slots it wants in all: runners plus queued jobs not yet claimed
         self.share_turn = {}  # pool set -> age of its oldest queued job (s)
-        self.share_used = {}  # pool set -> [(time, slots it held or wanted)] over shareHoldSeconds
-        self.share_sticky = {}  # pool set -> slots to keep for it while no queue wants them
+        self.share_used = {}  # pool set -> [(time, slots it wanted in all)] over shareHoldSeconds
+        self.share_sticky = {}  # pool set -> the most it wanted in all over shareHoldSeconds
         self.blind_sets = set()  # sets whose queue could not be read on the last pass
         self.pass_held = set()  # shared pools lowered this pass: their raises wait for the next
         self.raised_at = {}  # pool set -> when its cap was last raised
@@ -1928,10 +1935,12 @@ class Waker:
     # ----- sharing
 
     def update_share(self, demand, snap):
-        """From this pass's demand: each pool set's queued jobs not yet
-        claimed, the age of its oldest queued job (the tie-break), and the
-        slots it has used over the last shareHoldSeconds (sticky). A blind
-        set keeps what it had."""
+        """From this pass's demand, per pool set: the slots it wants in all
+        (its runners plus its queued jobs not yet claimed), the age of its
+        oldest queued job (the tie-break), and the most it wanted in all
+        over the last shareHoldSeconds (the hold). Totals, so they stay
+        right when runners come and go before the next read (compute_caps).
+        A blind set asks for nothing."""
         now = self.clock()
         need = share_need(self.cfg, demand, snap.get("unstarted", {}))
         hold = self.cfg["shareHoldSeconds"]
@@ -1945,12 +1954,12 @@ class Waker:
                 self.share_turn[name] = 0
                 self.share_used.pop(name, None)
                 continue
-            self.share[name] = n
+            total = snap.get("runners", {}).get(name, 0) + n
+            self.share[name] = total
             self.share_turn[name] = self.queue_stats.get(name, {}).get("oldest", 0)
-            used = snap.get("runners", {}).get(name, 0) + n
-            hist = [(t, u) for t, u in self.share_used.get(name, []) if now - t < hold] + [(now, used)]
+            hist = [(t, u) for t, u in self.share_used.get(name, []) if now - t < hold] + [(now, total)]
             self.share_used[name] = hist
-            self.share_sticky[name] = max(0, max(u for _, u in hist) - used)
+            self.share_sticky[name] = max(u for _, u in hist)
 
     def share_args(self, snap):
         """compute_caps' sharing arguments for this waker's state."""
@@ -1961,7 +1970,7 @@ class Waker:
         # clamped away afterwards and reserved for no one.
         ceilings = {name: (c if c is not None else snap.get("live", {}).get(name))
                     for name, c in (snap.get("ceilings") or {}).items()}
-        return {"need": dict(self.share), "sticky": dict(self.share_sticky),
+        return {"want": dict(self.share), "recent": dict(self.share_sticky),
                 "turn": dict(self.share_turn), "ceilings": ceilings}
 
     # ----- caps
