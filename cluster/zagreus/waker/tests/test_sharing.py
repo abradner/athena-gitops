@@ -465,6 +465,45 @@ class Shared(unittest.TestCase):
         r.tick(advance=30)
         self.assertEqual((r.kube.caps()[CI], r.kube.caps()[SIM]), (3, 0))
 
+    def test_a_pool_lowered_by_the_nodes_is_not_raised_by_the_share_in_the_same_pass(self):
+        # Codex on #345 at 16f0f097: both queues busy, caps 2/0; 01 cordoned.
+        # The first apply lowered spritz 2 -> 1, the second (shares) raised
+        # Simplytics 0 -> 1 in the same pass, before spritz's listener had
+        # restarted.
+        r = SharedRig(mode="caps")
+        for _ in range(5):
+            r.spritz_job(age=300)
+        for _ in range(3):
+            r.sim_job(age=120)
+        r.tick()
+        before = r.kube.caps()
+        r.kube.writes.clear()
+        r.kube.nodes["zag-amd64-01"]["spec"]["unschedulable"] = True
+        r.tick(advance=30)
+        lowered = [p.rsplit("/", 1)[1] for v, p, b in r.kube.writes
+                   if "/autoscalingrunnersets/" in p and b["spec"]["maxRunners"] < before[p.rsplit("/", 1)[1]]]
+        raised = [p.rsplit("/", 1)[1] for v, p, b in r.kube.writes
+                  if "/autoscalingrunnersets/" in p and b["spec"]["maxRunners"] > before[p.rsplit("/", 1)[1]]
+                  and p.rsplit("/", 1)[1] in (CI, SIM)]
+        self.assertTrue(lowered, before)
+        self.assertEqual(raised, [], r.kube.writes)
+
+    def test_a_raise_held_for_a_pass_wakes_no_node(self):
+        # 02 asleep; 01's one pool slot is spritz's spare. A Simplytics job
+        # takes it: spritz lowered now, Simplytics raised next pass. Read
+        # from the held live cap (0), the job looked unmet and woke 02.
+        r = SharedRig()
+        r.tick()
+        r.kube.add_runner_pod("zag-amd64-01", "zagreus-docker-amd64", name="keep-01")  # 01 stays up
+        r.tick(advance=61 * 60)
+        self.assertEqual(r.kube.asleep(), {"zag-amd64-02"})
+        r.amt.calls.clear()
+        r.sim_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertNotIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
+        r.tick(advance=30)
+        self.assertEqual(r.kube.caps()[SIM], 1)
+
     def test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing(self):
         r = SharedRig(mode="caps")
         r.kube.fail_get.append(r"/applications/zagreus-simplytics-ci$")

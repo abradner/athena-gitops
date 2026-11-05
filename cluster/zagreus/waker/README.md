@@ -390,9 +390,13 @@ slots and are untouched.
   giving it up is patched first, and the set getting it waits for the
   next pass (30 s): the lowered set's listener keeps offering its old cap
   until ARC has restarted it (about 8 s), and may claim a job meanwhile,
-  which the next pass counts (Codex on #345). So the two are never
-  offered the slot at once. A lower deferred by the first-pass rule
-  ("Caps go down") holds the pool's raises back the same way.
+  which the next pass counts (Codex on #345). The hold lasts the whole
+  pass, across both of its applies (the nodes', then the shares'). So the
+  two are never offered the slot at once. A lower deferred by the
+  first-pass rule ("Caps go down") holds the pool's raises back the same
+  way. Meanwhile the set waiting for its raise counts the slot as its
+  own when the waker judges unmet demand, so it wakes no node for room
+  already on its way.
 - **With Simplytics idle, spritz is exactly as before.** The leftover goes
   in `waker.conf` order, so `zagreus-ci` gets the whole pool, as it did
   alone (tests: `Shared.test_simplytics_idle_drives_spritz_exactly_as_alone`
@@ -924,6 +928,8 @@ that hold either way), then each mutation below run:
 | no fair-share cap (the refill race starves the waiting set) | `ShareRule.test_a_busy_set_is_held_to_its_share_so_a_freed_slot_is_not_reclaimed`, `test_the_cap_rule_holds_both_ways` |
 | a blind queue keeps its last share | `Shared.test_a_blind_simplytics_queue_gives_its_share_back` |
 | raises patched before lowers, or in the same pass as a lower in the pool | `Shared.test_a_slot_moving_between_sets_is_lowered_before_it_is_raised` |
+| the pool hold reset between the pass's two applies | `Shared.test_a_pool_lowered_by_the_nodes_is_not_raised_by_the_share_in_the_same_pass` |
+| a held raise read from the live cap when judging unmet | `Shared.test_a_raise_held_for_a_pass_wakes_no_node`, `test_simplytics_at_its_ceiling_wakes_nothing_more` |
 | a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
 | public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
 | one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |

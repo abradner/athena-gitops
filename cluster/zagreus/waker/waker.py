@@ -1571,6 +1571,7 @@ class Waker:
         self.share_used = {}  # pool set -> [(time, slots it held or wanted)] over shareHoldSeconds
         self.share_sticky = {}  # pool set -> slots to keep for it while no queue wants them
         self.blind_sets = set()  # sets whose queue could not be read on the last pass
+        self.pass_held = set()  # shared pools lowered this pass: their raises wait for the next
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep."""
@@ -1998,7 +1999,10 @@ class Waker:
         # recounts claims; the slot moves about one pass later, and the two
         # sets are never offered it at once (Codex on #345).
         pool_of = {m: k for k, members in shared_pools(self.cfg).items() for m in members}
-        held_back = set()  # pools with a lower this pass (made or deferred): no raise in them
+        # Pools with a lower this pass (made or deferred): no raise in them
+        # for the rest of the pass, across every apply in it (Codex on #345:
+        # the second, share-moving apply raised what the first had lowered).
+        held_back = self.pass_held
         for s in sorted(self.cfg["sets"], key=raising):
             name = s["name"]
             want = target.get(name)
@@ -2128,6 +2132,7 @@ class Waker:
 
     def tick(self):
         now = self.clock()
+        self.pass_held = set()
         snap = self.observe()
         self.first_pass = False
         states = snap["states"]
@@ -2178,6 +2183,14 @@ class Waker:
         self.publish_queue_metrics(snap["labels"])
         self.warn_floor_matches(snap)
         spare = spare_caps(self.cfg, snap["live"], snap.get("room", {}))
+        # A pool set whose raise waits for the next pass (a lowered pool,
+        # apply_caps) gets that room within a pass: counted as short, it
+        # would wake a node for slots already on their way.
+        pooled = {m for members in shared_pools(self.cfg).values() for m in members}
+        for name in pooled:
+            want = snap.get("room", {}).get(name)
+            if want is not None and spare.get(name) is not None:
+                spare[name] = max(spare[name], want)
         unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
         if self.mark_orphans(snap):
             self.alts = {}
@@ -2192,9 +2205,8 @@ class Waker:
         # A pool set capped below the pool's slots (its ceiling) can use no
         # more nodes than its ceiling allows: past it, a wake would only
         # give the room to another set.
-        pooled = {m for members in shared_pools(self.cfg).values() for m in members}
         for name in pooled:
-            ceiling, live = snap["ceilings"].get(name), snap["live"].get(name)
+            ceiling, live = snap["ceilings"].get(name), spare.get(name)
             if ceiling is not None and live is not None:
                 unmet[name] = min(unmet.get(name, 0), max(0, ceiling - live))
         if any(demand.values()):
