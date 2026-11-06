@@ -20,13 +20,37 @@
 #   2. Image pinned by digest (single-arch amd64 manifest).
 #   3. nodeSelector spritz.dev/gpu=intel (upstream: any amd64 node) plus a
 #      toleration for the GPU workers' NoSchedule taint.
-#   4. -shared-dev-num=4: each iGPU is advertised as 4 x gpu.intel.com/i915.
-#      One node serves both spritz-staging and spritz-production (one
-#      transcoder each), and each needs a spare slot for a rollout: the
-#      transcoder has a long terminationGracePeriodSeconds (it finishes its
-#      job before exiting), so without one a surge pod sits Pending. Raised
-#      from 2 on 2026-10-18 when production joined. The media engine
-#      time-slices concurrent VA-API encodes; at this volume that is fine.
+#   4. -shared-dev-num=100: each iGPU is advertised as 100 x
+#      gpu.intel.com/i915, so a request reads as a percentage of one iGPU.
+#      A share is a SCHEDULING WEIGHT, NOT A QUOTA: nothing meters or caps
+#      use, and every holder sees the whole iGPU (the media engine
+#      time-slices concurrent work). The count only decides how many pods
+#      fit on a node.
+#      Budget per iGPU: each spritz transcoder asks for 20, and it needs
+#      room for a second copy during a rollout, because its long
+#      terminationGracePeriodSeconds keeps the old pod holding its share
+#      while the new one starts. Two environments rolling at once is
+#      therefore 80. A light consumer asks for 1 (atmosphere's gpurenderd,
+#      per instance). Keep the light consumers to about 15 shares in total:
+#      20 would fill the iGPU exactly at the worst moment, leaving nothing
+#      for a pod stuck Terminating or a GPU node being replaced. A
+#      transcoder left Pending is a silent outage.
+#      A pod may ask for more than 1 share. On a one-iGPU node every share
+#      maps to the same card, and kubelet drops the repeated device, mount
+#      and CDI entries, so the container sees one card and one render node
+#      exactly as with 1. That was checked by a canary pod before the switch.
+#      With two GPUs on one node the default allocation policy would spread
+#      one request across both cards; revisit it before such a node joins.
+#      History: 2 until 2026-10-18 (production joined), then 4, then 100
+#      on 2026-11-06 so that light consumers can ask for less than a
+#      transcoder.
+#      ORDER when changing the count: change it here first, and confirm the
+#      node's allocatable gpu.intel.com/i915 shows the new value, BEFORE
+#      raising any consumer's request in a later change. Consumer
+#      Applications (spritz-staging, spritz-production, ...) auto-sync on
+#      their own, so a request landing in the same commit can race ahead
+#      of the plugin. Production's transcoder (maxSurge 0) would then stop
+#      its old pod and leave the new one Pending.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -52,7 +76,7 @@ spec:
       containers:
       - name: intel-gpu-plugin
         args:
-          - -shared-dev-num=4
+          - -shared-dev-num=100
         env:
           - name: NODE_NAME
             valueFrom:

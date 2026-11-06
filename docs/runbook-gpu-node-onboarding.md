@@ -153,7 +153,7 @@ Talos then applies the labels by itself.
 - `talosctl -n <ip> dmesg | grep -iE 'i915|ttyS4'`: i915 found the GPU and loaded
   its DMC firmware without errors, and `ttyS4` sits at `00:16.3`.
 - `kubectl get node <name> -o jsonpath='{.status.allocatable}'` includes
-  `gpu.intel.com/i915: 4` (`-shared-dev-num=4`). A Ready plugin DaemonSet is not proof on its own.
+  `gpu.intel.com/i915: 100` (`-shared-dev-num=100`). A Ready plugin DaemonSet is not proof on its own.
 - **The transcoder's preflight is the real proof.** Each boot does a real
   0.1 s HEVC and H.264 encode, and exits 78 (crash-loops visibly) if the
   node cannot encode. On a new node, run a transcoder pod pinned to it **by
