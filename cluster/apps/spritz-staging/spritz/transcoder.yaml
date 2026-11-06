@@ -47,8 +47,9 @@ spec:
     matchLabels:
       app: spritz-transcoder
   # The old pod finishes its job before exiting (up to the grace period), so
-  # start the new one beside it. The device plugin advertises 2 slots per
-  # iGPU for exactly this.
+  # start the new one beside it. The iGPU has 100 shares and this pod holds
+  # 20, so the budget leaves room for the second copy
+  # (cluster/core/intel-gpu-plugin, comment 4).
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -103,7 +104,10 @@ spec:
               memory: 512Mi
             limits:
               memory: 3Gi
-              gpu.intel.com/i915: 1
+              # 20 of the iGPU's 100 shares (cluster/core/intel-gpu-plugin,
+              # comment 4). A scheduling weight, not a cap. Extended
+              # resources take the request from the limit.
+              gpu.intel.com/i915: 20
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
