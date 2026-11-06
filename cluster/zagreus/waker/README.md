@@ -306,7 +306,7 @@ demand is not woken. If no node shows any room on paper, the waker wakes
 the first eligible node alone and logs it, rather than strand the jobs.
 
 **Why every wake used to wake all three (4 to 6 Nov 2026).** A sleeping
-node carries three taints besides `unreachable`, read from the live nodes
+node carries two taints besides `unreachable`, read from the live nodes
 on 6 Nov: `node.kubernetes.io/unschedulable` (the waker's own cordon) and
 `node.cilium.io/agent-not-ready`. The room on paper lifted only
 `unreachable` and `not-ready`, so no single node seemed to add room, and
@@ -329,12 +329,25 @@ GitHub's queue, so:
   queued now. A second wave waits the 180 s cooldown and a boot (about a
   minute; 03 has taken four), and its cap raise restarts the listener.
 - *Held jobs wake nothing.* A job GitHub holds after a cap change (spare
-  beside it, "held" above) keeps nodes awake but is not unmet.
+  beside it, "held" below) keeps nodes awake but is not unmet.
 - *Claims that never bind are a guess:* at most one node per episode
-  ("stuck", above).
+  (`stuck_woke` in `tick`).
 - *Floors claim on top of the room.* A job a floored set claims while its
   nodes sleep wakes the node it needs at once (the builder's 01; any pool
-  node for Simplytics). One raise matters: every `maxRunners` change restarts
+  node for Simplytics).
+- *A staggered burst wakes twice.* Jobs that reach the queue a pass or two
+  apart are covered as they come: one job wakes one node, and three more a
+  minute later wake a second node after the cooldown (180 s from the first
+  wake), with a second cap raise and listener restart (measured on the
+  fake: 01 at once, then 02 and the cap 2 -> 5 about 180 s later). Before,
+  every wake took all three nodes, by the bug above, and the burst found
+  the room already there.
+- *Some nodes are passed over:* a node in failure backoff, a node a person
+  cordoned, and a node whose room on paper is eaten by a pod left on it
+  while it slept (a ghost pod the API has not cleaned up; if every node
+  shows no room, the fallback still wakes one).
+
+One raise matters: every `maxRunners` change restarts
 the set's listener, and a job the set turned down for want of room is held
 about ten minutes before GitHub offers it again. Waking one node at a time
 (0 to 1, then 1 to 3) left a second job queued for 14 minutes beside two
@@ -1011,6 +1024,10 @@ that hold either way), then each mutation below run:
 | the held-raise allowance applied in observe mode | `Shared.test_observe_mode_still_reports_a_pool_sets_demand` |
 | shares as increments against an older runner count (6 Nov) | `Shared.test_a_runner_appearing_and_ending_moves_no_cap` |
 | a pin allowed in a shared pool | `Config.test_a_pin_in_a_shared_pool_is_refused` |
+| Simplytics' floor removed | `test_live_config_gives_simplytics_a_floor`, `test_the_simplytics_floor_holds_while_the_nodes_sleep_and_a_claim_wakes_one`, `test_the_floor_does_not_take_an_idle_slot_from_spritz` |
+| a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
+| public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
+| one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |
 
 Wake by unmet demand (6 Nov 2026). `WakeByDemand` runs the deployed
 `waker.conf` on three nodes with the taints the node controller and
@@ -1020,15 +1037,11 @@ woke all three nodes.
 
 | Mutation in `waker.py` | Tests that go red |
 |---|---|
-| the room on paper lifts only the down taints | 4, among them `test_three_jobs_wake_the_one_node_that_covers_them` |
+| the room on paper lifts only the down taints | 6, among them `test_one_spritz_job_wakes_one_node` (it also fails if the one node came from the fallback) |
 | nodes taken in list order, not by cover | 5, among them `test_a_burst_wakes_the_fewest_nodes_that_cover_it` |
 | a person's cordon lifted too | `test_a_human_cordon_still_counts_against_a_node` |
 | no fallback when no node shows room | `ChooseWakes.test_with_no_room_shown_anywhere_one_node_still_wakes` |
 | a node that adds no room woken anyway | `ChooseWakes.test_a_node_that_adds_no_room_is_not_woken` |
-| Simplytics' floor removed | `test_live_config_gives_simplytics_a_floor`, `test_the_simplytics_floor_holds_while_the_nodes_sleep_and_a_claim_wakes_one`, `test_the_floor_does_not_take_an_idle_slot_from_spritz` |
-| a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
-| public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
-| one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed
