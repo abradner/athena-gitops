@@ -65,7 +65,7 @@ Pick a node whose workloads can move. Drain it first.
 On the GPU VM, drain also stops the transcoders: athena has one GPU node, so
 video transcoding is down for the test. Pick a quiet window with the floor,
 and afterwards confirm the transcoder logs `transcoder up (encoder=vaapi)` and
-the node reports `gpu.intel.com/i915: 4` allocatable. A warm reset of this
+the node reports `gpu.intel.com/i915: 100` allocatable. A warm reset of this
 VM class with the iGPU passed through was tested in maintenance mode on
 2026-10-22 (i915 initialised again after each `qm reset`); a reset of a
 joined node, or one mid-encode, had not been.
