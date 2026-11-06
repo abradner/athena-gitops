@@ -157,14 +157,29 @@ The control planes get none: they have no watchdog device. Patching running
 nodes, the forced-hang test and rollback:
 [docs/runbook-node-watchdogs.md](../docs/runbook-node-watchdogs.md).
 
-**Do not `talosctl upgrade` workers from the template's `install.image`.**
-The workers are CM5 Lites on a community build; see the warning on that line.
+**CM5 worker versions change through
+[docs/runbook-cm5-worker-upgrade.md](../docs/runbook-cm5-worker-upgrade.md).**
+The template's `install.image` pins the Image Factory installer the CM5
+workers rebuilt on Talos 1.14 run (`worker-cm5.schematic.yaml`, v1.14.4, by
+digest only). The CM5s not yet rebuilt still run a community 1.13.2 build;
+the proven way across is a fresh SD card, not `talosctl upgrade`. Whenever
+you do run `talosctl upgrade`, pass `--image` explicitly: neither the 1.13
+nor the 1.14 talosctl default carries the Pi overlay.
+
+**Use the 1.14 talosctl `mise.toml` pins.** `apply-worker.sh` renders every
+node's config with `talosctl machineconfig patch`, checks that the worker
+`ResolverConfig` kept its literal `domains: []` (the DHCP search-domain
+override, AGENTS.md Gotcha #7), and only then applies the rendered files. A
+1.13 client drops the empty list, and the script then refuses before touching
+any node. Like the rest of the script, the applies use `--insecure`, so it
+only works on nodes in maintenance mode (provisioning and reprovisioning).
 
 **Scratch workers.** These are the nodes listed in `NVME_WORKER_IP`: CM5 Lites
 with a 128 GB NVMe, meant for GitHub runners and other workloads that need a
 lot of disk but keep nothing. They get the same `worker.yaml` plus
 `worker-nvme.patch.yaml`, which adds the label `athena.asn.casa/scratch=nvme`
-and a matching `PreferNoSchedule` taint. `apply-worker.sh` applies both. Things
+and a matching `PreferNoSchedule` taint. `apply-worker.sh` merges the two (see
+above) and applies the result. Things
 to get right:
 
 - **Same image as the other workers.** Flash exactly the image the existing
@@ -181,7 +196,12 @@ to get right:
 - **After joining, confirm the NVMe placement:**
   - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
-  - `kubectl describe node` shows the label and taint.
+  - `kubectl describe node` shows the label and taint;
+  - `talosctl -n <ip> get resolvers` shows `searchDomains: []`. This only
+    means something from Talos 1.14, which applies DHCP search domains; 1.13
+    ignores them, so on 1.13 it can't fail. On 1.14, check it **before any
+    runner is scheduled there**: a DHCP-supplied search domain blackholes
+    external API calls (AGENTS.md Gotcha #7).
 - **Taint a new scratch node by hand, once.** Talos cannot add a taint to a
   node that has already registered (NodeRestriction: `not allowed to modify
   taints`), and the refusal also stops it applying the label. As soon as the

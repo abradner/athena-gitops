@@ -3,7 +3,12 @@
 #talosctl = "1.11"
 
 kubectl = "1.37.0"
-talosctl = "1.13"
+# 1.14, although the control planes are still on 1.13: a 1.13 client's patcher
+# drops the worker ResolverConfig's `domains: []` (AGENTS.md Gotcha #7), and
+# apply-worker.sh refuses the result. A 1.14 client against the 1.13 control
+# planes (apply-control.sh, talosctl upgrade) is not verified here: run
+# `talosctl version` against one before relying on it.
+talosctl = "1.14"
 
 [env]
 # Same file the talos apply scripts source (bootstrap/athena.zsh — paths here

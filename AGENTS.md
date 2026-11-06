@@ -441,6 +441,31 @@ general rule.** Argo-specific traps have their own section above.
    test that "did nothing" is read from its own output before it is called a pass or a fail.
    The procedure: `docs/runbook-node-watchdogs.md`.
 
+7. **A Talos minor upgrade started honouring DHCP data the old version ignored, and brought
+   Gotcha #3 to nodes it had never affected.** On a CM5 Lite soak board on the worker subnet,
+   running Talos 1.14.1 (2026-09), pods' calls to the GitHub API failed TLS. Root cause: Talos
+   1.14 applies DHCPv4 *search domains* to the node resolver (1.13 did not). The subnet's DHCP
+   hands one out, so pod lookups went through the zone wildcard exactly as in #3.
+   `disableSearchDomain` / `searchDomains.disableDefault` does not help here, because it only
+   drops the hostname-derived domain. General rules:
+   - Clear search domains explicitly with a `ResolverConfig` of
+     `searchDomains: {disableDefault: true, domains: []}` (the worker template carries one).
+     The empty list must be literal: Talos distinguishes "unset" (inherit DHCP) from "empty"
+     (override), so a tool that drops empty lists silently reverts it. **A 1.13 talosctl's own
+     patcher is such a tool:** `--config-patch`, `machineconfig patch` and `patch mc`
+     re-serialize the whole config and drop `[]` (reproduced offline with 1.13.4; 1.14.1 and
+     1.14.4 keep it). So `bootstrap/mise.toml` pins a 1.14 client, and
+     `bootstrap/talos/apply-worker.sh` renders every node's config, checks the rendered files,
+     and only then applies them (`scripts/test_apply_worker.sh`). Hand-run per-node applies
+     need the same client and the same check.
+   - Before any Talos minor upgrade, grep the release notes for DHCP and resolver changes.
+   - Check `/etc/resolv.conf` from inside a pod on the first upgraded node before moving on.
+   - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two
+     can't coexist. A config that sets it (or v1alpha1 nameservers or search domains) alongside
+     a `ResolverConfig` fails validation with "already set in v1alpha1 config". Remove it in the
+     same apply that adds the document. The control-plane template still sets it, so the
+     control planes need that change before their own 1.14 upgrade.
+
 ## The public/private split
 
 **This repository is public.** Internal addresses, guest inventories, host-to-service mappings
