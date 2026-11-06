@@ -225,10 +225,11 @@ metadata:
   namespace: asn-production
 spec:
   replicas: 1
-  # A rolling update's surge pod would need a second GPU slot, and the node
-  # has only four, shared with the spritz transcoders. If none is free the
-  # rollout hangs. Recreate frees the slot first; the server renders on CPU
-  # for the few seconds this is down.
+  # A rolling update's surge pod would briefly hold a second GPU share. The
+  # iGPU's 100 shares are budgeted around the transcoders' rollout headroom
+  # (cluster/core/intel-gpu-plugin), so this sidecar doesn't add to that.
+  # Recreate frees its share first; the server renders on CPU for the few
+  # seconds this is down.
   strategy:
     type: Recreate
   selector:
@@ -255,7 +256,7 @@ spec:
                   # start without it. Gen 9/9.5 iGPUs have it under NEO. Gen 11
                   # (which only shipped in mobile and low-power chips, e.g.
                   # Ice Lake, Jasper Lake) and Gen 12 Xe-LP have no native fp64,
-                  # so a worker with one would take the slot and crash-loop.
+                  # so a worker with one would take a share and crash-loop.
                   # An allowlist, so a new generation stays out until clinfo on
                   # that node shows cl_khr_fp64.
                   - key: spritz.dev/gpu-gen
@@ -313,8 +314,10 @@ spec:
               # would not (see spritz-production/spritz/solid-queue.yaml).
               cpu: "2"
               memory: 1Gi
-              # One of the iGPU's shared slots. A slot is a scheduling count,
-              # not a slice: every holder sees the whole iGPU.
+              # 1 of the iGPU's 100 shares: the light-consumer figure in
+              # cluster/core/intel-gpu-plugin's budget. A share is a
+              # scheduling weight, not a slice: every holder sees the whole
+              # iGPU.
               gpu.intel.com/i915: 1
           securityContext:
             allowPrivilegeEscalation: false
