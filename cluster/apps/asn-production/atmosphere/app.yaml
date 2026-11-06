@@ -1,0 +1,343 @@
+# Atmosphere: a physically based sky renderer driving LED panels and screens
+# (github.com/abradner/atmosphere). Three pieces:
+#
+#   atmosphere-server      renders the sky and streams frames to panels and
+#                          browsers on :8080 (WebSocket /stream, control API).
+#   atmosphere-conductor   fleet UI + control API on :8600, over MQTT.
+#   atmosphere-gpurenderd  optional OpenCL render sidecar on the Intel iGPU.
+#                          The server falls back to its own CPU renderer on
+#                          any sidecar failure, so this one is never critical.
+#
+# Runtime config (broker, credentials, fleet key, tracemap URL) comes from
+# external-secrets.yaml. Images are the v202608292349 release, pinned by digest.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atmosphere-server
+  namespace: asn-production
+spec:
+  # Exactly one: the server's MQTT client ID is fixed ("glow-<name>"), so a
+  # second replica, or a rolling update's surge pod, would evict the first
+  # from the broker and the two would take turns knocking each other off.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: atmosphere-server
+  template:
+    metadata:
+      labels:
+        app: atmosphere-server
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        # Secret files are root-owned. fsGroup gives the image's user (65532)
+        # group read on the identity file below; without it the read fails,
+        # and the server only logs "announcing without a key" and stays Ready.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: ghcr.io/abradner/atmosphere/server:v202608292349@sha256:08618429dac5dca16013abbee2488ffbdbd1be3e7c7347529e5cc58f7fb5f2b1
+          args:
+            - "-lat=-33.87"
+            - "-lon=151.21"
+            - "-speed=1"
+            - "-name=sky"
+            - "-mqtt-broker=$(MQTT_BROKER)"
+            # What the server announces as its address. Panels, browsers and
+            # the conductor all dial it, so it must be the LAN name of the
+            # LoadBalancer Service below, not an in-cluster name.
+            - "-advertise-url=http://atmosphere.asn.casa:8080"
+            - "-gpu-render-url=http://atmosphere-gpurenderd:9800"
+            - "-tracemap-url=$(TRACEMAP_URL)"
+            # Pods can't multicast onto the LAN; MQTT announce covers discovery.
+            - "-mdns=false"
+          env:
+            # The identity path below hangs off HOME, and the image sets no
+            # HOME of its own. Pinned so the mount and the lookup can't drift.
+            - name: HOME
+              value: /home/nonroot
+          envFrom:
+            - secretRef:
+                name: atmosphere
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /api/stats
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/stats
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              # Headroom for the CPU fallback: frames held after render are
+              # capped at 128 MiB (-max-queued-bytes), plus render buffers.
+              # The old host ran it unlimited, so measure before tightening.
+              # The CPU limit keeps a fallback render storm from taking a
+              # whole worker.
+              cpu: "2"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            # The server's fixed identity path, ~/.config/atmosphere/identity.
+            # There is no flag to move it, hence the subPath.
+            - name: identity
+              mountPath: /home/nonroot/.config/atmosphere/identity
+              subPath: identity
+              readOnly: true
+      volumes:
+        - name: identity
+          secret:
+            secretName: atmosphere-identity
+            defaultMode: 0440
+---
+# A LoadBalancer rather than an HTTPRoute: the Pi panels hold plain ws:// URLs
+# to :8080 in their config, so a stable LAN name on this address keeps any
+# future move to a hostname change. The pool assigns the address; the private
+# repo records which one it got and the DNS name pointing at it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: atmosphere-server
+  namespace: asn-production
+spec:
+  type: LoadBalancer
+  selector:
+    app: atmosphere-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atmosphere-conductor
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: atmosphere-conductor
+  template:
+    metadata:
+      labels:
+        app: atmosphere-conductor
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: conductor
+          image: ghcr.io/abradner/atmosphere/conductor:v202608292349@sha256:968224593d239d54d72e72ed0b28f7315ae38f6c6003045c40d196d1a2f93b1c
+          args:
+            - "-mqtt-broker=$(MQTT_BROKER)"
+            - "-mdns=false"
+          envFrom:
+            - secretRef:
+                name: atmosphere
+          ports:
+            - name: http
+              containerPort: 8600
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8600
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8600
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atmosphere-conductor
+  namespace: asn-production
+spec:
+  selector:
+    app: atmosphere-conductor
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8600
+---
+# Internal only: the name sits under asn.casa, which the tunnel denies
+# wholesale, and HAProxy serves *.athena.asn.casa to the LAN.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: atmosphere-conductor
+  namespace: asn-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-athena
+  hostnames:
+    - "conductor.athena.asn.casa"
+  rules:
+    - backendRefs:
+        - name: atmosphere-conductor
+          port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atmosphere-gpurenderd
+  namespace: asn-production
+spec:
+  replicas: 1
+  # A rolling update's surge pod would need a second GPU slot, and the node
+  # has only four, shared with the spritz transcoders. If none is free the
+  # rollout hangs. Recreate frees the slot first; the server renders on CPU
+  # for the few seconds this is down.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: atmosphere-gpurenderd
+  template:
+    metadata:
+      labels:
+        app: atmosphere-gpurenderd
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      tolerations:
+        - key: spritz.dev/gpu
+          operator: Equal
+          value: intel
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  # The kernel needs cl_khr_fp64, and gpurenderd refuses to
+                  # start without it. Gen 9/9.5 iGPUs have it under NEO. Gen 11
+                  # (which only shipped in mobile and low-power chips, e.g.
+                  # Ice Lake, Jasper Lake) and Gen 12 Xe-LP have no native fp64,
+                  # so a worker with one would take the slot and crash-loop.
+                  # An allowlist, so a new generation stays out until clinfo on
+                  # that node shows cl_khr_fp64.
+                  - key: spritz.dev/gpu-gen
+                    operator: In
+                    values: ["9", "9.5"]
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: ["amd64"]
+      # Same shape as the spritz transcoder on the same node: non-root, no
+      # supplementalGroups (Talos creates /dev/dri/renderD128 mode 0666).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gpurenderd
+          image: ghcr.io/abradner/atmosphere/gpurenderd:v202608292349@sha256:a3ad34980f431de01160f96aaa729a29ed77695597c9c251681046bd1495ca04
+          args:
+            - "-max-inflight=2"
+            - "-queue-wait=2s"
+          env:
+            # The image runs as root by default, so it has no home uid 10001
+            # can write. The Intel compute runtime keeps its compiler cache
+            # under HOME.
+            - name: HOME
+              value: /tmp
+            - name: ATMOSPHERE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atmosphere
+                  key: ATMOSPHERE_KEY
+          ports:
+            - name: http
+              containerPort: 9800
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9800
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9800
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              # The iGPU and the cores share one package power budget with the
+              # transcoder. A CPU limit bounds what this draws; a PriorityClass
+              # would not (see spritz-production/spritz/solid-queue.yaml).
+              cpu: "2"
+              memory: 1Gi
+              # One of the iGPU's shared slots. A slot is a scheduling count,
+              # not a slice: every holder sees the whole iGPU.
+              gpu.intel.com/i915: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atmosphere-gpurenderd
+  namespace: asn-production
+spec:
+  selector:
+    app: atmosphere-gpurenderd
+  ports:
+    - name: http
+      port: 9800
+      targetPort: 9800
