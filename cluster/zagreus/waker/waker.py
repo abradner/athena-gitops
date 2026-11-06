@@ -566,6 +566,12 @@ def pod_requests(spec):
 # Taints the node controller puts on a node that is down; the kubelet's
 # first Ready lifts them. Not held against a sleeping node's room.
 DOWN_TAINTS = ("node.kubernetes.io/unreachable", "node.kubernetes.io/not-ready")
+# Taints a node carries while it is off that its boot lifts as well: Cilium
+# marks a node whose agent is not running (seen on every sleeping node,
+# 6 Nov 2026). The waker's own cordon (node.kubernetes.io/unschedulable)
+# comes off at the wake too, but only that cordon: _room_if_awake.
+BOOT_TAINTS = DOWN_TAINTS + ("node.cilium.io/agent-not-ready",)
+CORDON_TAINT = "node.kubernetes.io/unschedulable"
 
 
 def untolerated_taints(node, tolerated_keys=()):
@@ -894,8 +900,17 @@ def floor_claims(cfg, runners, unplaced, room):
 
 
 def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
-    """Sleeping nodes, in configured order, until their slots cover every
-    set's unmet demand (or none is left to wake).
+    """The fewest sleeping nodes whose room covers every set's unmet demand
+    (Alex, 6 Nov 2026: "nodes should be only be woken by unmet demand").
+
+    Chosen one at a time: each time, the node that covers the most of the
+    demand still unmet, given the ones already chosen; a tie to waker.conf
+    order, the order nodes are preferred in (and slept in reverse). So a
+    node with more slots is taken first exactly when that saves a node.
+    It stops when the demand is covered, or when no node left would add
+    any room for it. Only if not one node would add room (a taint the
+    waker does not know lifts at boot, say) does it fall back to the first
+    eligible node: one, logged, rather than strand the jobs.
 
     All of them wake together and the caps rise once: every maxRunners
     change restarts the set's listener, and a job turned down for want of
@@ -914,11 +929,9 @@ def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
                         out[s["name"]] = out.get(s["name"], 0) + node_slots(cfg, n, s["name"])
             return out
     want = {name: u for name, u in unmet.items() if u > 0}
-    need = dict(want)
-    out = []
+    rank = {n["name"]: i for i, n in enumerate(cfg["nodes"])}
+    eligible = []
     for n in cfg["nodes"]:
-        if not need:
-            break
         st = node_states.get(n["name"])
         if st is None:
             continue
@@ -928,11 +941,26 @@ def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
             continue
         if backoff_until.get(n["name"], 0) > now_s:
             continue
-        if not any(node_slots(cfg, n, s) > 0 for s in need):
+        if not any(node_slots(cfg, n, s) > 0 for s in want):
             continue
-        out.append(n["name"])
-        got = room(out)
-        need = {s: u - got.get(s, 0) for s, u in want.items() if u - got.get(s, 0) > 0}
+        eligible.append(n)
+
+    def covered(nodes):
+        got = room(nodes) if nodes else {}
+        return sum(min(u, max(0, got.get(s, 0))) for s, u in want.items())
+
+    out, have = [], 0
+    while eligible and have < sum(want.values()):
+        best = max(eligible, key=lambda n: (covered(out + [n["name"]]), -rank[n["name"]]))
+        gain = covered(out + [best["name"]])
+        if gain <= have:
+            if not out:
+                LOG.warning("no sleeping node shows room for %s on paper; waking %s alone", want, best["name"])
+                out.append(best["name"])
+            break
+        out.append(best["name"])
+        have = gain
+        eligible = [n for n in eligible if n is not best]
     return out
 
 
@@ -1781,6 +1809,7 @@ class Waker:
                 "slept_at": ann.get(ANNOTATION_SLEPT_AT),
                 "retry": ann.get(ANNOTATION_STATE) in RETRY_STATES,
                 "unschedulable": bool(node.get("spec", {}).get("unschedulable")) or taint is not None,
+                "cordoned": bool(node.get("spec", {}).get("unschedulable")),
                 "taint": taint,
                 "taints": untolerated_taints(node, cfg["toleratedTaintKeys"]),
                 "waker_cordon": ann.get(ANNOTATION_CORDON) == "true",
@@ -2400,10 +2429,18 @@ class Waker:
         # A powered-off node carries the unreachable taint, which lifts once
         # it is Ready: held against it, every node looked roomless and every
         # wake woke them all (live, 26 Oct 2026).
-        hyp = {k: (dict(v, ready=True, asleep=False,
-                        unschedulable=any(t not in DOWN_TAINTS for t in v.get("taints", [v.get("taint")])
-                                          if t is not None))
-                   if k in nodes else v) for k, v in states.items()}
+        # The same for Cilium's agent-not-ready, and for the waker's own
+        # cordon, which the wake takes off: held against a sleeping node,
+        # they made it look roomless too, and every wake from all-asleep
+        # woke all three nodes for any demand (4 to 6 Nov 2026). A cordon a
+        # person put on still counts: that node offers nothing once awake.
+        def hyp_state(v):
+            own = v.get("waker_cordon")
+            lifted = BOOT_TAINTS + ((CORDON_TAINT,) if own else ())
+            taints = [t for t in v.get("taints", [v.get("taint")]) if t is not None]
+            blocked = any(t not in lifted for t in taints) or (v.get("cordoned", False) and not own)
+            return dict(v, ready=True, asleep=False, unschedulable=blocked)
+        hyp = {k: (hyp_state(v) if k in nodes else v) for k, v in states.items()}
         # Unplaced claims are need (the caller adds them), not room: placed
         # on paper only in `after`, each would count as a slot the node may
         # not have (delta review of 723c5352).

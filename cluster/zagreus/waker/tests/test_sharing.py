@@ -627,6 +627,144 @@ class Shared(unittest.TestCase):
         self.assertEqual(r.kube.caps()[CI], 3)
 
 
+LIVE_ALLOCATABLE = {"zag-amd64-01": {"cpu": "7950m", "memory": "31820076Ki"},
+                    "zag-amd64-02": {"cpu": "7950m", "memory": "31691056Ki"},
+                    "zag-amd64-03": {"cpu": "3950m", "memory": "15193716Ki"}}
+
+
+class LiveRig(SharedRig):
+    """The deployed waker.conf (three nodes, live allocatable), with the
+    taints the node controller and Cilium put on a sleeping node."""
+
+    def __init__(self, mode="full"):
+        self.cfg = live_config()
+        self.cfg.update(mode=mode)
+        self.clock = Clock()
+        self.kube = FakeKube(self.cfg, self.clock)
+        self.kube.node_controller_taints = True
+        for name, a in LIVE_ALLOCATABLE.items():
+            self.kube.nodes[name]["status"]["allocatable"] = dict(a)
+        # The ceilings as the Applications write them.
+        runners = os.path.join(WAKER_DIR, "..", "runners")
+        files = {CI: "spritz/ci.yaml", X64: "spritz/ci-x64.yaml", BUILDER: "spritz/docker-amd64.yaml",
+                 SIM: "simplytics/ci.yaml"}
+        for st in self.cfg["sets"]:
+            with open(os.path.join(runners, files[st["name"]])) as f:
+                ceiling = int(re.search(r"^\s+maxRunners: (\d+)$", f.read(), re.M).group(1))
+            self.kube.apps[st["application"]]["spec"]["source"]["helm"]["valuesObject"]["maxRunners"] = ceiling
+        self.spritz = FakeGitHub()
+        self.simplytics = FakeGitHub()
+        self.amt = FakeAMT(self.kube, self.clock)
+        self.talos = FakeTalos(self.kube, self.amt)
+        self.waker = w.Waker(self.cfg, self.kube, {"default": self.spritz, "simplytics": self.simplytics},
+                             self.amt, self.talos, clock=self.clock, sleep=self.clock.sleep, my_node="cp1")
+
+    def put_all_to_sleep(self):
+        self.tick()
+        for _ in range(6):
+            if self.kube.asleep() == set(LIVE_ALLOCATABLE):
+                break
+            self.tick(advance=61 * 60)
+        assert self.kube.asleep() == set(LIVE_ALLOCATABLE), self.kube.asleep()
+        self.amt.calls.clear()
+
+    def woken(self):
+        return [n for n, st in self.amt.calls if st == w.POWER_ON]
+
+
+class WakeByDemand(unittest.TestCase):
+    """Alex, 6 Nov 2026: "nodes should be only be woken by unmet demand".
+    Every wake from all-asleep woke all three nodes (waker events, 4 and 5
+    Nov): a sleeping node carries its cordon's unschedulable taint and
+    Cilium's agent-not-ready, which the room on paper did not lift, so no
+    node seemed to add room and choose_wakes took them all."""
+
+    def test_the_fake_carries_the_live_taints(self):
+        # Positive control: without these the tests below prove nothing.
+        r = LiveRig()
+        r.put_all_to_sleep()
+        r.clock.sleep(60)  # past the API server's grace for the last node slept
+        keys = {t["key"] for t in r.kube.get("/api/v1/nodes/zag-amd64-01")["spec"]["taints"]}
+        self.assertTrue({"node.kubernetes.io/unschedulable", "node.cilium.io/agent-not-ready",
+                         "node.kubernetes.io/unreachable"} <= keys, keys)
+
+    def test_one_simplytics_job_wakes_one_node(self):
+        r = LiveRig()
+        r.put_all_to_sleep()
+        r.sim_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        # Any of the three covers it; a tie goes to waker.conf order.
+        self.assertEqual(r.woken(), ["zag-amd64-01"])
+
+    def test_one_spritz_job_wakes_one_node(self):
+        r = LiveRig()
+        r.put_all_to_sleep()
+        r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), ["zag-amd64-01"])
+
+    def test_a_burst_wakes_the_fewest_nodes_that_cover_it(self):
+        r = LiveRig()
+        r.put_all_to_sleep()
+        for _ in range(4):
+            r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        # 02 first (it covers three, more than any other), then one
+        # two-slot node: 01 before 03 on a tie.
+        self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
+
+    def test_three_jobs_wake_the_one_node_that_covers_them(self):
+        r = LiveRig()
+        r.put_all_to_sleep()
+        for _ in range(3):
+            r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), ["zag-amd64-02"])
+
+    def test_a_burst_beyond_every_node_wakes_them_all(self):
+        r = LiveRig()
+        r.put_all_to_sleep()
+        for _ in range(9):
+            r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(sorted(r.woken()), ["zag-amd64-01", "zag-amd64-02", "zag-amd64-03"])
+
+    def test_a_builder_job_wakes_only_its_pinned_node(self):
+        r = LiveRig()
+        r.put_all_to_sleep()
+        r.spritz_job(age=5, labels=("zagreus-docker-amd64",))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), ["zag-amd64-01"])
+
+    def test_a_human_cordon_still_counts_against_a_node(self):
+        # Only the waker's own cordon comes off at the wake; a node a person
+        # cordoned offers nothing once awake, so it is no use waking it.
+        r = LiveRig()
+        r.put_all_to_sleep()
+        # 01 would win the tie; with a person's cordon it is passed over.
+        r.kube.nodes["zag-amd64-01"]["metadata"]["annotations"].pop(w.ANNOTATION_CORDON, None)
+        r.sim_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), ["zag-amd64-02"])
+
+
+class ChooseWakes(unittest.TestCase):
+    def test_a_node_that_adds_no_room_is_not_woken(self):
+        cfg = live_config()
+        st = states(**{n: {"ready": False, "asleep": True} for n in ("zag-amd64-01", "zag-amd64-02", "zag-amd64-03")})
+        room = lambda nodes: {CI: 2} if "zag-amd64-01" in nodes else {CI: 0}  # noqa: E731
+        self.assertEqual(w.choose_wakes(cfg, {CI: 5}, st, {}, T0, room=room), ["zag-amd64-01"])
+
+    def test_with_no_room_shown_anywhere_one_node_still_wakes(self):
+        # A taint the waker does not know (lifted at boot) must not strand
+        # the jobs: one node, the first eligible, never all of them.
+        cfg = live_config()
+        st = states(**{n: {"ready": False, "asleep": True} for n in ("zag-amd64-01", "zag-amd64-02", "zag-amd64-03")})
+        with self.assertLogs("waker", "WARNING"):
+            got = w.choose_wakes(cfg, {CI: 5}, st, {}, T0, room=lambda nodes: {})
+        self.assertEqual(got, ["zag-amd64-01"])
+
+
 class AppToken(unittest.TestCase):
     """The installation token the waker reads Simplytics' queue with, minted
     from the App's key with the standard library alone."""

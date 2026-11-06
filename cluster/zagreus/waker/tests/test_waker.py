@@ -123,6 +123,11 @@ class FakeKube:
         self.ers = {}
         self.cms = {}
         self.on_write = None
+        # The taints the node controller and Cilium add, as on the live
+        # cluster (6 Nov 2026, three sleeping nodes): unschedulable for a
+        # cordon, unreachable and Cilium's agent-not-ready while the node is
+        # down. Off by default: the older tests were written without them.
+        self.node_controller_taints = False
         for s in cfg["sets"]:
             self.ars[(s["namespace"], s["name"])] = {
                 "spec": {"maxRunners": 0, "runnerScaleSetLabels": SET_LABELS[s["name"]],
@@ -229,7 +234,16 @@ class FakeKube:
                 self.set_ready(name, True)  # the kubelet comes up on its own
                 self.dead.discard(name)
                 del self.boots[name]
-            return copy.deepcopy(self.nodes.get(name))
+            node = copy.deepcopy(self.nodes.get(name))
+            if node is not None and self.node_controller_taints:
+                taints = node["spec"].setdefault("taints", [])
+                if node["spec"].get("unschedulable"):
+                    taints.append({"key": "node.kubernetes.io/unschedulable", "effect": "NoSchedule"})
+                if node["status"]["conditions"][0]["status"] != "True":
+                    taints += [{"key": "node.cilium.io/agent-not-ready", "effect": "NoSchedule"},
+                               {"key": "node.kubernetes.io/unreachable", "effect": "NoSchedule"},
+                               {"key": "node.kubernetes.io/unreachable", "effect": "NoExecute"}]
+            return node
         m = re.fullmatch(r"/apis/actions.github.com/v1alpha1/namespaces/([^/]+)/autoscalingrunnersets/([^/]+)", p)
         if m:
             return copy.deepcopy(self.ars.get((m.group(1), m.group(2))))
@@ -1763,6 +1777,7 @@ class ReofferFindings(unittest.TestCase):
         r.amt.calls.clear()
         r.job(["zagreus-ci"], age_seconds=1)
         r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)  # three: more than 02's two slots, so both wake (6 Nov 2026)
         r.tick(advance=300)
         self.assertIn(("zag-amd64-01", w.POWER_ON), r.amt.calls)
         self.assertIn(("zag-amd64-02", w.POWER_ON), r.amt.calls)
@@ -1878,6 +1893,7 @@ class ReofferFindings(unittest.TestCase):
         r.amt.request_power = never_boots
         r.job(["zagreus-ci"], age_seconds=1)
         r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)  # three: more than 02's two slots, so both wake (6 Nov 2026)
         r.tick(advance=300)
         self.assertEqual(self.ci_patches(r), [1])  # 01's slot, raised once
         self.assertGreater(r.waker.backoff_until.get("zag-amd64-02", 0), r.clock())
@@ -1981,6 +1997,7 @@ class ReofferFindings(unittest.TestCase):
         r.kube.merge_patch = fail_02_waking
         r.job(["zagreus-ci"], age_seconds=1)
         r.job(["zagreus-ci"], age_seconds=1)
+        r.job(["zagreus-ci"], age_seconds=1)  # three: more than 02's two slots, so both wake (6 Nov 2026)
         r.tick(advance=300)
         self.assertEqual(self.ci_patches(r), [1])
         self.assertNotIn("zag-amd64-01", r.kube.asleep())
