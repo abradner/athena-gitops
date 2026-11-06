@@ -671,6 +671,14 @@ class LiveRig(SharedRig):
     def woken(self):
         return [n for n, st in self.amt.calls if st == w.POWER_ON]
 
+    def tick_without_fallback(self, test, advance):
+        """One pass, failing the test if choose_wakes fell back to waking a
+        node no room was shown for: that path also wakes one node, so a
+        one-job test would pass on the old, roomless arithmetic."""
+        with test.assertLogs("waker", "INFO") as logs:
+            self.tick(advance=advance)
+        test.assertFalse([m for m in logs.output if "shows room" in m], logs.output)
+
 
 class WakeByDemand(unittest.TestCase):
     """Alex, 6 Nov 2026: "nodes should be only be woken by unmet demand".
@@ -692,7 +700,7 @@ class WakeByDemand(unittest.TestCase):
         r = LiveRig()
         r.put_all_to_sleep()
         r.sim_job(age=5)
-        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        r.tick_without_fallback(self, r.cfg["wakeCooldownSeconds"])
         # Any of the three covers it; a tie goes to waker.conf order.
         self.assertEqual(r.woken(), ["zag-amd64-01"])
 
@@ -700,7 +708,7 @@ class WakeByDemand(unittest.TestCase):
         r = LiveRig()
         r.put_all_to_sleep()
         r.spritz_job(age=5)
-        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        r.tick_without_fallback(self, r.cfg["wakeCooldownSeconds"])
         self.assertEqual(r.woken(), ["zag-amd64-01"])
 
     def test_a_burst_wakes_the_fewest_nodes_that_cover_it(self):

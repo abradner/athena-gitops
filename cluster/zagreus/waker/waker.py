@@ -1809,7 +1809,6 @@ class Waker:
                 "slept_at": ann.get(ANNOTATION_SLEPT_AT),
                 "retry": ann.get(ANNOTATION_STATE) in RETRY_STATES,
                 "unschedulable": bool(node.get("spec", {}).get("unschedulable")) or taint is not None,
-                "cordoned": bool(node.get("spec", {}).get("unschedulable")),
                 "taint": taint,
                 "taints": untolerated_taints(node, cfg["toleratedTaintKeys"]),
                 "waker_cordon": ann.get(ANNOTATION_CORDON) == "true",
@@ -2438,8 +2437,9 @@ class Waker:
             own = v.get("waker_cordon")
             lifted = BOOT_TAINTS + ((CORDON_TAINT,) if own else ())
             taints = [t for t in v.get("taints", [v.get("taint")]) if t is not None]
-            blocked = any(t not in lifted for t in taints) or (v.get("cordoned", False) and not own)
-            return dict(v, ready=True, asleep=False, unschedulable=blocked)
+            # The cordon is judged by its taint alone (the node controller
+            # adds it for every cordon): one enforcement, not two.
+            return dict(v, ready=True, asleep=False, unschedulable=any(t not in lifted for t in taints))
         hyp = {k: (hyp_state(v) if k in nodes else v) for k, v in states.items()}
         # Unplaced claims are need (the caller adds them), not room: placed
         # on paper only in `after`, each would count as a slot the node may
