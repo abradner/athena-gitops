@@ -44,6 +44,13 @@
 #      History: 2 until 2026-10-18 (production joined), then 4, then 100
 #      on 2026-11-06 so that light consumers can ask for less than a
 #      transcoder.
+#      ORDER when changing the count: change it here first, and confirm the
+#      node's allocatable gpu.intel.com/i915 shows the new value, BEFORE
+#      raising any consumer's request in a later change. Consumer
+#      Applications (spritz-staging, spritz-production, ...) auto-sync on
+#      their own, so a request landing in the same commit can race ahead
+#      of the plugin. Production's transcoder (maxSurge 0) would then stop
+#      its old pod and leave the new one Pending.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
