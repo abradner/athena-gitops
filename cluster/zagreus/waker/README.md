@@ -295,9 +295,59 @@ with mains power. No fresh Lease, no slots.
 ## Wake
 
 The trigger is unmet demand for a set, with a sleeping node that has a slot
-for it. The waker wakes every sleeping node it needs to cover the demand, in
-`waker.conf` order, all at once, and raises the caps once when they are up;
-then a 180 s cooldown. One raise matters: every `maxRunners` change restarts
+for it. The waker wakes **the fewest sleeping nodes whose room covers the
+unmet demand** (Alex, 6 Nov 2026: "nodes should be only be woken by unmet
+demand"), all at once, and raises the caps once when they are up; then a
+180 s cooldown. It picks them one at a time: each time the node that
+covers the most of what is still unmet, a tie to `waker.conf` order. So
+one job wakes one node (01), three wake 02 alone (three slots), four wake
+02 and 01, and nine wake all three. A node that would add no room for the
+demand is not woken. If no node shows any room on paper, the waker wakes
+the first eligible node alone and logs it, rather than strand the jobs.
+
+**Why every wake used to wake all three (4 to 6 Nov 2026).** A sleeping
+node carries two taints besides `unreachable`, read from the live nodes
+on 6 Nov: `node.kubernetes.io/unschedulable` (the waker's own cordon) and
+`node.cilium.io/agent-not-ready`. The room on paper lifted only
+`unreachable` and `not-ready`, so no single node seemed to add room, and
+the waker took every node in turn. Every wake from all-asleep in the
+events log woke all three, one Simplytics job included. Now the boot
+taints and the waker's own cordon are lifted on paper. A cordon a person
+put on still counts: that node is not woken for room while it is
+cordoned. (A wake does take any cordon off, as it always has, so the
+fallback above could still uncordon one.)
+
+**Where GitHub forces over- or under-waking.** The waker sees only
+GitHub's queue, so:
+
+- *Shared-label jobs count only after the 60 s grace.* A job asking for
+  labels a classic runner also carries may still be taken by one after
+  the waker has woken a node for it: a node woken for nothing, for up to
+  an idle hour.
+- *A run's later jobs are not queued yet.* Jobs behind `needs:` reach the
+  queue only when the jobs they need finish, so a wake is sized to what is
+  queued now. A second wave waits the 180 s cooldown and a boot (about a
+  minute; 03 has taken four), and its cap raise restarts the listener.
+- *Held jobs wake nothing.* A job GitHub holds after a cap change (spare
+  beside it, "held" below) keeps nodes awake but is not unmet.
+- *Claims that never bind are a guess:* at most one node per episode
+  (`stuck_woke` in `tick`).
+- *Floors claim on top of the room.* A job a floored set claims while its
+  nodes sleep wakes the node it needs at once (the builder's 01; any pool
+  node for Simplytics).
+- *A staggered burst wakes twice.* Jobs that reach the queue a pass or two
+  apart are covered as they come: one job wakes one node, and three more a
+  minute later wake a second node after the cooldown (180 s from the first
+  wake), with a second cap raise and listener restart (measured on the
+  fake: 01 at once, then 02 and the cap 2 -> 5 about 180 s later). Before,
+  every wake took all three nodes, by the bug above, and the burst found
+  the room already there.
+- *Some nodes are passed over:* a node in failure backoff, a node a person
+  cordoned, and a node whose room on paper is eaten by a pod left on it
+  while it slept (a ghost pod the API has not cleaned up; if every node
+  shows no room, the fallback still wakes one).
+
+One raise matters: every `maxRunners` change restarts
 the set's listener, and a job the set turned down for want of room is held
 about ten minutes before GitHub offers it again. Waking one node at a time
 (0 to 1, then 1 to 3) left a second job queued for 14 minutes beside two
@@ -477,7 +527,9 @@ waker last wrote (see "Rollback").
 
 ## Slots
 
-`waker.conf` gives each node its slots per set. Wake order follows the list.
+`waker.conf` gives each node its slots per set. On a tie (several nodes
+would cover the same demand) wake order follows the list, and sleep order
+is the reverse.
 `zagreus-simplytics-ci` has none of its own: it shares `zagreus-ci`'s
 ("Sharing"):
 
@@ -976,6 +1028,20 @@ that hold either way), then each mutation below run:
 | a never-read ceiling not held at the live cap | `Shared.test_a_pool_set_with_no_ceiling_ever_read_reserves_nothing` |
 | public org repositories counted | `AppToken.test_org_queue_lists_the_installations_repos_of_that_org` |
 | one blind queue withholds every queue's gauges | `Shared.test_a_blind_simplytics_queue_leaves_spritzs_queue_gauges_live` |
+
+Wake by unmet demand (6 Nov 2026). `WakeByDemand` runs the deployed
+`waker.conf` on three nodes with the taints the node controller and
+Cilium put on a sleeping node (its first test checks the fake carries
+them). Red on `main` before the change: one job, Simplytics' or spritz's,
+woke all three nodes.
+
+| Mutation in `waker.py` | Tests that go red |
+|---|---|
+| the room on paper lifts only the down taints | 6, among them `test_one_spritz_job_wakes_one_node` (it also fails if the one node came from the fallback) |
+| nodes taken in list order, not by cover | 5, among them `test_a_burst_wakes_the_fewest_nodes_that_cover_it` |
+| a person's cordon lifted too | `test_a_human_cordon_still_counts_against_a_node` |
+| no fallback when no node shows room | `ChooseWakes.test_with_no_room_shown_anywhere_one_node_still_wakes` |
+| a node that adds no room woken anyway | `ChooseWakes.test_a_node_that_adds_no_room_is_not_woken` |
 
 The heartbeat loop was also run under the pinned busybox, before and after
 it was hardened. The old loop expanded an entry of `*` into 15 lines, crashed
