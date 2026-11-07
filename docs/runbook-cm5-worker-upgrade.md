@@ -145,28 +145,24 @@ check() {
 # Apply the current worker config to ONE node in maintenance mode. Run from
 # bootstrap/talos with worker.yaml rendered. SCRATCH=1 for a scratch worker.
 # apply-worker.sh does the same for every node in athena.zsh at once.
-apply_one() {
-  local d f rc=0
-  d=$(mktemp -d) && chmod 700 "$d" && f="$d/node.yaml"
+apply_one() (    # a subshell, so the EXIT trap removes the rendered PKI even on Ctrl-C
+  d=$(mktemp -d) && chmod 700 "$d" || exit 1
+  trap 'rm -rf "$d"' EXIT
+  f="$d/node.yaml"
   if [ "${SCRATCH:-0}" = 1 ]; then
     talosctl machineconfig patch worker.yaml --patch @worker-nvme.patch.yaml \
-      --patch @watchdog.patch.yaml -o "$f" || rc=1
+      --patch @watchdog.patch.yaml -o "$f" || exit 1
   else
-    talosctl machineconfig patch worker.yaml --patch @watchdog.patch.yaml -o "$f" || rc=1
+    talosctl machineconfig patch worker.yaml --patch @watchdog.patch.yaml -o "$f" || exit 1
   fi
-  if [ $rc = 0 ] && [ "$(yq -o=json -I=0 'select(.kind == "ResolverConfig") | .searchDomains.domains' "$f")" != "[]" ]; then
-    echo "rendered config lost domains: [] (a 1.13 talosctl?); not applying" >&2; rc=1
+  if [ "$(yq -o=json -I=0 'select(.kind == "ResolverConfig") | .searchDomains.domains' "$f")" != "[]" ]; then
+    echo "rendered config lost domains: [] (a 1.13 talosctl?); not applying" >&2; exit 1
   fi
-  if [ $rc = 0 ]; then
-    talosctl apply-config --insecure -n $W -f "$f" --dry-run || rc=1
-    if [ $rc = 0 ]; then
-      printf 'apply? [y/N] '; read -r ok     # portable: zsh's read -p means something else
-      [ "$ok" = y ] && talosctl apply-config --insecure -n $W -f "$f" || rc=1
-    fi
-  fi
-  rm -rf "$d"
-  return $rc
-}
+  talosctl apply-config --insecure -n $W -f "$f" --dry-run || exit 1
+  printf 'apply? [y/N] '; read -r ok     # portable: zsh's read -p means something else
+  [ "$ok" = y ] || exit 1
+  talosctl apply-config --insecure -n $W -f "$f"
+)
 ```
 
 ## Procedure: rebuild from a fresh SD card
@@ -197,11 +193,9 @@ node's current card, before starting.
 Stop at the first surprise. A single node on the old version is harmless; a second node in an
 unknown state is not.
 
-**On a carrier that has not yet run Factory 1.14, prove one node first.** A rebuilt node has
-once failed to come back from its forced-hang test, even after a power cycle, and needed two
-power-ons after a reflash; its card was intact, so a flaky boot on that carrier was the lead.
-Rebuild no second node on the same carrier until one has passed step 7's clean reboot. Open
-questions about specific nodes live in the private infrastructure repo.
+**On a carrier that has not yet run Factory 1.14, prove one node first.** Rebuild no second
+node on the same carrier until one has passed step 7's clean reboot. Open questions about
+specific nodes live in the private infrastructure repo.
 
 ## Upgrading in place
 

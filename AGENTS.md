@@ -463,8 +463,9 @@ general rule.** Argo-specific traps have their own section above.
    - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two
      can't coexist. A config that sets it (or v1alpha1 nameservers or search domains) alongside
      a `ResolverConfig` fails validation with "already set in v1alpha1 config". Remove it in the
-     same apply that adds the document. The control-plane template still sets it, so the
-     control planes need that change before their own 1.14 upgrade.
+     same apply that adds the document. The control-plane template still sets it: drop it
+     there in the same change that gives that template a `ResolverConfig`. A 1.14 client
+     against 1.13 nodes is not verified.
 
 ## The public/private split
 

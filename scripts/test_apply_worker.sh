@@ -97,6 +97,12 @@ run() {
 
 applies() { grep -c . "$work/apply.log" || true; }
 logline() { grep -c -- "$1" "$work/apply.log" || true; }
+# renders_cleaned: something was rendered, and every render directory is gone.
+renders_cleaned() {
+  local d left=0
+  while read -r d; do [ -e "$d" ] && left=$((left + 1)); done < <(sort -u "$work/apply.log.renders")
+  [ "$(grep -c . "$work/apply.log.renders" || true)" -gt 0 ] && [ "$left" -eq 0 ]
+}
 
 all_declared='GPU_WORKER_IP=(); GPU_VM_WORKER_IP=()'
 
@@ -126,12 +132,10 @@ else
 fi
 
 echo "• rendered configs (cluster PKI) are removed on exit"
-left=0
-while read -r d; do [ -e "$d" ] && left=$((left + 1)); done < <(sort -u "$work/apply.log.renders")
-if [ "$(grep -c . "$work/apply.log.renders" || true)" -gt 0 ] && [ "$left" -eq 0 ]; then
+if renders_cleaned; then
   pass "render directory gone"
 else
-  fail "render directory survived (or nothing was rendered): left=$left"
+  fail "render directory survived (or nothing was rendered)"
 fi
 
 echo "• no scratch or GPU nodes: base only"
@@ -147,8 +151,8 @@ if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ]; then pass "refused, nothing ap
 echo "• a patcher that drops domains: [] (the 1.13 client) → refuse BEFORE touching any node"
 setup "WORKER_IP=(\"w1\" \"w2\"); NVME_WORKER_IP=(\"n1\"); $all_declared"
 FAKE_DROP_EMPTY=1 run
-if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ] && grep -q '1.14 client' <<<"$output"; then
-  pass "refused, nothing applied, names the client"
+if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ] && grep -q '1.14 client' <<<"$output" && renders_cleaned; then
+  pass "refused, nothing applied, names the client, render directory removed"
 else
   fail "dropping patcher: status=$status applies=$(applies)"; cat "$work/apply.log" >&2; echo "$output" >&2
 fi
