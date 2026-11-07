@@ -145,9 +145,12 @@ check() {
 # Apply the current worker config to ONE node in maintenance mode. Run from
 # bootstrap/talos with worker.yaml rendered. SCRATCH=1 for a scratch worker.
 # apply-worker.sh does the same for every node in athena.zsh at once.
-apply_one() (    # a subshell, so the EXIT trap removes the rendered PKI even on Ctrl-C
+apply_one() (    # a subshell, so its traps remove the rendered PKI when it ends
   d=$(mktemp -d) && chmod 700 "$d" || exit 1
   trap 'rm -rf "$d"' EXIT
+  # INT/TERM too: zsh may not run a subshell's EXIT trap on Ctrl-C. Exit after
+  # cleaning up, so an interrupt never carries on to the apply.
+  trap 'rm -rf "$d"; exit 130' INT TERM
   f="$d/node.yaml"
   if [ "${SCRATCH:-0}" = 1 ]; then
     talosctl machineconfig patch worker.yaml --patch @worker-nvme.patch.yaml \
