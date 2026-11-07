@@ -105,6 +105,10 @@ If the NVMe holds anything else, stop.
    - The node's ephemeral-storage matches the NVMe (about 13 GiB on an
      Optane), not the SD (about 28 GiB).
    - The node is `Ready`, and Cilium and the log shipper are running on it.
+   - `talosctl -n <worker-ip> get resolvers` shows `searchDomains: []`
+     (AGENTS.md Gotcha #7). On 1.13 it can't fail, since 1.13 ignores DHCP
+     search domains; it starts to matter at 1.14, so this is a cheap
+     baseline for later.
    - Repeat the SD write-rate sample from the pre-flight. The rate should
      be close to zero. That is the result this runbook is for.
 

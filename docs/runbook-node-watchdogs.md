@@ -160,5 +160,5 @@ for that node.
 No reboot. The `state` read is the check that machined disarmed the device
 when it closed it: if it still reads `active`, the node will reset when the
 timeout runs out, so reboot it deliberately instead. Remove the
-`--config-patch @watchdog.patch.yaml` lines from `apply-worker.sh` too if the
+`@watchdog.patch.yaml` arguments from `apply-worker.sh`'s `render` calls too if the
 rollback is meant to survive the next install.

@@ -1,0 +1,32 @@
+# Image Factory schematic for athena's CM5 Lite workers. POST it to get the id:
+#   curl -sS -X POST --data-binary @worker-cm5.schematic.yaml https://factory.talos.dev/schematics
+# -> 03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32
+# A changed file means a new id: update install.image in worker.template.yaml
+# and the flash image in docs/runbook-cm5-worker-upgrade.md.
+#
+# This is the schematic zagreus's CM5s ran at its v1.14.4 bring-up
+# (bootstrap/zagreus/talos/worker-cm5.schematic.yaml as of #193), and the one
+# worker.template.yaml pins for athena's CM5 workers. zagreus has since moved to a newer
+# schematic (a fan GPIO hog and a USB-enclosure quirk) that athena has not
+# taken; adopting it is a new id and a new rebuild, not an edit here.
+#
+# The official sbc-raspberrypi rpi_5 overlay and one kernel argument, no
+# extensions. sdhci.debug_quirks2=4 (SDHCI_QUIRK2_NO_1_8_V) keeps the SD card
+# at 3.3 V High Speed. Without it, on some CM5 carriers, mainline's sdhci
+# voltage switch to SDR104 fails and the card never appears: bare Factory
+# 1.14.4 boot-looped on such a board. SD is boot-only on these nodes, so the
+# slower bus costs nothing.
+#
+# No extensions on purpose: nothing here uses iSCSI, and an extension whose
+# service is left unconfigured blocks boot and reboots the node on a timer.
+# (The older community build carries iscsi-tools and util-linux-tools;
+# rebuilding a node from it onto this schematic drops both.)
+#
+# Pin the installer by digest ONLY (factory.talos.dev/metal-installer/<id>@sha256:…):
+# a Talos 1.14.4 node fails `talosctl upgrade` from a tag@digest ref.
+overlay:
+  image: siderolabs/sbc-raspberrypi
+  name: rpi_5
+customization:
+  extraKernelArgs:
+    - sdhci.debug_quirks2=4

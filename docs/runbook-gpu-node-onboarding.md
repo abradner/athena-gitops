@@ -115,6 +115,12 @@ talosctl apply-config --insecure -n <ip> -e <ip> \
   --config-patch '{"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"<gen>"}}}'
 ```
 
+Use the 1.14 talosctl `bootstrap/mise.toml` pins: a 1.13 client's
+`--config-patch` drops the worker `ResolverConfig`'s `domains: []` (AGENTS.md
+Gotcha #7). `apply-worker.sh` renders the config and checks that before it
+applies anything; a hand-run apply should render with `machineconfig patch`
+and check it the same way.
+
 **Before applying, check that the hydrated `worker.yaml` matches the
 template.** On 2026-10-17 it dated from 6 Sep and still carried the legacy
 Optane split (`machine.disks`) and the `btrfs`/`vc4` modules. Compare with

@@ -36,27 +36,83 @@ for entry in "${GPU_WORKER_IP[@]}" "${GPU_VM_WORKER_IP[@]}"; do
   split_gpu_entry "$entry"
 done
 
+# ---- Render: every node's config is built and checked before ANY apply. ----
+#
 # Every worker class also gets watchdog.patch.yaml (the hardware watchdog;
 # see that file). The control planes do not: they have no watchdog device.
+#
+# The patches are merged here, offline, with `talosctl machineconfig patch`,
+# and the apply loops below send the rendered file with no --config-patch.
+# That way the check runs on exactly the bytes each node receives.
+#
+# What the check guards: the worker ResolverConfig's literal `domains: []`,
+# the DHCP search-domain override (AGENTS.md Gotcha #7). A 1.13 talosctl's
+# patcher re-serializes the config and drops empty lists, so the override
+# silently becomes "inherit DHCP", which from Talos 1.14 blackholes external
+# lookups. A 1.14 client keeps it. Checking every rendered config first means
+# a bad one reaches no node, rather than every node before it.
+# scripts/test_apply_worker.sh covers this.
+command -v yq >/dev/null || { echo "yq is required (the repo's mise.toml pins it)" >&2; exit 1; }
+
+# Rendered configs hold the full cluster PKI: a private directory, owner-only
+# files, removed on exit.
+render_dir="$(mktemp -d)"
+chmod 700 "$render_dir"
+trap 'rm -rf "$render_dir"' EXIT
+umask 077
+
+# render <name> <patch>...: worker.yaml plus the patches -> $render_dir/<name>.yaml,
+# then refuse unless its ResolverConfig still has the literal [].
+render() {
+  local out="$render_dir/$1.yaml" name="$1" domains
+  shift
+  local args=() p
+  for p in "$@"; do args+=(--patch "$p"); done
+  talosctl machineconfig patch worker.yaml "${args[@]}" --output "$out"
+  chmod 600 "$out"
+  domains="$(yq -o=json -I=0 'select(.kind == "ResolverConfig") | .searchDomains.domains' "$out")"
+  if [ "$domains" != "[]" ]; then
+    echo "$name: rendered ResolverConfig searchDomains.domains must be a literal [] (got: '${domains}')." >&2
+    echo "A 1.13 talosctl drops it when patching; use the 1.14 client bootstrap/mise.toml pins. Nothing was applied." >&2
+    exit 1
+  fi
+}
+
+# Ordinary and scratch workers share one rendered file per class.
+render worker @watchdog.patch.yaml
+# Scratch workers: same base config plus a scheduling patch (label + soft
+# taint). See worker-nvme.patch.yaml for why it is a patch.
+if [ "${#NVME_WORKER_IP[@]}" -gt 0 ]; then
+  render scratch @worker-nvme.patch.yaml @watchdog.patch.yaml
+fi
+# GPU workers: one file per node, since the generation label differs.
+for entry in "${GPU_WORKER_IP[@]}"; do
+  split_gpu_entry "$entry"
+  render "gpu-$ip" @worker-gpu.patch.yaml @watchdog.patch.yaml \
+    "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+done
+for entry in "${GPU_VM_WORKER_IP[@]}"; do
+  split_gpu_entry "$entry"
+  render "gpu-vm-$ip" @worker-gpu-vm.patch.yaml @watchdog.patch.yaml \
+    "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+done
+
+# ---- Apply ----
+
 for ip in "${WORKER_IP[@]}"; do
   echo "=== Applying configuration to node $ip ==="
   talosctl apply-config --insecure \
-    --nodes $ip \
-    --file worker.yaml \
-    --config-patch @watchdog.patch.yaml
+    --nodes "$ip" \
+    --file "$render_dir/worker.yaml"
   echo "Configuration applied to $ip"
   echo ""
 done
 
-# Scratch workers: same base config plus a scheduling patch (label + soft
-# taint). See worker-nvme.patch.yaml for why it is a patch.
 for ip in "${NVME_WORKER_IP[@]}"; do
   echo "=== Applying configuration to scratch node $ip ==="
   talosctl apply-config --insecure \
-    --nodes $ip \
-    --file worker.yaml \
-    --config-patch @worker-nvme.patch.yaml \
-    --config-patch @watchdog.patch.yaml
+    --nodes "$ip" \
+    --file "$render_dir/scratch.yaml"
   echo "Configuration applied to $ip"
   echo ""
 done
@@ -69,11 +125,8 @@ for entry in "${GPU_WORKER_IP[@]}"; do
   split_gpu_entry "$entry"
   echo "=== Applying configuration to GPU node $ip (gen $gen) ==="
   talosctl apply-config --insecure \
-    --nodes $ip \
-    --file worker.yaml \
-    --config-patch @worker-gpu.patch.yaml \
-    --config-patch @watchdog.patch.yaml \
-    --config-patch "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+    --nodes "$ip" \
+    --file "$render_dir/gpu-$ip.yaml"
   echo "Configuration applied to $ip"
   echo ""
 done
@@ -85,11 +138,8 @@ for entry in "${GPU_VM_WORKER_IP[@]}"; do
   split_gpu_entry "$entry"
   echo "=== Applying configuration to GPU VM node $ip (gen $gen) ==="
   talosctl apply-config --insecure \
-    --nodes $ip \
-    --file worker.yaml \
-    --config-patch @worker-gpu-vm.patch.yaml \
-    --config-patch @watchdog.patch.yaml \
-    --config-patch "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+    --nodes "$ip" \
+    --file "$render_dir/gpu-vm-$ip.yaml"
   echo "Configuration applied to $ip"
   echo ""
 done
