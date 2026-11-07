@@ -18,6 +18,23 @@ spec:
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: default
+  # The failover watchdog owns the connectors' replica count (0 or 1), so Argo
+  # must not reconcile it back to the manifest's 0 on every sync — the same
+  # Argo-vs-controller fight the primary avoids for spritz-web's HPA. Scoped
+  # to the two Deployments and the one field.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: cloudflared-personal
+      namespace: cloudflared
+      jsonPointers:
+        - /spec/replicas
+    - group: apps
+      kind: Deployment
+      name: cloudflared-simplytics
+      namespace: cloudflared
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true
