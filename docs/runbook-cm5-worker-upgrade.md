@@ -183,15 +183,37 @@ node's current card, before starting.
 4. **Clear the NVMe** if it still carries an old layout (an Optane from before the EPHEMERAL move does):
    `talosctl -n $W wipe disk nvme0n1 --insecure`. This is the step that puts EPHEMERAL on the
    NVMe; see `docs/runbook-worker-ephemeral-relocation.md` for what must not be on that disk.
-5. **Apply** with `apply_one` (above), reading the dry-run first.
-6. **Join.** The node comes back with a new machine identity and a new Kubernetes node name.
-   Delete the old `Node` object. A new scratch node needs its one-time manual taint
-   (`bootstrap/README.md`, Scratch workers). Point `NODE` at the new name and run `check`.
-7. **Prove it reboots:** soak 15 minutes, `talosctl -n $W reboot --wait`, which must come back by
-   itself, then `check` again. Then, in the same cordon, the watchdog forced-hang test from
-   `docs/runbook-node-watchdogs.md`.
-8. `kubectl uncordon $NODE`. Look at the NIC drop counters (`talosctl -n $W get links end0 -o
-   yaml`) before moving to the next node.
+5. **Apply** with `apply_one` (above), reading the dry-run first. Record the node list just
+   before it, so the replacement can be spotted the moment it registers:
+   `before=$(kubectl get nodes -o name | sort)`.
+6. **Join, and cordon at once.** The node comes back with a new machine identity and a new
+   Kubernetes node name, and it registers **schedulable**: the old node's drain in step 2 does
+   not carry over. Cordon it the moment it appears, before anything else:
+
+   ```bash
+   until NEW=$(comm -13 <(printf '%s\n' "$before") <(kubectl get nodes -o name | sort)) && [ -n "$NEW" ]; do sleep 2; done
+   kubectl cordon "$NEW"; NODE=${NEW#node/}
+   kubectl get pods -A -o wide --field-selector spec.nodeName=$NODE   # only DaemonSet pods expected
+   ```
+
+   A short window before the cordon remains. If anything other than a DaemonSet pod landed in
+   it, stop and look before going on, and treat a pod with a local-path volume as described
+   below. Then delete the old `Node` object. A new scratch node needs its one-time manual taint
+   (`bootstrap/README.md`, Scratch workers). Run `check`.
+7. **Prove it reboots, still cordoned:** soak 15 minutes, `talosctl -n $W reboot --wait`, which
+   must come back by itself, then `check` again. Then, in the same cordon, the watchdog
+   forced-hang test from `docs/runbook-node-watchdogs.md`. If either fails, the node stays
+   cordoned.
+8. **Only after step 7 passes,** `kubectl uncordon $NODE`. Look at the NIC drop counters
+   (`talosctl -n $W get links end0 -o yaml`) before moving to the next node.
+
+**Nothing stateful on an unproven node.** A local-path PersistentVolume lives on one node's disk,
+and its PVC pins every future pod of that workload (a StatefulSet replica, say) to that node. A
+pod that lands on a replacement node before its reboot test binds its volume there, and if the
+node then fails the test, that workload is down with it and cannot be rescheduled elsewhere
+without giving up the volume's data. That is why the cordon goes on before anything else and
+stays on until step 7 has passed. If such a pod landed anyway, decide with the operator whether
+to keep the node up or to delete the PVC and let the workload start fresh elsewhere.
 
 Stop at the first surprise. A single node on the old version is harmless; a second node in an
 unknown state is not.
