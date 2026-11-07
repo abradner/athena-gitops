@@ -1,0 +1,13 @@
+---
+# Non-secret app config, shared by the web and worker deployments.
+# Pairs with kaff's fail-fast storage config: production boot raises on a
+# missing GARAGE_* value. The keypair lives in the kaff-app Secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kaff-config
+  namespace: asn-staging
+data:
+  # garage's S3 API listens plain-HTTP on :3900 (internal network only).
+  GARAGE_ENDPOINT: http://garage.infra.asn.casa:3900
+  GARAGE_BUCKET: kaff-staging
