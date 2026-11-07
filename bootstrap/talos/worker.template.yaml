@@ -209,10 +209,9 @@ machine:
         disk: /dev/mmcblk0 # The disk used for installations.
         # Image Factory schematic worker-cm5.schematic.yaml (03fea4ec…) at
         # v1.14.4: the rpi_5 overlay plus sdhci.debug_quirks2=4, no
-        # extensions. It is what the CM5 workers rebuilt on Talos 1.14 run.
-        # The rest of the CM5 fleet still runs the community v1.13.2 build
-        # this line used to describe, until rebuilt per
-        # docs/runbook-cm5-worker-upgrade.md. That runbook, not this line, is
+        # extensions. A CM5 worker not yet rebuilt may still run the older
+        # community v1.13.2 build (which worker is on what: the private
+        # infrastructure repo). docs/runbook-cm5-worker-upgrade.md, not this line, is
         # how a CM5 worker changes version: the proven path is a fresh SD card,
         # not `talosctl upgrade` across the jump.
         # Pinned by digest ONLY. v1.14.4 is the tag, kept here because the ref
@@ -635,7 +634,7 @@ auto: stable # A method to automatically generate a hostname for the machine.
 # `domains: []` must stay an explicit empty list, because unset means
 # "inherit DHCP" (siderolabs/talos 1c156458a). disableDefault also drops the
 # hostname-derived domain. 1.13 accepts the document and ignores DHCP domains
-# anyway, so the 1.13 workers carry it harmlessly until they are rebuilt.
+# anyway, so a worker still on 1.13 carries it harmlessly.
 #
 # Never route this config through a 1.13 talosctl's patcher (`--config-patch`,
 # `machineconfig patch`, `patch mc`): it re-serializes and drops the empty

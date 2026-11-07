@@ -20,9 +20,8 @@ infrastructure repo, per the public/private split in `AGENTS.md`.
   `VolumeConfig` in the shared template. The SD card is boot-only. That same definition covers
   the new 128 GB scratch workers, so they differ from the rest only by a label and a soft taint.
 - **Upgrades are a separate problem.** The workers are Raspberry Pi CM5 Lites, which official
-  Talos couldn't boot from SD when this was written. It can from 1.14.1, and since October 2026
-  the CM5 workers are being rebuilt onto an Image Factory 1.14.4 image, one node at a time. That
-  has its own runbook: [`runbook-cm5-worker-upgrade.md`](runbook-cm5-worker-upgrade.md).
+  Talos couldn't boot from SD when this was written. It can from 1.14.1. Moving a worker onto
+  the pinned Image Factory image has its own runbook: [`runbook-cm5-worker-upgrade.md`](runbook-cm5-worker-upgrade.md).
 
 ## What we found
 

@@ -20,7 +20,7 @@ What boots them, by Talos version (Image Factory binds the overlay per Talos rel
 | 1.14.0 | v0.2.1 | No Ethernet. Never a valid target | upstream commit `b1fe7bda` ("restore CM5 Ethernet initialization", in v0.2.2). Not tested here |
 | 1.14.1, bare `rpi_5` schematic | v0.2.2 | Worked on the soak board | soaked from SD, 2026-09-25 (`docs/investigation-2026-09-cm5-upstream-talos.md`) |
 | 1.14.4, bare `rpi_5` schematic | | **Boot-looped on some carriers**: the switch to 1.8 V SDR104 fails and the card never appears | zagreus bring-up, 2026-10 (`bootstrap/zagreus/README.md`) |
-| 1.14.4, `worker-cm5.schematic.yaml` (`03fea4ec…`) | | **Works**: the SD stays at 3.3 V High Speed | zagreus's CM5s, then athena's rebuilt CM5 workers (2026-10) |
+| 1.14.4, `worker-cm5.schematic.yaml` (`03fea4ec…`) | | **Works**: the SD stays at 3.3 V High Speed | zagreus's CM5s (2026-10) |
 
 `03fea4ec…` is the `rpi_5` overlay plus the kernel argument `sdhci.debug_quirks2=4`, with no
 extensions. Why the bare schematic boots on some boards and not others was not established.
@@ -33,23 +33,29 @@ Two installer defaults are wrong for these boards, so **always pass `--image`** 
 - A 1.14 `talosctl upgrade` defaults to the vanilla Image Factory schematic, which has no Pi
   overlay either.
 
-## Where the fleet is
+## Mixed-version workers
 
-Two generations of CM5 worker exist at once:
+CM5 workers can sit on two generations at once while a rollout is under way: some rebuilt on the
+Factory image below, some still on the community build the fleet was first flashed with. Nothing
+in the cluster depends on them matching, but treat the two as different machines:
 
-- **Rebuilt on Factory 1.14.4** (`03fea4ec…`, October 2026): both scratch workers and one
-  original worker. Fresh SD cards, EPHEMERAL on the NVMe.
-- **Not yet rebuilt:** the other original workers, still on the community build they were first
-  flashed with, **`johnlaur/talos-builder` v1.13.2** (Raspberry Pi vendor kernel, `iscsi-tools` +
-  `util-linux-tools`). The asset is `metal-arm64-rpi5.raw.xz`, sha256
-  `8d2d2dad3eafab3d8779520fa0669f0b0f48d7d616d1af4c1958d1bdccb0d27b`, matched (2026-09-24) by
+- **Find out what a node runs before touching it:** `talosctl -n $W version` and
+  `talosctl -n $W get extensions` (Factory nodes show only the virtual `schematic` entry with its
+  id; the community build shows `iscsi-tools` and `util-linux-tools`). Never assume from the
+  node's age or role.
+- **One config fits both.** The template's `ResolverConfig` is harmless on 1.13 and required on
+  1.14, and its `install.image` is only read by an upgrade or a fresh install.
+- **Never `talosctl upgrade` a community-build node** (see "Upgrading in place"): rebuild it.
+- **Keep the community image** while any node runs it: it is that node's recovery path. It is
+  **`johnlaur/talos-builder` v1.13.2** (Raspberry Pi vendor kernel, `iscsi-tools` +
+  `util-linux-tools`), asset `metal-arm64-rpi5.raw.xz`, sha256
+  `8d2d2dad3eafab3d8779520fa0669f0b0f48d7d616d1af4c1958d1bdccb0d27b`, identified (2026-09-24) by
   the asset digest, by Talos SHA `23154840` in the image's `init`, and by the kernel banner
   `6.18.29-talos … #1 SMP Sun May 17 19:09:54 UTC 2026`. That source has published nothing since,
-  and its installer image cannot be pulled. **Keep a copy of that image**: it is the recovery
-  path for those nodes.
+  and its installer image cannot be pulled.
 
-Which node is which, with addresses, is in the private infrastructure repo, per the
-public/private split in `AGENTS.md`.
+Which node runs what, with addresses, is recorded only in the private infrastructure repo, per
+the public/private split in `AGENTS.md`. Update it there after each rebuild.
 
 ## Target image
 
@@ -165,8 +171,8 @@ apply_one() {
 
 ## Procedure: rebuild from a fresh SD card
 
-This is the path the October 2026 rebuilds took. Have the flashed card and a spare card with the
-node's current image in hand before starting.
+This is the path that has worked on these boards. Have the flashed card in hand, and keep the
+node's current card, before starting.
 
 1. **Flash** a new SD card with the target flash image, and check its sha256 first. Keep the
    node's current card untouched: it is the rollback.
@@ -175,7 +181,7 @@ node's current image in hand before starting.
 3. **Maintenance-mode checks** (`--insecure`): `talosctl -n $W version --insecure` shows
    v1.14.4; `get disks --insecure` shows both the SD card and the NVMe; `dmesg` shows the SD at
    High Speed with no errors.
-4. **Clear the NVMe** if it still carries an old layout (the original workers' Optanes do):
+4. **Clear the NVMe** if it still carries an old layout (an Optane from before the EPHEMERAL move does):
    `talosctl -n $W wipe disk nvme0n1 --insecure`. This is the step that puts EPHEMERAL on the
    NVMe; see `docs/runbook-worker-ephemeral-relocation.md` for what must not be on that disk.
 5. **Apply** with `apply_one` (above), reading the dry-run first.
@@ -191,11 +197,11 @@ node's current image in hand before starting.
 Stop at the first surprise. A single node on the old version is harmless; a second node in an
 unknown state is not.
 
-**Open (as recorded 2026-10-23):** the first rebuilt *original* worker did not come back from
-its forced-hang test, even after a power cycle, and after a reflash its board needed two
-power-ons to boot. The card was intact, so a flaky boot on the original carrier is the lead.
-The scratch workers (a different carrier) showed none of this. Don't rebuild the remaining
-original workers until a rebuilt original has passed step 7's clean reboot.
+**On a carrier that has not yet run Factory 1.14, prove one node first.** A rebuilt node has
+once failed to come back from its forced-hang test, even after a power cycle, and needed two
+power-ons after a reflash; its card was intact, so a flaky boot on that carrier was the lead.
+Rebuild no second node on the same carrier until one has passed step 7's clean reboot. Open
+questions about specific nodes live in the private infrastructure repo.
 
 ## Upgrading in place
 

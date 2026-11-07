@@ -6,7 +6,7 @@
 #
 # This is the schematic zagreus's CM5s ran at its v1.14.4 bring-up
 # (bootstrap/zagreus/talos/worker-cm5.schematic.yaml as of #193), and the one
-# athena's CM5 workers were rebuilt on. zagreus has since moved to a newer
+# worker.template.yaml pins for athena's CM5 workers. zagreus has since moved to a newer
 # schematic (a fan GPIO hog and a USB-enclosure quirk) that athena has not
 # taken; adopting it is a new id and a new rebuild, not an edit here.
 #
@@ -19,8 +19,8 @@
 #
 # No extensions on purpose: nothing here uses iSCSI, and an extension whose
 # service is left unconfigured blocks boot and reboots the node on a timer.
-# (The community build the older workers run carries iscsi-tools and
-# util-linux-tools; rebuilding onto this schematic drops both.)
+# (The older community build carries iscsi-tools and util-linux-tools;
+# rebuilding a node from it onto this schematic drops both.)
 #
 # Pin the installer by digest ONLY (factory.talos.dev/metal-installer/<id>@sha256:…):
 # a Talos 1.14.4 node fails `talosctl upgrade` from a tag@digest ref.
