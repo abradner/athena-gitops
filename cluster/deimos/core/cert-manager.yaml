@@ -1,0 +1,40 @@
+---
+# cert-manager for this zone. Same chart and version as the primary
+# (cluster/core/cert-manager/cert-manager-app.yaml); only the Application name
+# and project differ. Issuance lives alongside it in this directory:
+# cloudflare-tokens.yaml (the DNS-01 credentials), letsencrypt-issuers.yaml,
+# and certificates.yaml; the Gateway that consumes the certs is gateway.yaml.
+#
+# WHY THIS ZONE NEEDS ITS OWN CERTIFICATES AT ALL. cloudflared reaches the
+# Gateway over HTTPS and verifies the certificate against the SNI it presents
+# (originServerName: tunnel.athena.asn.casa, in the shared cloudflared
+# config) — there is deliberately no noTLSVerify. So the tunnel listener needs
+# a real *.athena.asn.casa certificate here too, and the shared HTTPRoutes name
+# listeners whose certificates must exist for the routes to be Accepted.
+# Let's Encrypt is free; a second cluster requesting the same names from its
+# own ACME account is a normal thing to do and nowhere near any rate limit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deimos-cert-manager
+  namespace: argocd
+spec:
+  project: deimos-core-project
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.21.1
+    helm:
+      parameters:
+        - name: crds.enabled
+          value: 'true'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,66 @@
+---
+# The three certificates this zone's Gateway needs, and no others. The
+# primary issues fourteen; deimos serves only the production spritz surfaces,
+# and every listener it does not have simply does not exist here (see
+# gateway.yaml for why that is fine).
+#
+# All at wave 3, after the issuers at wave 2. The primary's file carries a
+# mix of wave 1 and wave 3 for historical reasons; a fresh cluster has no
+# history to preserve and every Certificate here waits for its issuer.
+#
+# dnsNames match the primary's exactly — no www. names, because the primary
+# has none either.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rabalex-wedding-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: rabalex-wedding-tls
+  dnsNames:
+    - "rabalex.wedding"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+# Expected to sit NotReady until the simplytics DNS token's IP allowlist
+# includes this zone's address — see cloudflare-tokens.yaml.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spritz-events-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: spritz-events-tls
+  dnsNames:
+    - "spritz.events"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+# Not for any hostname this zone serves. cloudflared's shared config presents
+# SNI tunnel.athena.asn.casa to the Gateway's tunnel listener and verifies the
+# certificate it gets back, so that listener must hold a *.athena.asn.casa
+# certificate here too, or every request through the tunnel fails the TLS
+# handshake between the connector and the Gateway.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: athena-wildcard-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: athena-wildcard-tls
+  dnsNames:
+    - "*.athena.asn.casa"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod

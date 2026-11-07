@@ -1,0 +1,84 @@
+---
+# This zone's Gateway. Named homelab-gateway in default — the same as the
+# primary's — because the HTTPRoutes that attach to it are the primary's own
+# manifests, deployed here unchanged, and they name the Gateway and its
+# listeners by sectionName. A different name here would mean the routes could
+# never attach, and a missing listener name means Argo reports the route
+# Degraded ("No matching listener with sectionName ...").
+#
+# FOUR LISTENERS, NOT FOURTEEN. The primary's Gateway carries a listener per
+# public hostname it serves. This zone serves the production spritz surfaces
+# only, so it carries exactly the listeners those two routes name plus the
+# plain-HTTP one. Nothing else is deployed here that could reference the
+# others, and — measured on the primary against Cilium v1.19.4 — the
+# hostname-less tunnel listener serves every HTTPRoute on the Gateway
+# regardless of sectionName, so even a route that named an absent listener
+# would still be served through the tunnel; only its status would show it.
+#
+# WHAT ACTUALLY CARRIES TRAFFIC HERE IS https-tunnel. Nothing reaches this
+# zone's :443 from the internet: the security group has no inbound rules, and
+# the Gateway's LoadBalancer address is a private one nobody routes to (see
+# lb-pool.yaml). The cloudflared connectors in this cluster dial out to
+# Cloudflare and forward every request to this Gateway's :8443 by Service
+# DNS name, presenting SNI tunnel.athena.asn.casa and verifying the
+# certificate — hence athena-wildcard-tls on that listener, the same as on
+# the primary, so the shared cloudflared config needs no per-zone edit.
+#
+# Wave 4: after the Certificates at wave 3. A listener whose certificate
+# Secret does not exist yet is not programmed; the Gateway comes up with the
+# rest and Cilium reconciles that listener when the Secret appears, which is
+# also what happens for spritz-events-tls while its DNS token is IP-locked
+# (cloudflare-tokens.yaml).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-gateway
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https-rabalex
+      port: 443
+      protocol: HTTPS
+      hostname: "rabalex.wedding"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: rabalex-wedding-tls
+    - name: https-spritz-events
+      port: 443
+      protocol: HTTPS
+      hostname: "spritz.events"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: spritz-events-tls
+    # The tunnel listener: no hostname, so it serves everything, which is the
+    # point — cloudflared's ingress is a single catch-all and there is no
+    # hostname list here to drift out of step with it. The only thing keeping
+    # internal names off the tunnel is the asn.casa deny rule in the shared
+    # cloudflared config, exactly as on the primary.
+    - name: https-tunnel
+      port: 8443
+      protocol: HTTPS
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: athena-wildcard-tls

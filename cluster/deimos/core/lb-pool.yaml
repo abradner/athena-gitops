@@ -1,0 +1,22 @@
+---
+# An address for the Gateway's Service, and nothing more.
+#
+# Cilium implements a Gateway as a Service of type LoadBalancer, and with
+# lb-ipam enabled and no pool defined that Service never gets an address —
+# it sits <pending> and the Gateway never reports Programmed. On the primary
+# a real pool hands out LAN addresses that L2 announcement makes reachable
+# (bootstrap/kubernetes/gateway-homelab-pool.yaml). Here nothing needs to
+# reach the Gateway by address at all: the connectors reach it by Service DNS
+# inside the cluster, and the internet reaches the connectors through
+# Cloudflare. So the range below is a private block nobody routes to, chosen
+# to be outside the VPC, the pod CIDR and the primary site's VLANs, and its
+# only job is to exist.
+#
+# Unwaved, so it is applied before the Gateway at wave 4.
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: deimos-gateway-pool
+spec:
+  blocks:
+    - cidr: "10.255.0.0/28"
