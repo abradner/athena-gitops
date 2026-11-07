@@ -2,7 +2,7 @@
 #kubectl = "1.34"
 #talosctl = "1.11"
 
-kubectl = "1.37.0"
+kubectl = "1.37.2"
 # 1.14: a 1.13 client's patcher drops the worker ResolverConfig's
 # `domains: []` (AGENTS.md Gotcha #7), and apply-worker.sh refuses the result.
 # A 1.14 client against 1.13 nodes (apply-control.sh, talosctl upgrade) is not
