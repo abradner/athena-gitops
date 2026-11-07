@@ -54,6 +54,10 @@ spec:
     # missing line.
     - server: 'https://kubernetes.default.svc'
       namespace: cloudflared
+    # athena's heartbeat to the DR power controller (cluster/core/deimos-heartbeat).
+    # Missing when that landed, with exactly the symptom described above.
+    - server: 'https://kubernetes.default.svc'
+      namespace: deimos-heartbeat
   # Core installs CRDs, webhooks, RBAC, APIServices — cluster scope required.
   clusterResourceWhitelist:
     - group: '*'
