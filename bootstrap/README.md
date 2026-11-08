@@ -198,8 +198,12 @@ to get right:
   - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
   - `kubectl describe node` shows the label, and no `athena.asn.casa/scratch`
-    taint (a node configured before the taint was dropped still carries it:
-    `kubectl taint node <name> athena.asn.casa/scratch=nvme:PreferNoSchedule-`);
+    taint. A node configured before the taint was dropped still carries it.
+    **Remove it by hand before applying the new config to that node live**
+    (`kubectl taint node <name> athena.asn.casa/scratch=nvme:PreferNoSchedule-`):
+    Talos may otherwise try to remove the taint itself, NodeRestriction refuses
+    that (below), and the refusal can block the node's labels too. Not tested;
+    a rebuild from maintenance mode is unaffected;
   - `talosctl -n <ip> get resolvers` shows `searchDomains: []`. This only
     means something from Talos 1.14, which applies DHCP search domains; 1.13
     ignores them, so on 1.13 it can't fail. On 1.14, check it **before any

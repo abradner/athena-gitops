@@ -18,8 +18,8 @@ infrastructure repo, per the public/private split in `AGENTS.md`.
   Gotchas #4.
 - **Fix:** every worker now puts its whole EPHEMERAL volume on "the NVMe" through one
   `VolumeConfig` in the shared template. The SD card is boot-only. That same definition covers
-  the new 128 GB scratch workers, so they differ from the rest only by a label and a soft taint (the taint was dropped in
-  2026-11; see `bootstrap/talos/worker-nvme.patch.yaml`).
+  the new 128 GB scratch workers, so they differ from the rest only by a label and a soft taint
+  (the taint was dropped in 2026-11; see `bootstrap/talos/worker-nvme.patch.yaml`).
 - **Upgrades are a separate problem.** The workers are Raspberry Pi CM5 Lites, which official
   Talos couldn't boot from SD when this was written. It can from 1.14.1. Moving a worker onto
   the pinned Image Factory image has its own runbook: [`runbook-cm5-worker-upgrade.md`](runbook-cm5-worker-upgrade.md).
