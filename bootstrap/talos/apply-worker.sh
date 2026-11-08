@@ -89,6 +89,29 @@ hostname_patch() {
   printf '{"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-%s-%s","auto":"off"}' "$1" "${2##*.}"
 }
 
+# Every node's name comes from its address, so every address must be a dotted
+# IPv4, and no two nodes may end up with the same name (an address in two
+# lists, or the same last octet). Checked before anything is rendered or applied.
+names=()
+check_name() {
+  local ip="$1" n
+  if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo "worker address '$ip' is not a dotted IPv4; its name is derived from the last octet. Nothing was applied." >&2
+    exit 1
+  fi
+  for n in "${names[@]}"; do
+    if [ "$n" = "${ip##*.}" ]; then
+      echo "two workers would both be named ...-${ip##*.} (an address listed twice, or a repeated last octet). Nothing was applied." >&2
+      exit 1
+    fi
+  done
+  names+=("${ip##*.}")
+}
+for ip in "${WORKER_IP[@]}" "${NVME_WORKER_IP[@]}"; do check_name "$ip"; done
+for entry in "${GPU_WORKER_IP[@]}" "${GPU_VM_WORKER_IP[@]}"; do
+  split_gpu_entry "$entry"; check_name "$ip"
+done
+
 # One rendered file per node: the hostname differs.
 for ip in "${WORKER_IP[@]}"; do
   render "worker-$ip" @watchdog.patch.yaml "$(hostname_patch arm64 "$ip")"

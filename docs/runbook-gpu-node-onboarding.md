@@ -112,8 +112,13 @@ cd bootstrap/talos
 talosctl apply-config --insecure -n <ip> -e <ip> \
   --file worker.yaml \
   --config-patch @worker-gpu.patch.yaml \
-  --config-patch '{"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"<gen>"}}}'
+  --config-patch '{"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"<gen>"}}}' \
+  --config-patch '{"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-amd64-<last octet of ip>","auto":"off"}'
 ```
+
+The last patch gives the node its fixed name, as `apply-worker.sh` does
+(`bootstrap/README.md`, "Worker names are fixed"); without it the next
+`apply-worker.sh` run renames the node and leaves a stale `Node` behind.
 
 Use the 1.14 talosctl `bootstrap/mise.toml` pins: a 1.13 client's
 `--config-patch` drops the worker `ResolverConfig`'s `domains: []` (AGENTS.md
@@ -343,6 +348,7 @@ Onboarding, by section:
    talosctl machineconfig patch worker.yaml \
      --patch @worker-gpu-vm.patch.yaml \
      --patch '{"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"<gen>"}}}' \
+     --patch '{"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-amd64-<last octet of ip>","auto":"off"}' \
      -o /tmp/gpu-vm.yaml
    talosctl validate --mode metal --strict -c /tmp/gpu-vm.yaml
    ```

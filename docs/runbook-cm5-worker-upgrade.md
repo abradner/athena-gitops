@@ -186,17 +186,22 @@ node's current card, before starting.
    `talosctl -n $W wipe disk nvme0n1 --insecure`. This is the step that puts EPHEMERAL on the
    NVMe; see `docs/runbook-worker-ephemeral-relocation.md` for what must not be on that disk.
 5. **Apply** with `apply_one` (above), reading the dry-run first. Just before it, delete the
-   old `Node` object (drained in step 2), so the rebuilt machine registers fresh under the same
-   name instead of inheriting a stale object: `NODE=athena-arm64-${W##*.}; kubectl delete node <old name>`.
-   The old name is `$NODE` for a node already on the naming scheme, or its `talos-xxx-yyy` name
-   if not.
+   old `Node` object (drained in step 2), so the rebuilt machine registers fresh under its fixed
+   name instead of inheriting a stale object. `$NODE` still holds the old name from step 2 (the
+   fixed name for a node already on the scheme, a `talos-xxx-yyy` name if not):
+
+   ```bash
+   kubectl delete node "$NODE"          # the old object, drained in step 2
+   NODE=athena-arm64-${W##*.}           # the name it will register under
+   ! kubectl get node "$NODE" 2>/dev/null || echo "STOP: $NODE still exists"
+   ```
 6. **Join, and cordon at once.** The node comes back with a new machine identity under its fixed
    name, and it registers **schedulable**: the old node's drain in step 2 does not carry over.
    Cordon it the moment it appears, before anything else:
 
    ```bash
-   until kubectl get node "$NODE" >/dev/null 2>&1; do sleep 2; done
-   kubectl cordon "$NODE"
+   for i in $(seq 300); do kubectl get node "$NODE" >/dev/null 2>&1 && break; sleep 2; done
+   kubectl cordon "$NODE"               # fails if it never registered (10 min): stop and look"
    kubectl get pods -A -o wide --field-selector spec.nodeName=$NODE   # only DaemonSet pods expected
    ```
 
