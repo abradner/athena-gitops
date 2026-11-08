@@ -122,13 +122,27 @@ setup 'WORKER_IP=("w1"); NVME_WORKER_IP=("n1" "n2"); GPU_WORKER_IP=("g1:9.5"); G
 run
 if [ "$status" -eq 0 ] && [ "$(applies)" -eq 5 ] \
   && [ "$(logline 'patched=no domains=\[\] mode=600 ')" -eq 5 ] \
-  && [ "$(logline '^node=w1 .* patches=@watchdog.patch.yaml$')" -eq 1 ] \
-  && [ "$(logline '^node=n[12] .* patches=@worker-nvme.patch.yaml @watchdog.patch.yaml$')" -eq 2 ] \
-  && [ "$(logline '^node=g1 .* patches=@worker-gpu.patch.yaml @watchdog.patch.yaml {"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"9.5"}}}$')" -eq 1 ] \
-  && [ "$(logline '^node=v1 .* patches=@worker-gpu-vm.patch.yaml @watchdog.patch.yaml {"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"11"}}}$')" -eq 1 ]; then
-  pass "1 base + 2 scratch + 1 GPU + 1 GPU VM applied correctly"
+  && [ "$(logline '^node=w1 .* patches=@watchdog.patch.yaml {"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-arm64-w1","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=n1 .* patches=@worker-nvme.patch.yaml @watchdog.patch.yaml {"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-arm64-n1","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=n2 .* patches=@worker-nvme.patch.yaml @watchdog.patch.yaml {"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-arm64-n2","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=g1 .* patches=@worker-gpu.patch.yaml @watchdog.patch.yaml {"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"9.5"}}} {"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-amd64-g1","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=v1 .* patches=@worker-gpu-vm.patch.yaml @watchdog.patch.yaml {"machine":{"nodeLabels":{"spritz.dev/gpu-gen":"11"}}} {"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-amd64-v1","auto":"off"}$')" -eq 1 ]; then
+  pass "1 base + 2 scratch + 1 GPU + 1 GPU VM applied correctly, each with its own hostname"
 else
   fail "normal run: status=$status"; cat "$work/apply.log" >&2; echo "$output" >&2
+fi
+
+echo "• the hostname is the address's last octet, per node, arch by class"
+setup 'WORKER_IP=("10.0.0.21" "10.0.0.22"); NVME_WORKER_IP=("10.0.0.31"); GPU_WORKER_IP=("10.0.0.41:9"); GPU_VM_WORKER_IP=()'
+run
+if [ "$status" -eq 0 ] && [ "$(applies)" -eq 4 ] \
+  && [ "$(logline '^node=10.0.0.21 .*"hostname":"athena-arm64-21","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=10.0.0.22 .*"hostname":"athena-arm64-22","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=10.0.0.31 .*"hostname":"athena-arm64-31","auto":"off"}$')" -eq 1 ] \
+  && [ "$(logline '^node=10.0.0.41 .*"hostname":"athena-amd64-41","auto":"off"}$')" -eq 1 ]; then
+  pass "names athena-arm64-21/22/31, athena-amd64-41; two workers never share a file"
+else
+  fail "hostnames: status=$status"; cat "$work/apply.log" >&2; echo "$output" >&2
 fi
 
 echo "• rendered configs (cluster PKI) are removed on exit"

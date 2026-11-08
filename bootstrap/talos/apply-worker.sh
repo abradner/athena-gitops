@@ -78,23 +78,36 @@ render() {
   fi
 }
 
-# Ordinary and scratch workers share one rendered file per class.
-render worker @watchdog.patch.yaml
-# Scratch workers: same base config plus a scheduling patch (label + soft
-# taint). See worker-nvme.patch.yaml for why it is a patch.
-if [ "${#NVME_WORKER_IP[@]}" -gt 0 ]; then
-  render scratch @worker-nvme.patch.yaml @watchdog.patch.yaml
-fi
-# GPU workers: one file per node, since the generation label differs.
+# hostname_patch <arch> <ip>: a HostnameConfig patch naming the node
+# athena-<arch>-<last octet of its address>. A fixed name survives rebuilds
+# (Talos's "auto: stable" name changes with the machine's identity, leaving a
+# stale Node object every time), and the octet makes the name and the address
+# map onto each other. Computed from athena.zsh, so no name is committed.
+# Applying this to a node still on an auto name renames it: it registers as a
+# new Node, and the old Node object has to be deleted by hand.
+hostname_patch() {
+  printf '{"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-%s-%s","auto":"off"}' "$1" "${2##*.}"
+}
+
+# One rendered file per node: the hostname differs.
+for ip in "${WORKER_IP[@]}"; do
+  render "worker-$ip" @watchdog.patch.yaml "$(hostname_patch arm64 "$ip")"
+done
+# Scratch workers: same base config plus a label. See worker-nvme.patch.yaml
+# for why it is a patch.
+for ip in "${NVME_WORKER_IP[@]}"; do
+  render "scratch-$ip" @worker-nvme.patch.yaml @watchdog.patch.yaml "$(hostname_patch arm64 "$ip")"
+done
+# GPU workers: the generation label differs per node too.
 for entry in "${GPU_WORKER_IP[@]}"; do
   split_gpu_entry "$entry"
   render "gpu-$ip" @worker-gpu.patch.yaml @watchdog.patch.yaml \
-    "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+    "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}" "$(hostname_patch amd64 "$ip")"
 done
 for entry in "${GPU_VM_WORKER_IP[@]}"; do
   split_gpu_entry "$entry"
   render "gpu-vm-$ip" @worker-gpu-vm.patch.yaml @watchdog.patch.yaml \
-    "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}"
+    "{\"machine\":{\"nodeLabels\":{\"spritz.dev/gpu-gen\":\"$gen\"}}}" "$(hostname_patch amd64 "$ip")"
 done
 
 # ---- Apply ----
@@ -103,7 +116,7 @@ for ip in "${WORKER_IP[@]}"; do
   echo "=== Applying configuration to node $ip ==="
   talosctl apply-config --insecure \
     --nodes "$ip" \
-    --file "$render_dir/worker.yaml"
+    --file "$render_dir/worker-$ip.yaml"
   echo "Configuration applied to $ip"
   echo ""
 done
@@ -112,7 +125,7 @@ for ip in "${NVME_WORKER_IP[@]}"; do
   echo "=== Applying configuration to scratch node $ip ==="
   talosctl apply-config --insecure \
     --nodes "$ip" \
-    --file "$render_dir/scratch.yaml"
+    --file "$render_dir/scratch-$ip.yaml"
   echo "Configuration applied to $ip"
   echo ""
 done

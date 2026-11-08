@@ -144,7 +144,8 @@ check() {
 
 # Apply the current worker config to ONE node in maintenance mode. Run from
 # bootstrap/talos with worker.yaml rendered. SCRATCH=1 for a scratch worker.
-# apply-worker.sh does the same for every node in athena.zsh at once.
+# apply-worker.sh does the same for every node in athena.zsh at once. The node
+# is named athena-arm64-<last octet of $W>, as apply-worker.sh names it.
 apply_one() (    # a subshell, so its traps remove the rendered PKI when it ends
   d=$(mktemp -d) && chmod 700 "$d" || exit 1
   trap 'rm -rf "$d"' EXIT
@@ -152,11 +153,12 @@ apply_one() (    # a subshell, so its traps remove the rendered PKI when it ends
   # cleaning up, so an interrupt never carries on to the apply.
   trap 'rm -rf "$d"; exit 130' INT TERM
   f="$d/node.yaml"
+  name='{"apiVersion":"v1alpha1","kind":"HostnameConfig","hostname":"athena-arm64-'"${W##*.}"'","auto":"off"}'
   if [ "${SCRATCH:-0}" = 1 ]; then
     talosctl machineconfig patch worker.yaml --patch @worker-nvme.patch.yaml \
-      --patch @watchdog.patch.yaml -o "$f" || exit 1
+      --patch @watchdog.patch.yaml --patch "$name" -o "$f" || exit 1
   else
-    talosctl machineconfig patch worker.yaml --patch @watchdog.patch.yaml -o "$f" || exit 1
+    talosctl machineconfig patch worker.yaml --patch @watchdog.patch.yaml --patch "$name" -o "$f" || exit 1
   fi
   if [ "$(yq -o=json -I=0 'select(.kind == "ResolverConfig") | .searchDomains.domains' "$f")" != "[]" ]; then
     echo "rendered config lost domains: [] (a 1.13 talosctl?); not applying" >&2; exit 1
@@ -183,16 +185,18 @@ node's current card, before starting.
 4. **Clear the NVMe** if it still carries an old layout (an Optane from before the EPHEMERAL move does):
    `talosctl -n $W wipe disk nvme0n1 --insecure`. This is the step that puts EPHEMERAL on the
    NVMe; see `docs/runbook-worker-ephemeral-relocation.md` for what must not be on that disk.
-5. **Apply** with `apply_one` (above), reading the dry-run first. Record the node list just
-   before it, so the replacement can be spotted the moment it registers:
-   `before=$(kubectl get nodes -o name | sort)`.
-6. **Join, and cordon at once.** The node comes back with a new machine identity and a new
-   Kubernetes node name, and it registers **schedulable**: the old node's drain in step 2 does
-   not carry over. Cordon it the moment it appears, before anything else:
+5. **Apply** with `apply_one` (above), reading the dry-run first. Just before it, delete the
+   old `Node` object (drained in step 2), so the rebuilt machine registers fresh under the same
+   name instead of inheriting a stale object: `NODE=athena-arm64-${W##*.}; kubectl delete node <old name>`.
+   The old name is `$NODE` for a node already on the naming scheme, or its `talos-xxx-yyy` name
+   if not.
+6. **Join, and cordon at once.** The node comes back with a new machine identity under its fixed
+   name, and it registers **schedulable**: the old node's drain in step 2 does not carry over.
+   Cordon it the moment it appears, before anything else:
 
    ```bash
-   until NEW=$(comm -13 <(printf '%s\n' "$before") <(kubectl get nodes -o name | sort)) && [ -n "$NEW" ]; do sleep 2; done
-   kubectl cordon "$NEW"; NODE=${NEW#node/}
+   until kubectl get node "$NODE" >/dev/null 2>&1; do sleep 2; done
+   kubectl cordon "$NODE"
    kubectl get pods -A -o wide --field-selector spec.nodeName=$NODE   # only DaemonSet pods expected
    ```
 
