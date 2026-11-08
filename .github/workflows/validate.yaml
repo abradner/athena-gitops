@@ -81,6 +81,29 @@ jobs:
         with:
           version: v4.3.1
 
+      # Six of the chart repos (all on github.io) serve their chart tarballs
+      # from GitHub release assets, which can be down for hours while GitHub
+      # reports green. Keep helm's cache (indexes and fetched charts) and its
+      # repo list between runs, so a chart already rendered once does not
+      # need them again. Proven offline: with both directories warm, every
+      # https-repo chart renders with all network refused (OCI charts still
+      # pull from their registry). The key follows cluster/, and restore-keys
+      # take the newest older cache.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/helm
+            ~/.config/helm
+          key: helm-charts-${{ hashFiles('cluster/**/*.yaml') }}
+          restore-keys: helm-charts-
+
+      # A restored repo list holds old indexes, and `helm repo add` keeps an
+      # existing entry as it is, so a chart bumped since then would not be
+      # found. Refresh them first. If the repos cannot be reached, the cached
+      # indexes still render every chart they already list.
+      - name: Refresh cached Helm repo indexes
+        run: helm repo update || echo "::warning::helm repo update failed (or nothing cached yet); rendering from what is cached"
+
       - name: Install kubeconform
         run: ./scripts/ci/install_from_image.sh "$KUBECONFORM_IMAGE" /kubeconform kubeconform
 

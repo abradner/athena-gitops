@@ -29,11 +29,14 @@ for attempt in 1 2 3; do
   echo "::warning::pulling $image failed (attempt $attempt of 3), retrying"
   sleep $((attempt * 10))
 done
-trap 'docker rm "$container" >/dev/null' EXIT
+trap 'docker rm "$container" >/dev/null || true' EXIT
 
 staging=$(mktemp -d)
 docker cp "$container:$path" "$staging/$name"
 if [ -w "$dest" ]; then install -m 0755 "$staging/$name" "$dest/$name"; else sudo install -m 0755 "$staging/$name" "$dest/$name"; fi
 rm -rf "$staging"
-# Prove it runs on this machine (yq takes --version, kubeconform -v).
-"$dest/$name" --version 2>/dev/null || "$dest/$name" -v
+# Prove it runs on this machine.
+case "$name" in
+  kubeconform) "$dest/$name" -v ;;
+  *) "$dest/$name" --version ;;
+esac
