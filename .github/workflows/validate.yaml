@@ -5,23 +5,26 @@ on:
     branches: [main]
   pull_request:
 
+# Tools come out of their own images, pinned by digest, not GitHub release
+# assets (scripts/ci/install_from_image.sh says why). To bump one, change the
+# tag and the digest together: `docker buildx imagetools inspect <image:tag>`
+# prints the index digest; the image must carry linux/arm64.
+env:
+  YQ_IMAGE: docker.io/mikefarah/yq:4.44.3@sha256:5b3d851bf28b04ef902fee86305f4dd7e063919c1cafedab2042adb16221c025
+  KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c
+
 jobs:
   yaml-syntax:
     name: YAML syntax (yq)
-    # arm64 runners fleet-wide: matches the cluster's architecture and the
-    # binaries below are downloaded for arm64 — keep runner arch and asset
-    # names in step if either ever changes.
+    # arm64 runners fleet-wide: matches the cluster's architecture. The tool
+    # images are multi-arch, so `docker create` picks the runner's.
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       # Pin yq rather than relying on the runner's preinstalled copy —
       # validate_yaml.sh needs mikefarah yq 4 (same as mise.toml pins locally).
       - name: Install yq
-        env:
-          YQ_VERSION: v4.44.3
-        run: |
-          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_arm64"
-          sudo chmod +x /usr/local/bin/yq
+        run: ./scripts/ci/install_from_image.sh "$YQ_IMAGE" /usr/bin/yq yq
       - run: ./scripts/validate_yaml.sh
       # Shares this job for its yq install. Guards the worker DHCP
       # search-domain override through apply-worker.sh (AGENTS.md Gotcha #7).
@@ -39,11 +42,7 @@ jobs:
       # with yq, and skips without it: install it so the skip cannot happen
       # here.
       - name: Install yq
-        env:
-          YQ_VERSION: v4.44.3
-        run: |
-          sudo curl -sSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_arm64"
-          sudo chmod +x /usr/local/bin/yq
+        run: ./scripts/ci/install_from_image.sh "$YQ_IMAGE" /usr/bin/yq yq
       - name: Run
         # An unset shell runs `bash -e` without pipefail: say it, or tee's
         # status would hide a failing run.
@@ -58,11 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install kubeconform
-        env:
-          KUBECONFORM_VERSION: v0.6.7
-        run: |
-          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-arm64.tar.gz" | tar xz kubeconform
-          sudo mv kubeconform /usr/local/bin/
+        run: ./scripts/ci/install_from_image.sh "$KUBECONFORM_IMAGE" /kubeconform kubeconform
       # bootstrap/ is excluded: talos templates use {{ }} placeholders and
       # aren't valid k8s manifests until hydrated.
       - name: Validate manifests
@@ -87,11 +82,7 @@ jobs:
           version: v4.3.1
 
       - name: Install kubeconform
-        env:
-          KUBECONFORM_VERSION: v0.6.7
-        run: |
-          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-arm64.tar.gz" | tar xz kubeconform
-          sudo mv kubeconform /usr/local/bin/
+        run: ./scripts/ci/install_from_image.sh "$KUBECONFORM_IMAGE" /kubeconform kubeconform
 
       # An Application is a few valid lines that expand into hundreds of
       # manifests. yq and kubeconform above both check the repo's own YAML and
