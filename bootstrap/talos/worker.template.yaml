@@ -208,13 +208,10 @@ machine:
         # 2026-08-23.
         disk: /dev/mmcblk0 # The disk used for installations.
         # Image Factory schematic worker-cm5.schematic.yaml (03fea4ec…) at
-        # v1.14.4: the rpi_5 overlay plus sdhci.debug_quirks2=4, no
-        # extensions. A CM5 worker not yet rebuilt may still run the older
-        # community v1.13.2 build (which worker is on what: the private
-        # infrastructure repo). docs/runbook-cm5-worker-upgrade.md, not this line, is
-        # how a CM5 worker changes version: the proven path is a fresh SD card,
-        # not `talosctl upgrade` across the jump.
-        # Pinned by digest ONLY. v1.14.4 is the tag, kept here because the ref
+        # v1.14.5: the rpi_5 overlay plus sdhci.debug_quirks2=4, no
+        # extensions. docs/runbook-cm5-worker-upgrade.md, not this line, is
+        # how a CM5 worker changes version.
+        # Pinned by digest ONLY. v1.14.5 is the tag, kept here because the ref
         # cannot carry it: a Talos 1.14.4 node fails `talosctl upgrade --image
         # repo:tag@sha256:…` ("installer image … not found in containerd
         # store"), while the digest-only form works (bootstrap/zagreus,
@@ -223,7 +220,7 @@ machine:
         # (First installs never read this line: the SD card is flashed with
         # the same schematic's metal-arm64.raw.xz, and install is skipped when
         # booted from disk.) The GPU worker patches override this line.
-        image: factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:120e60cff87cdd0cd50fceff9c115b375675b622eabc6071f11928b8079dd9ca # Allows for supplying the image used to perform the installation.
+        image: factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:0c81ee664132e401db9f6a8541556590115d8b71ad0fee24297a674efbd17638 # Allows for supplying the image used to perform the installation.
         wipe: false # Indicates if the installation disk should be wiped at installation time.
         grubUseUKICmdline: true # Indicates if legacy GRUB bootloader should use kernel cmdline from the UKI instead of building it on the host.
         
@@ -634,7 +631,10 @@ auto: stable # A method to automatically generate a hostname for the machine.
 # `domains: []` must stay an explicit empty list, because unset means
 # "inherit DHCP" (siderolabs/talos 1c156458a). disableDefault also drops the
 # hostname-derived domain. 1.13 accepts the document and ignores DHCP domains
-# anyway, so a worker still on 1.13 carries it harmlessly.
+# anyway, so a worker still on 1.13 carries it harmlessly. But a 1.13
+# *server* also drops the empty list when it re-serializes a patch (seen in
+# a `patch mc --dry-run` diff, 2026-11-09), so add this document to a node
+# moving from 1.13 only after its first 1.14 boot.
 #
 # Never route this config through a 1.13 talosctl's patcher (`--config-patch`,
 # `machineconfig patch`, `patch mc`): it re-serializes and drops the empty

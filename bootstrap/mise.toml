@@ -5,8 +5,9 @@
 kubectl = "1.37.0"
 # 1.14: a 1.13 client's patcher drops the worker ResolverConfig's
 # `domains: []` (AGENTS.md Gotcha #7), and apply-worker.sh refuses the result.
-# A 1.14 client against 1.13 nodes (apply-control.sh, talosctl upgrade) is not
-# verified: run `talosctl version` against the node before relying on it.
+# A 1.14 client upgraded athena's CM5 workers and control planes from 1.13 in
+# place (2026-11-09). The GPU worker VM is still on 1.13: run `talosctl version`
+# against a node before relying on the client against it.
 talosctl = "1.14"
 
 [env]
