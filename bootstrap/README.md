@@ -160,10 +160,8 @@ nodes, the forced-hang test and rollback:
 **CM5 worker versions change through
 [docs/runbook-cm5-worker-upgrade.md](../docs/runbook-cm5-worker-upgrade.md).**
 The template's `install.image` pins the Image Factory installer for the CM5
-workers (`worker-cm5.schematic.yaml`, v1.14.4, by digest only). A CM5 worker
-may still be on the older community 1.13.2 build; the proven way across is a
-fresh SD card, not `talosctl upgrade`. Which worker runs what is recorded in
-the private infrastructure repo. Whenever
+workers (`worker-cm5.schematic.yaml`, v1.14.5, by digest only). Which worker
+runs what is recorded in the private infrastructure repo. Whenever
 you do run `talosctl upgrade`, pass `--image` explicitly: neither the 1.13
 nor the 1.14 talosctl default carries the Pi overlay.
 

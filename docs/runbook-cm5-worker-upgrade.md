@@ -21,6 +21,7 @@ What boots them, by Talos version (Image Factory binds the overlay per Talos rel
 | 1.14.1, bare `rpi_5` schematic | v0.2.2 | Worked on the soak board | soaked from SD, 2026-09-25 (`docs/investigation-2026-09-cm5-upstream-talos.md`) |
 | 1.14.4, bare `rpi_5` schematic | | **Boot-looped on some carriers**: the switch to 1.8 V SDR104 fails and the card never appears | zagreus bring-up, 2026-10 (`bootstrap/zagreus/README.md`) |
 | 1.14.4, `worker-cm5.schematic.yaml` (`03fea4ec…`) | | **Works**: the SD stays at 3.3 V High Speed | zagreus's CM5s (2026-10) |
+| 1.14.5, `worker-cm5.schematic.yaml` | v0.2.2 | **Works**, including warm reboots | every athena CM5 worker, in-place upgrade plus three warm reboots each |
 
 `03fea4ec…` is the `rpi_5` overlay plus the kernel argument `sdhci.debug_quirks2=4`, with no
 extensions. Why the bare schematic boots on some boards and not others was not established.
@@ -43,9 +44,12 @@ in the cluster depends on them matching, but treat the two as different machines
   `talosctl -n $W get extensions` (Factory nodes show only the virtual `schematic` entry with its
   id; the community build shows `iscsi-tools` and `util-linux-tools`). Never assume from the
   node's age or role.
-- **One config fits both.** The template's `ResolverConfig` is harmless on 1.13 and required on
-  1.14, and its `install.image` is only read by an upgrade or a fresh install.
-- **Never `talosctl upgrade` a community-build node** (see "Upgrading in place"): rebuild it.
+- **One config fits both, with one catch.** 1.13 ignores the template's `ResolverConfig`, and a
+  1.13 server drops its `domains: []`, so check `get resolverspecs --namespace
+  network-config` after a node's first 1.14 boot and re-add the document if the empty list is
+  gone. `install.image` is only read by an upgrade or a fresh install.
+- **A community-build node can be upgraded in place** to the Factory image ("Upgrading in place",
+  now proven). This used to say never to, because the path was unproven.
 - **Keep the community image** while any node runs it: it is that node's recovery path. It is
   **`johnlaur/talos-builder` v1.13.2** (Raspberry Pi vendor kernel, `iscsi-tools` +
   `util-linux-tools`), asset `metal-arm64-rpi5.raw.xz`, sha256
@@ -62,8 +66,8 @@ the public/private split in `AGENTS.md`. Update it there after each rebuild.
 | | |
 |---|---|
 | Schematic | `bootstrap/talos/worker-cm5.schematic.yaml` → `03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32` |
-| Installer (in `worker.template.yaml`) | `factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:120e60cff87cdd0cd50fceff9c115b375675b622eabc6071f11928b8079dd9ca` (v1.14.4) |
-| Flash image | the same schematic's v1.14.4 `metal-arm64.raw.xz`, sha256 `817dedb3c38f26fa8e6177fea6647ab2b9f166534ecb7c7b50883925aedc28a1` (as recorded for zagreus at #193) |
+| Installer (in `worker.template.yaml`) | `factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32@sha256:0c81ee664132e401db9f6a8541556590115d8b71ad0fee24297a674efbd17638` (v1.14.5) |
+| Flash image | the same schematic's v1.14.5 `metal-arm64.raw.xz` from Image Factory (no hash pin: see below) |
 
 **Pin by digest only.** A Talos 1.14.4 node fails `talosctl upgrade --image repo:tag@sha256:…`
 with "installer image … not found in containerd store" after pulling it; the digest-only form
@@ -71,27 +75,28 @@ works (measured on zagreus, 2026-10-19). The tag lives in the comment beside the
 
 **Why no extensions.** Nothing in this repo uses iSCSI, and an extension whose service is left
 unconfigured blocks boot and reboots the node on a timer. `util-linux-tools` supplied `fstrim`,
-which 1.14 replaces with built-in trim (`FilesystemTrimConfig`, see the follow-ups). Rebuilding a
-community-build node onto this schematic drops both extensions.
-
-**Why one jump.** Official Talos has no image that boots a CM5 Lite before 1.14.1, so a
-community-build node goes from 1.13.2 straight to Factory 1.14.4. That skips Talos's "latest
-patch of the current minor first" guidance, which is one reason the path below is a fresh
-install rather than an upgrade.
+which 1.14 replaces with built-in trim (`FilesystemTrimConfig`, see the follow-ups).
 
 ### Verify the pin before using it
 
-The schematic ID is a content hash, so re-posting the schematic must return the same ID:
+The schematic ID is a content hash, so re-posting the schematic must return the same ID, and the
+installer tag must resolve to the pinned digest:
 
 ```bash
 curl -fsS -X POST --data-binary @bootstrap/talos/worker-cm5.schematic.yaml \
   https://factory.talos.dev/schematics                     # id must be 03fea4ec…
-IMG=factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32:v1.14.4
+IMG=factory.talos.dev/metal-installer/03fea4eca3bc739a71e1f327c381ebad9eb1cfe28b12d574ee670b201b052b32:v1.14.5
 docker buildx imagetools inspect $IMG | grep Digest        # must equal the pinned digest
 ```
 
-Check the flash image's sha256 after downloading it. Factory builds images on demand; if either
-digest ever differs, stop and find out why before using it.
+If either differs, stop and find out why before using it.
+
+**The flash image cannot be pinned by hash.** This runbook used to pin the v1.14.4
+`metal-arm64.raw.xz` by sha256 and say to stop if it differed. That check could never pass: Image
+Factory builds the disk image on demand, and three downloads of the same schematic and version
+all hashed differently, decompressed contents included. Verify the
+schematic ID and installer digest above instead; the image is only a carrier for them, and a node
+flashed from it reports its schematic in `get extensions`.
 
 ## The resolver override
 
@@ -103,8 +108,9 @@ It was reproduced on the 1.14.1 soak board: GitHub API calls failed TLS.
 `worker.template.yaml` therefore carries a `ResolverConfig` with
 `searchDomains: {disableDefault: true, domains: []}`. The explicit empty list is load-bearing:
 unset means "inherit DHCP" (siderolabs/talos `1c156458a`). A rebuilt node gets it in the config
-applied in maintenance mode, so it is in place from the node's first 1.14 boot. The 1.13 nodes
-carry it harmlessly: 1.13 ignores DHCP domains.
+applied in maintenance mode, so it is in place from the node's first 1.14 boot. A node moving
+from 1.13 gets it after its first 1.14 boot instead: 1.13 ignores DHCP domains, but a 1.13
+server drops the empty list.
 
 **Render with the 1.14 client.** A 1.13 talosctl's patcher (`--config-patch`,
 `machineconfig patch`, `patch mc`) drops `domains: []`. `bootstrap/mise.toml` pins a 1.14
@@ -129,7 +135,7 @@ That file points `TALOSCONFIG` at the rendered `talos/talosconfig.yaml`; don't o
 ```bash
 W=<Talos address>; NODE=<Kubernetes node name>   # match $W to INTERNAL-IP in: kubectl get nodes -o wide
 check() {
-  talosctl -n $W version                                     # Tag v1.14.4
+  talosctl -n $W version                                     # Tag v1.14.5
   talosctl -n $W get extensions                              # only the virtual "schematic" entry, 03fea4ec…
   talosctl -n $W dmesg | grep -E 'mmc0: new|mmc0:.*(error|-110|timeout)' | tail -3
                                                              # "new high speed …" and no errors
@@ -170,15 +176,17 @@ apply_one() (    # a subshell, so its traps remove the rendered PKI when it ends
 
 ## Procedure: rebuild from a fresh SD card
 
-This is the path that has worked on these boards. Have the flashed card in hand, and keep the
-node's current card, before starting.
+For a node that needs a new card or a clean install; otherwise "Upgrading in place" below is
+less work and is also proven. Have the flashed card in hand, and keep the node's current card,
+before starting.
 
-1. **Flash** a new SD card with the target flash image, and check its sha256 first. Keep the
-   node's current card untouched: it is the rollback.
+1. **Flash** a new SD card with the target flash image (verify the schematic and installer as in
+   "Verify the pin"; the image itself has no fixed hash). Keep the node's current card untouched:
+   it is the rollback.
 2. **Drain and shut down:** `kubectl drain $NODE --ignore-daemonsets --delete-emptydir-data`,
    then `talosctl -n $W shutdown`. Swap the card and power on.
 3. **Maintenance-mode checks** (`--insecure`): `talosctl -n $W version --insecure` shows
-   v1.14.4; `get disks --insecure` shows both the SD card and the NVMe; `dmesg` shows the SD at
+   v1.14.5; `get disks --insecure` shows both the SD card and the NVMe; `dmesg` shows the SD at
    High Speed with no errors.
 4. **Clear the NVMe** if it still carries an old layout (an Optane from before the EPHEMERAL move does):
    `talosctl -n $W wipe disk nvme0n1 --insecure`. This is the step that puts EPHEMERAL on the
@@ -224,13 +232,32 @@ specific nodes live in the private infrastructure repo.
 
 ## Upgrading in place
 
-- **Within Factory 1.14.x on this schematic:** `talosctl -n $W upgrade --image <digest-only ref>
-  --wait`, then `check`. An A/B upgrade within one overlay was proven on the 1.14.1 soak board,
-  and the digest-only form on zagreus at 1.14.4. A new patch release needs its own installer
-  digest pinned in `worker.template.yaml` first (re-run "Verify the pin").
-- **Across the jump, from the community 1.13.2 build: unproven, don't.** It changes the overlay
-  and the minor version on bare metal in one reboot, and the private infrastructure record notes
-  this path leaving a board stuck at U-Boot. Rebuild instead.
+Proven on every athena CM5 worker, one node at a time: from the community 1.13.2
+build to Factory 1.14.4, then to 1.14.5. The first step changes the overlay and the minor version
+at once and skips Talos's "latest patch of the current minor first" guidance (official Talos has
+no image that boots a CM5 Lite before 1.14.1); it worked anyway. Per node:
+
+1. `kubectl drain $NODE --ignore-daemonsets --delete-emptydir-data`. A pod with a local-path PVC
+   on this node stays Pending until the node is back; move the PVC first if that gap matters.
+2. `talosctl -n $W upgrade --image <digest-only ref>`, with the client left running until the
+   node reboots. **From 1.13, a client that disconnects early cancels the reboot**: the new
+   image is written to the other boot slot, machined logs `upgrade failed: failed to send exit
+   code … context canceled`, and the node stays up on the old version, which looks like a hang
+   from outside. Wait on the node's `boot_id` changing, not on the client.
+3. Re-cordon at once: **Talos un-cordons the node on every boot**, upgrades included.
+4. Moving from 1.13: add the `ResolverConfig` now, after the first 1.14 boot (a 1.13 server
+   drops `domains: []`). Check `get resolverspecs --namespace network-config`.
+5. Three `talosctl reboot`s, re-cordoning after each; every one must come back by itself. Then
+   `check`, then uncordon.
+
+A new patch release needs its own installer digest pinned in `worker.template.yaml` first
+(re-run "Verify the pin").
+
+**A warm-reboot hang on one node is not evidence about the build.** One CM5
+hung on warm reboots under Factory 1.14 and the community build was believed not to. The hang
+followed that node's SD card: the community build hung on it too, Factory passed on the other
+nodes, and a new card passed on both. What about the card is not established. Run the known-good build on the failing node, and the suspect build on a
+passing one, before diffing builds.
 
 ## Rollback
 
@@ -253,8 +280,11 @@ specific nodes live in the private infrastructure repo.
   under real traffic; 0 of 1,439 external probes failed in 4.5 h. Only worry if it comes with
   link resets or NotReady.
 - The Ethernet PHY interrupt can't be claimed on the RP1 pinctrl, so the driver polls. Harmless.
-- `ethtool` shows EEE "enabled - inactive", because the switch doesn't advertise EEE. A tripwire
-  if the switch ever changes; no `dtparam=eee=off` is needed today.
+- `ethtool` shows EEE "enabled - inactive", with the link partner's EEE "Not reported". This
+  runbook used to say that was because the switch doesn't advertise EEE. On athena's switch the
+  vendor-kernel build saw the same switch's EEE advert and ran EEE active, so it is the 1.14
+  kernel not negotiating EEE, not the switch. Either way Factory nodes don't run EEE; no
+  `dtparam=eee=off` is needed.
 - RX drops appeared in the first hour and did not recur. Don't pre-emptively add `EthernetConfig`
   ring sizes; watch the drop counters instead.
 - The fan header: Talos 1.14's mainline kernel has no RP1 PWM driver, so the CM5's
@@ -274,7 +304,18 @@ specific nodes live in the private infrastructure repo.
 - Workload isolation (`SecurityProfileConfig`) is off until the document is added. The soak ran
   with it on, including privileged dind, and fresh 1.14 configs turn it on by default.
 - `talosctl apply-config --mode=reboot` is gone.
-- The control-plane template still names `ghcr.io/siderolabs/installer` and still sets
-  `machine.network.disableSearchDomain`, which conflicts with a `ResolverConfig` on 1.14
-  (AGENTS.md Gotcha #7). Those nodes need an Image Factory installer and that change before their
-  1.14 upgrade.
+- Done: the control-plane template now names an Image Factory installer, drops
+  `machine.network.disableSearchDomain` (which 1.14 refuses next to a `ResolverConfig`) and
+  carries the `ResolverConfig`. A running control plane moving from 1.13 gets one patch **after
+  its first 1.14 boot** (a 1.13 server drops `domains: []`): delete the old field
+  (`machine: {network: {$patch: delete}}` where it is the only key under `network`) and add the
+  document. Then `get resolverspecs --namespace network-config` must show the `configuration`
+  layer with `[]`.
+- **Talos 1.14 moves etcd to 3.7** unless the config pins an etcd image, and the storage version
+  follows once every member has upgraded. After that, rolling a control plane back to 1.13
+  (`talosctl rollback` or a 1.13 install) would start etcd 3.6 on a 3.7 data directory: it needs
+  etcd's own downgrade procedure, or a restore from a snapshot taken before the upgrade. Take
+  that snapshot first.
+- `bootstrap/talos/apply-control.sh` sends the control-plane config through `--config-patch`
+  without checking that the rendered result kept `domains: []`, unlike `apply-worker.sh`. Add
+  the same render-then-check before the next control-plane apply.
