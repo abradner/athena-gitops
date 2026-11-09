@@ -76,7 +76,7 @@ machine:
     # machine.network.disableSearchDomain lived here until 2026-11-09. Talos
     # 1.14 refuses it alongside a ResolverConfig document ("already set in
     # v1alpha1 config"), and on 1.14 it no longer kept the CP VMs' DHCP search
-    # domain out of resolv.conf (seen live, 2026-11-09). The ResolverConfig at
+    # domain out of resolv.conf. The ResolverConfig at
     # the end of this file replaces it (AGENTS.md Gotchas #3 and #7).
     # # `interfaces` is used to define the network interface configuration.
     # interfaces:

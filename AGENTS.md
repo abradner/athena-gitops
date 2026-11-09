@@ -464,10 +464,9 @@ general rule.** Argo-specific traps have their own section above.
    - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two
      can't coexist. A config that sets it (or v1alpha1 nameservers or search domains) alongside
      a `ResolverConfig` fails validation with "already set in v1alpha1 config". Remove it in the
-     same apply that adds the document. Done in the control-plane template, and live on the
-     control planes, on 2026-11-09. A 1.14 client upgraded 1.13 nodes (workers and control
-     planes) in place that day, but a 1.13 *server* drops `domains: []` when it re-serializes a
-     patch: add the document after the node's first 1.14 boot.
+     same apply that adds the document (the control-plane template does). A 1.13 *server* drops
+     `domains: []` when it re-serializes a patch: add the document after the node's first 1.14
+     boot.
 
 ## The public/private split
 

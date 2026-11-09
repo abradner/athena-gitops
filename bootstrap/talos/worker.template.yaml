@@ -633,7 +633,7 @@ auto: stable # A method to automatically generate a hostname for the machine.
 # hostname-derived domain. 1.13 accepts the document and ignores DHCP domains
 # anyway, so a worker still on 1.13 carries it harmlessly. But a 1.13
 # *server* also drops the empty list when it re-serializes a patch (seen in
-# a `patch mc --dry-run` diff, 2026-11-09), so add this document to a node
+# a `patch mc --dry-run` diff), so add this document to a node
 # moving from 1.13 only after its first 1.14 boot.
 #
 # Never route this config through a 1.13 talosctl's patcher (`--config-patch`,
