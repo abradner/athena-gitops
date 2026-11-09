@@ -1,0 +1,102 @@
+---
+# Plain manifests read straight from the primary's paths, because nothing in
+# them differs per zone. `include` picks single files so this cluster never
+# adopts anything else in those directories.
+#
+# The http -> https redirect route on the Gateway's :80 listener.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-http-redirect
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/core/networking
+    directory:
+      include: 'http-redirect-route.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# The tunnel connectors' config, credentials and scrape: the same two tunnels
+# as the primary (a tunnel is one Cloudflare object; this zone's connectors
+# join it). The Deployments are NOT read from there, because the primary runs
+# two replicas and this zone runs none: see cluster/boreas/cloudflared/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-cloudflared-config
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/core/cloudflared
+    directory:
+      include: '{namespace.yaml,config.yaml,external-secrets.yaml,monitoring.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cloudflared
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+---
+# The connector Deployments, held at zero (design §3, "Serving policy": the
+# primary serves while it is green). Their own Application so that one
+# setting can be scoped to them: Argo ignores spec.replicas, so a scale-up by
+# hand or by the watchdog is not reverted by selfHeal within seconds.
+#
+# The watchdog that would scale them (design Phase 5) does not exist yet.
+# Until it does, failing over to this zone is a manual scale, in
+# cluster/boreas/README.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-cloudflared-connectors
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/boreas/cloudflared
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cloudflared
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      # The namespace also comes from boreas-cloudflared-config; whichever
+      # syncs first creates it.
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

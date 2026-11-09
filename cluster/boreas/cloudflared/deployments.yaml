@@ -1,0 +1,192 @@
+# DERIVED COPY of the Deployments in cluster/core/cloudflared/deployments.yaml,
+# with replicas: 0. Move them together: an image bump or a probe change there
+# belongs here too in the same commit. The primary's comments apply unchanged
+# and are kept in that file only.
+#
+# The primary's PodDisruptionBudgets are left out: with zero replicas a
+# minAvailable of 1 can never be met, and on one node there is nowhere to
+# drain to anyway.
+#
+# replicas is set once, at creation; after that Argo ignores the field
+# (boreas-cloudflared-connectors), so whatever the watchdog or an operator
+# last set stands.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-personal
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: personal
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        tunnel: personal
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: cloudflared
+              tunnel: personal
+      containers:
+        - name: cloudflared
+          image: docker.io/cloudflare/cloudflared:2026.10.4
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config.yaml
+            - --credentials-file
+            - /etc/cloudflared/creds/credentials.json
+            - run
+            - $(TUNNEL_ID)
+          env:
+            - name: TUNNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-personal
+                  key: tunnel-id
+          ports:
+            - name: metrics
+              containerPort: 2000
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared
+              readOnly: true
+            - name: creds
+              mountPath: /etc/cloudflared/creds
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: cloudflared-personal
+            items:
+              - key: credentials.json
+                path: credentials.json
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-simplytics
+  namespace: cloudflared
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: cloudflared
+      tunnel: simplytics
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+        tunnel: simplytics
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: cloudflared
+              tunnel: simplytics
+      containers:
+        - name: cloudflared
+          image: docker.io/cloudflare/cloudflared:2026.10.4
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config.yaml
+            - --credentials-file
+            - /etc/cloudflared/creds/credentials.json
+            - run
+            - $(TUNNEL_ID)
+          env:
+            - name: TUNNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-simplytics
+                  key: tunnel-id
+          ports:
+            - name: metrics
+              containerPort: 2000
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared
+              readOnly: true
+            - name: creds
+              mountPath: /etc/cloudflared/creds
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: cloudflared-simplytics
+            items:
+              - key: credentials.json
+                path: credentials.json

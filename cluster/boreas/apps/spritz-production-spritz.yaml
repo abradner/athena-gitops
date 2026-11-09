@@ -1,0 +1,44 @@
+---
+# Points at the SAME path the primary's own Application uses: two Argo
+# instances, two clusters, one set of manifests, so an image bump reaches both
+# zones without anything being copied or kept in step by hand.
+#
+# Web tier only. The excluded files are this zone's background side, held
+# off until a promotion (cluster/boreas/README.md, "Warm web tier only").
+# Excluding is not the same as scaling to zero: Argo prunes what it no longer
+# renders, so nothing can drift them back up, and turning them on is a
+# one-line, reviewable change to this exclusion.
+#
+# solid-queue.yaml: the supervisor and the variant workers. Running them here
+# too would put job processing across the WAN to the primary's database.
+# temporal-worker.yaml: no Temporal frontend is reachable from this zone yet.
+# transcoder.yaml: needs an Intel iGPU, which this zone does not have; it
+# would sit Pending forever.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-spritz-production-spritz
+  namespace: argocd
+spec:
+  project: boreas-workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-production/spritz
+    directory:
+      exclude: '{solid-queue.yaml,temporal-worker.yaml,transcoder.yaml}'
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

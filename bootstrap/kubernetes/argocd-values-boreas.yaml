@@ -1,0 +1,27 @@
+# Argo CD values for the boreas zone. Deliberately smaller than the primary's.
+#
+# boreas is one VM that carries the control plane, Argo and the production web
+# tier together, so components the zone does not use are switched off: there
+# are no ApplicationSets in cluster/boreas, no SSO (the API is reached over the
+# mesh, never published), and no notifications (alerting runs on the primary's
+# observability tier, which watches this zone from outside).
+#
+# Installed once by hand (helm install, see cluster/boreas/README.md) and not
+# self-managed: upgrade it with the same helm command at the version the
+# primary's cluster/core/argocd/argocd-app.yaml pins.
+#
+# Keep the shared setting in step with argocd-values.yaml.
+configs:
+  params:
+    # No TLS in Argo, as on the primary. Here nothing routes to the server at
+    # all: it is reached by port-forward from a host with the kubeconfig.
+    server.insecure: true
+
+dex:
+  enabled: false
+notifications:
+  enabled: false
+# This chart has no applicationSet.enabled key; scaling to zero is how you
+# switch it off.
+applicationSet:
+  replicas: 0

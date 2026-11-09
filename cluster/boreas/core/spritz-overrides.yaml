@@ -1,0 +1,33 @@
+---
+# Per-zone overrides for spritz-production (docs/design-multi-az-boreas.md
+# §4b, option 2). Consumed as the LAST envFrom entry on every spritz container
+# (the optional `cluster-overrides` ref in cluster/apps/spritz-production/
+# spritz), so a key here wins over spritz-config and anything absent falls
+# through unchanged.
+#
+# DELIBERATELY EMPTY FOR NOW. Both keys the design expects here are waiting on
+# something that does not exist yet, and an override pointing at nothing is
+# worse than none:
+#
+#   GARAGE_ENDPOINT     this zone's own Garage node. Until it joins the
+#                       primary's Garage cluster, objects are read and written
+#                       at the primary site over the site-to-site VPN, which
+#                       is what spritz-config already says.
+#   TEMPORAL_HOST_PORT  the primary's Temporal frontend, reached across the
+#                       VPN. It is ClusterIP-only today, so nothing outside
+#                       the primary can reach it. The worker that would use it
+#                       is excluded here (cluster/boreas/apps).
+#
+# The database host is not overridden and will not be: this zone writes to the
+# primary across the VPN, and promotion changes where that name points, not
+# the manifests.
+#
+# Kept as an empty object rather than left out so each of those lands as a
+# one-line diff, and so the reference is exercised (not optional-and-absent)
+# from the first sync.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-overrides
+  namespace: spritz-production
+data: {}

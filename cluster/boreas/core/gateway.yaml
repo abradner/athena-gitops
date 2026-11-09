@@ -1,0 +1,76 @@
+---
+# DERIVED COPY of cluster/core/networking/gateway.yaml, cut down to the
+# listeners this zone's routes name: the production web tiers in
+# cluster/boreas/apps, plus the tunnel entrance. No staging listeners, no
+# *.athena.asn.casa listener (internal hostnames never run here).
+#
+# Move them together: a production listener added on the primary for an app
+# that also runs here (or a changed tunnel listener) must be added here in the
+# same change, or that route reads NoMatchingParent in this zone. The
+# primary's comments on each listener apply here unchanged and are kept in
+# that file only.
+#
+# Nothing reaches this Gateway from outside the cluster except through the
+# tunnel connectors, which dial the https-tunnel listener's ClusterIP. Its
+# address comes from a Cilium LB pool on the zone-private network, applied at
+# bootstrap and kept in the private infra repo (as the primary's pool is kept
+# in bootstrap/), so the Gateway reports Programmed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-gateway
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https-mcg-rest
+      port: 443
+      protocol: HTTPS
+      hostname: "mcg.rest"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: mcg-rest-tls
+    - name: https-rabalex
+      port: 443
+      protocol: HTTPS
+      hostname: "rabalex.wedding"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: rabalex-wedding-tls
+    - name: https-spritz-events
+      port: 443
+      protocol: HTTPS
+      hostname: "spritz.events"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: spritz-events-tls
+    - name: https-tunnel
+      port: 8443
+      protocol: HTTPS
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: athena-wildcard-tls
