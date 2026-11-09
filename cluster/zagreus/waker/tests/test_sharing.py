@@ -645,7 +645,9 @@ class LiveRig(SharedRig):
             # always-on node and zagreus-ci's floor that came with it have
             # their own tests (test_always_on.py, LiveRig(always_on=True)).
             self.cfg["nodes"] = [n for n in self.cfg["nodes"] if not n.get("alwaysOn")]
-            self.cfg["sets"] = [{k: v for k, v in s.items() if not (s["name"] == CI and k == "floor")}
+            self.cfg["sets"] = [{k: v for k, v in s.items()
+                                 if not (s["name"] == CI and k == "floor")
+                                 and not (s["name"] == X64 and k in ("floor", "pinnedToSlots"))}
                                 for s in self.cfg["sets"]]
         self.clock = Clock()
         self.kube = FakeKube(self.cfg, self.clock)

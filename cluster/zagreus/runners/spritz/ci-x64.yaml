@@ -62,15 +62,11 @@ spec:
                         - key: zagreus.asn.casa/role
                           operator: In
                           values: [amd64-runner]
-                preferredDuringSchedulingIgnoredDuringExecution:
-                  # Heavy jobs scale with cores (Vitest workers, parallel
-                  # rspec): prefer the two 8-thread i7s over the 4-thread
-                  # i5 (zag-amd64-03), which still takes jobs once they are
-                  # full. A preference only: the waker's slots decide what
-                  # is offered, this only decides where it lands.
-                  - weight: 50
-                    preference:
-                      matchExpressions:
+                        # Pinned to the set's only slot nodes (waker.conf:
+                        # "pinnedToSlots", floor 2). A claim the floor makes
+                        # while they sleep waits for them, and can never land
+                        # on 03 or the always-on VM; unpinned, the floor would
+                        # stand down whenever 03 is up (waker README, "Floor").
                         - key: kubernetes.io/hostname
                           operator: In
                           values: [zag-amd64-01, zag-amd64-02]
