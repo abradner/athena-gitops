@@ -140,6 +140,24 @@ class Procedures(unittest.TestCase):
         self.assertNotIn(VM, r.talos.calls)
         self.assertFalse(r.kube.nodes[VM]["spec"].get("unschedulable"))
 
+    def test_the_asleep_label_sync_never_writes_it(self):
+        # Review of 710b204: the label sync patched every configured node,
+        # the always-on one included (and logged a 404 every pass before it
+        # joined).
+        r = AlwaysOnRig()
+        r.put_talos_to_sleep()
+        r.tick(advance=3 * 3600)
+        self.assertFalse([x for x in r.kube.writes if x[0] != "AMT" and str(x[1]).endswith("/nodes/" + VM)],
+                         "the waker wrote the always-on node")
+        # Positive control: the Talos nodes' labels were written.
+        self.assertTrue([x for x in r.kube.writes if x[0] != "AMT" and str(x[1]).endswith("/nodes/zag-amd64-01")])
+
+    def test_the_startup_check_does_not_call_it_unwakeable(self):
+        cfg = always_on_config()
+        names = w.unwakeable_nodes(cfg, {"zag-amd64-01", "zag-amd64-02"})
+        self.assertEqual(names, [])
+        self.assertEqual(w.unwakeable_nodes(cfg, {"zag-amd64-01"}), ["zag-amd64-02"])
+
     def test_the_waker_never_counts_it_as_wakeable(self):
         r = AlwaysOnRig()
         r.amt.missing.discard(VM)  # even with an AMT address by mistake
@@ -216,6 +234,32 @@ class FloorWithAlwaysOn(unittest.TestCase):
         claims = w.floor_claims(self.cfg, {"zagreus-ci": self.floor}, {"zagreus-ci": self.floor - 1}, room)
         self.assertEqual(claims, {"zagreus-ci": self.floor - 1})
         self.assertEqual(sorted(w.choose_wakes(self.cfg, claims, st, {}, T0)), ["zag-amd64-01", "zag-amd64-02"])
+
+    def test_demand_beyond_the_floor_wakes_03_and_lifts_the_cap_to_the_ceiling(self):
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        st = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
+        self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-03"])
+        _, caps = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}, vm: {}})
+        self.assertEqual(caps["zagreus-ci"], 8)
+
+    def test_the_floor_wins_over_the_pools_fair_share_squeeze(self):
+        # Review of 710b204, kept on purpose: with spritz holding the whole
+        # pool and Simplytics queued, fair share would squeeze zagreus-ci to
+        # 5. The floor lifts it back to 6, because the squeeze is itself a
+        # cap change and a listener restart. Simplytics is not starved: its
+        # own floor claims one job, and its Pending pod is older than any
+        # spritz pod created after it, so it takes the next free slot
+        # (README, "Simplytics' floor").
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        node_states = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
+        room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 10, "zagreus-simplytics-ci": 1},
+                              ceilings=self.ceilings)
+        # Positive control: fair share does squeeze spritz below the floor.
+        self.assertLess(room["zagreus-ci"], self.floor, room)
+        self.assertGreaterEqual(room["zagreus-simplytics-ci"], 1, room)
+        caps = w.floor_caps(self.cfg, room, self.ceilings, self.ceilings, node_states)
+        self.assertEqual(caps["zagreus-ci"], self.floor)
+        self.assertGreaterEqual(caps["zagreus-simplytics-ci"], 1)
 
     def test_with_the_vm_down_the_floor_still_holds_and_the_talos_nodes_take_it(self):
         vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
@@ -299,7 +343,11 @@ class LiveFiles(unittest.TestCase):
                     continue
                 with open(os.path.join(self.RUNNERS, files[s["name"]])) as f:
                     text = f.read()
-                self.assertRegex(text, r"- key: " + re.escape(TAINT), s["name"])
+                # In the runner pod template, not the listener's: the part
+                # after "template:" at the values' indent.
+                runner = text.split("\n        template:\n", 1)
+                self.assertEqual(len(runner), 2, s["name"])
+                self.assertRegex(runner[1], r"- key: " + re.escape(TAINT), s["name"])
 
 
 if __name__ == "__main__":

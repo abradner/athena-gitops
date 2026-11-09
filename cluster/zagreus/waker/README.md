@@ -174,6 +174,14 @@ minute or two for a wake instead of running at once on a classic runner.
 `warn_floor_matches` logs each one. Whether to drop the classic labels
 (an Argo recreate of the set) is still open.
 
+**Beside Simplytics.** With spritz holding the whole pool and Simplytics
+queued, fair share would squeeze zagreus-ci below 6; the floor lifts it
+back. That is on purpose: the squeeze would itself be a cap change and a
+listener restart. Simplytics is not starved, because its own floor claims
+one job and its Pending pod, older than any spritz pod created after it,
+takes the next free slot
+(`test_always_on.FloorWithAlwaysOn.test_the_floor_wins_over_the_pools_fair_share_squeeze`).
+
 ## Always-on node
 
 A node with `"alwaysOn": true` in `waker.conf` (zag-vm-01 since 9 Nov 2026:

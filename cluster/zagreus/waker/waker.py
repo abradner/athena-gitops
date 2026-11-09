@@ -236,6 +236,13 @@ def always_on(cfg, name):
     return any(n["name"] == name and n.get("alwaysOn") is True for n in cfg["nodes"])
 
 
+def unwakeable_nodes(cfg, wakeable):
+    """Configured nodes the waker could not power on again, so will never put
+    to sleep: worth an error at start. An always-on node is never slept by
+    design, so it is not one of them."""
+    return sorted(n["name"] for n in cfg["nodes"] if not n.get("alwaysOn") and n["name"] not in wakeable)
+
+
 def slot_key(s):
     """The node slots a set draws on: its own, or (sharesSlotsOf) another
     set's, shared with it (README, "Sharing")."""
@@ -1676,6 +1683,8 @@ class Waker:
         asleep = set(names)
         for n in self.cfg["nodes"]:
             name = n["name"]
+            if n.get("alwaysOn"):
+                continue  # never asleep, never written (README, "Always-on node")
             want = name in asleep
             if self.asleep_labelled.get(name) == want:
                 continue
@@ -2811,7 +2820,7 @@ def main(argv):
         LOG.error("GITHUB_TOKEN is not set: demand cannot be read, so nothing will wake")
     if cfg["mode"] == "full" and not waker.talos.available():
         LOG.error("mode full without talosctl or a talosconfig: sleeps will abort")
-    unwakeable = sorted({n["name"] for n in cfg["nodes"]} - waker.wakeable())
+    unwakeable = unwakeable_nodes(cfg, waker.wakeable())
     if unwakeable:
         LOG.error("no AMT address or credentials (and no Wake-on-LAN) for %s: "
                   "they will never be put to sleep", unwakeable)
