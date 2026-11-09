@@ -1,6 +1,6 @@
 ---
-# kaff web (staging). Solid Queue runs inside Puma (single instance) — the
-# Temporal worker below handles the workflow side. Entrypoint runs
+# kaff web (staging). Solid Queue runs inside Puma (single instance) and
+# executes the recurring (nightly) jobs. Entrypoint runs
 # db:prepare on `rails server`, so migrations apply on rollout.
 # KAFF_DATABASE_NAME/USERNAME are env-driven in the app's database.yml so
 # one production Rails env serves both cluster environments.
@@ -43,10 +43,6 @@ spec:
               value: kaff_staging
             - name: SOLID_QUEUE_IN_PUMA
               value: "true"
-            - name: TEMPORAL_ADDRESS
-              value: temporal-frontend.asn-staging.svc.cluster.local:7233
-            - name: TEMPORAL_NAMESPACE
-              value: kaff
           envFrom:
             - secretRef:
                 name: kaff-app
@@ -68,55 +64,6 @@ spec:
               memory: 384Mi
             limits:
               memory: 768Mi
----
-# Temporal worker — same image, separate process (bin/temporal-worker), kept
-# out of the request path by design (kaff NFR2).
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kaff-temporal-worker
-  namespace: asn-staging
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: kaff-temporal-worker
-  template:
-    metadata:
-      labels:
-        app: kaff-temporal-worker
-    spec:
-      imagePullSecrets:
-        - name: ghcr-pull
-      containers:
-        - name: worker
-          image: ghcr.io/abradner/kaff:sha-779a65c852893a8b9d68aabfaec5d9e7d5ce8df8
-          imagePullPolicy: IfNotPresent
-          args: ["./bin/temporal-worker"]
-          ports:
-            # Temporal SDK core Prometheus endpoint (see monitoring.yaml).
-            - name: metrics
-              containerPort: 9464
-          env:
-            - name: TEMPORAL_METRICS_ADDR
-              value: 0.0.0.0:9464
-            - name: PGHOST
-              value: postgres.infra.asn.casa
-            - name: KAFF_DATABASE_NAME
-              value: kaff_staging
-            - name: TEMPORAL_ADDRESS
-              value: temporal-frontend.asn-staging.svc.cluster.local:7233
-            - name: TEMPORAL_NAMESPACE
-              value: kaff
-          envFrom:
-            - secretRef:
-                name: kaff-app
-          resources:
-            requests:
-              cpu: 25m
-              memory: 256Mi
-            limits:
-              memory: 512Mi
 ---
 apiVersion: v1
 kind: Service
