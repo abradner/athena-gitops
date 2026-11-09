@@ -221,6 +221,20 @@ EPHEMERAL on the SATA SSD, and a hard `spritz.dev/gpu=intel:NoSchedule` taint.
 Onboarding, including the one-time manual taint Talos cannot apply itself:
 [docs/runbook-gpu-node-onboarding.md](../docs/runbook-gpu-node-onboarding.md).
 
+**Worker names are fixed: `athena-<arch>-<last octet of the address>`.** `apply-worker.sh`
+adds a `HostnameConfig` per node (`arm64` for the CM5 lists, `amd64` for the GPU lists), computed
+from `athena.zsh` at render time, so no name is committed here. A fixed name survives a rebuild;
+Talos's default (`auto: stable`) derives the name from the machine's identity, so every rebuild
+used to register a new node and leave the old `Node` object behind. Two consequences:
+
+- **The first apply to a node still on an auto name renames it.** It registers as a new `Node`;
+  drain it first, then delete the old `Node` object.
+- **On a rebuild, delete the old `Node` object before applying**, so the new machine registers
+  fresh under the same name instead of inheriting a stale object
+  (`docs/runbook-cm5-worker-upgrade.md`, steps 5 and 6).
+
+The control planes keep their names (`apply-control.sh` is unchanged).
+
 **Worker addresses are not a free choice.** Observability lives outside the
 cluster, and the stores accept telemetry only from a defined range of node
 addresses — cluster egress masquerades, so a Vector pod arrives as its node
