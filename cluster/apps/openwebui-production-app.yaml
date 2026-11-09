@@ -1,0 +1,29 @@
+---
+# Open WebUI (chat frontend on the household LLM), internal at chat.athena.asn.casa.
+# Design: abradner/asn-infra llm/frontend/README.md. State is off-cluster (Postgres, Garage).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: openwebui-production
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-production/openwebui
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

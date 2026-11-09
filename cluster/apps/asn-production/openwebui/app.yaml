@@ -1,0 +1,234 @@
+---
+# Open WebUI: a chat frontend on the household's local LLM, for a few named users.
+# Internal only (chat.athena.asn.casa on the https-athena listener; the edge proxy routes that name
+# for one internal network only). No state in the cluster: accounts, chats and vectors are in
+# Postgres, uploads in S3 (Garage), so a pod can be deleted at will. /app/backend/data holds only
+# caches (the embedding model, downloaded at start), hence emptyDir.
+# Design, decisions and test results: asn-infra llm/frontend/README.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui
+  namespace: asn-production
+spec:
+  replicas: 1   # websockets and in-process state: one replica unless Redis is added
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openwebui
+  template:
+    metadata:
+      labels:
+        app: openwebui
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/open-webui/open-webui:v0.12.3
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: openwebui-config
+            - secretRef:
+                name: openwebui-app
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          startupProbe:   # first start runs database migrations and downloads the embedding model
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests: {cpu: 100m, memory: 1Gi}
+            limits: {memory: 3Gi}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 4Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui
+  namespace: asn-production
+spec:
+  selector:
+    app: openwebui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openwebui
+  namespace: asn-production
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-athena   # the *.athena.asn.casa wildcard listener: internal only, never tunnelled
+  hostnames:
+    - chat.athena.asn.casa
+  rules:
+    - backendRefs:
+        - name: openwebui
+          port: 80
+---
+# Apache Tika: text extraction for uploads, called only by the loader.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui-tika
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openwebui-tika
+  template:
+    metadata:
+      labels:
+        app: openwebui-tika
+    spec:
+      containers:
+        - name: tika
+          image: apache/tika:3.2.3.0-full
+          ports:
+            - containerPort: 9998
+          readinessProbe:
+            httpGet: {path: /version, port: 9998}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 512Mi}
+            limits: {memory: 1536Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui-tika
+  namespace: asn-production
+spec:
+  selector:
+    app: openwebui-tika
+  ports:
+    - port: 9998
+      targetPort: 9998
+---
+# eml-loader: Open WebUI's external document loader. Passes every upload to Tika and puts back the
+# email headers Open WebUI's own Tika loader drops. Stdlib Python from a ConfigMap (loader.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui-loader
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openwebui-loader
+  template:
+    metadata:
+      labels:
+        app: openwebui-loader
+    spec:
+      containers:
+        - name: loader
+          image: python:3.13.18-slim
+          command: ["python", "/app/loader.py"]
+          env:
+            - name: TIKA_URL
+              value: "http://openwebui-tika:9998"
+          envFrom:
+            - secretRef:
+                name: openwebui-loader
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: code
+          configMap:
+            name: openwebui-loader-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui-loader
+  namespace: asn-production
+spec:
+  selector:
+    app: openwebui-loader
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# SearXNG: web search for Open WebUI. Stateless; settings in config.yaml, secret from 1Password.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui-searxng
+  namespace: asn-production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openwebui-searxng
+  template:
+    metadata:
+      labels:
+        app: openwebui-searxng
+    spec:
+      containers:
+        - name: searxng
+          image: searxng/searxng:2026.10.25-54ca1d9cf
+          envFrom:
+            - secretRef:
+                name: openwebui-searxng
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 20m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: settings
+          configMap:
+            name: openwebui-searxng-settings
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui-searxng
+  namespace: asn-production
+spec:
+  selector:
+    app: openwebui-searxng
+  ports:
+    - port: 8080
+      targetPort: 8080
