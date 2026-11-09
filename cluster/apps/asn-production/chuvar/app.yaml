@@ -16,7 +16,7 @@ metadata:
 spec:
   # Two replicas so a single node loss or drain doesn't take the site down.
   # The spread is soft and nothing moves pods back afterwards, so after a
-  # node loss both can end up on one node until the next rollout.
+  # node loss both can stay on one node; a later reschedule may spread them.
   # Rolling update adds the new pod and waits for it to be Ready before
   # removing an old one, so something answers during a deploy or restart.
   replicas: 2
@@ -73,7 +73,8 @@ spec:
               memory: 128Mi
 ---
 # Without a PDB a drain could evict both replicas at once. AlwaysAllow lets
-# a drain evict pods that aren't Ready (say, while the database is down),
+# a drain evict pods that aren't Ready (say, a bad image that never passes
+# its probe),
 # instead of hanging until they recover.
 apiVersion: policy/v1
 kind: PodDisruptionBudget

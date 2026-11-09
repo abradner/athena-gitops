@@ -13,7 +13,7 @@ metadata:
 spec:
   # Two replicas so a single node loss or drain doesn't take the site down.
   # The spread is soft and nothing moves pods back afterwards, so after a
-  # node loss both can end up on one node until the next rollout.
+  # node loss both can stay on one node; a later reschedule may spread them.
   # Rolling update adds the new pod and waits for it to be Ready before
   # removing an old one, so something answers during a deploy or restart.
   # Rails against the shared Postgres: each pod holds its own connection pool,
