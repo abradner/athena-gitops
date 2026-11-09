@@ -215,7 +215,7 @@ before starting.
 
    A short window before the cordon remains. If anything other than a DaemonSet pod landed in
    it, stop and look before going on, and treat a pod with a local-path volume as described
-   below. Then delete the old `Node` object. Scratch workers no longer carry a taint
+   below. (The old `Node` object was already deleted in step 5.) Scratch workers no longer carry a taint
    (`bootstrap/talos/worker-nvme.patch.yaml`), so there is nothing to add by hand. Run `check`.
 7. **Prove it reboots, still cordoned:** soak 15 minutes, `talosctl -n $W reboot --wait`, which
    must come back by itself, then `check` again. Then, in the same cordon, the watchdog
