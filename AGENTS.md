@@ -388,8 +388,9 @@ general rule.** Argo-specific traps have their own section above.
    hostname was tried **with the search suffix first**, that suffixed name matched a public
    wildcard DNS record, and the connection went to a CDN edge that accepts and drops the port.
    Worker nodes had no such domain, so only control-plane pods were affected. General rule: two
-   defences, both applied — set `machine.network.disableSearchDomain: true` on nodes whose DHCP
-   supplies a domain (see `bootstrap/talos/controlplane.template.yaml`), and write in-cluster
+   defences, both applied — keep DHCP's search domain out of the node resolver (on Talos 1.14+
+   a `ResolverConfig` with `domains: []`, Gotcha #7; before 1.14 it was
+   `machine.network.disableSearchDomain`), and write in-cluster
    references to names under a wildcarded zone as absolute FQDNs with a trailing dot. Corollary
    for diagnosis: connectivity probes by IP, and name lookups issued as absolute queries, both
    pass while the real path fails — reproduce the resolver's actual search behaviour from inside
@@ -463,9 +464,9 @@ general rule.** Argo-specific traps have their own section above.
    - On 1.14+, this supersedes #3's `machine.network.disableSearchDomain` defence, and the two
      can't coexist. A config that sets it (or v1alpha1 nameservers or search domains) alongside
      a `ResolverConfig` fails validation with "already set in v1alpha1 config". Remove it in the
-     same apply that adds the document. The control-plane template still sets it: drop it
-     there in the same change that gives that template a `ResolverConfig`. A 1.14 client
-     against 1.13 nodes is not verified.
+     same apply that adds the document (the control-plane template does). A 1.13 *server* drops
+     `domains: []` when it re-serializes a patch: add the document after the node's first 1.14
+     boot.
 
 ## The public/private split
 
