@@ -47,11 +47,11 @@ spec:
         # allocatable (1 Nov 2026). A heavy pod requests 6 GiB and 1.5 CPU;
         # the amd64 builder (docker-amd64.yaml) 3.75 GiB and 1.25 CPU with its
         # dind sidecar; up to two light pods (ci-light.yaml), the bundle
-        # filler, coredns and the DaemonSets about 2.25 GiB and 0.76 CPU more.
+        # filler, coredns and the DaemonSets about 2.28 GiB and 0.77 CPU more.
         # CPU binds on the two i7s: zag-amd64-01 fits the builder and three
-        # heavy pods (6.51 of 7.95 CPU; a fourth makes 8.01), zag-amd64-02
-        # fits four (6.76; a fifth makes 8.26). Memory binds on the i5:
-        # zag-amd64-03 fits two (14.25 of 14.4 GiB). Nine heavy pods in all:
+        # heavy pods (6.52 of 7.95 CPU; a fourth makes 8.02), zag-amd64-02
+        # fits four (6.77; a fifth makes 8.27). Memory binds on the i5:
+        # zag-amd64-03 fits two (14.28 of 14.4 GiB). Nine heavy pods in all:
         # this set 7, ci-x64.yaml 2. Re-check whenever a request, a DaemonSet
         # or a node changes. The node waker drives the live value from the
         # awake nodes, and this is its ceiling (README, "Runners";
@@ -164,7 +164,8 @@ spec:
                   # does not list. Every pod here shares one cache and one
                   # checkout path, so a Playwright-bump PR would delete the
                   # browsers a concurrent main job is using. Old revisions
-                  # are pruned on the node instead.
+                  # are pruned on the node instead, by ci-cache-prune
+                  # (../ci-cache-prune.yaml) once /var passes 70%.
                   - name: PLAYWRIGHT_SKIP_BROWSER_GC
                     value: "1"
                   # mise records an unfinished install in its cache dir. Keep

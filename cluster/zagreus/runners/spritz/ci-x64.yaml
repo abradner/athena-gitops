@@ -144,7 +144,8 @@ spec:
                   # does not list. Every pod here shares one cache and one
                   # checkout path, so a Playwright-bump PR would delete the
                   # browsers a concurrent main job is using. Old revisions
-                  # are pruned on the node instead.
+                  # are pruned on the node instead, by ci-cache-prune
+                  # (../ci-cache-prune.yaml) once /var passes 70%.
                   - name: PLAYWRIGHT_SKIP_BROWSER_GC
                     value: "1"
                   # mise records an unfinished install in its cache dir. Keep

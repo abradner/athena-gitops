@@ -142,6 +142,18 @@ Gems are never installed into the shared Ruby or a shared writable cache:
 `Gemfile.lock`, and each pod copies it read-only into a `BUNDLE_PATH` of its
 own, so concurrent jobs never write the same gem directory.
 
+Nothing removes anything from those host paths on its own, so two things
+bound them. `runners/ci-cache-prune.yaml` prunes `/var/lib/ci-cache/` once
+`/var` passes 70%: old browser revisions, Ruby and Node installs unused for
+two weeks, stale bun entries. Its tests run the embedded script against
+fixture trees: `python3 -m unittest discover -s cluster/zagreus/runners/tests`. The builders' layer caches under
+`/var/lib/arc-docker/` are capped where they are created: BuildKit GC limits
+in spritz's `setup-buildx` steps, and dockerd's in `core/dind-daemon.yaml`.
+Newer runner images also prune what each job leaves in its daemon (a
+job-completed hook); the builders get it when their runner pin next moves.
+node_exporter reports `/var`'s usage to the metrics store, which
+alerts when it fills.
+
 **Priority.** `ci-release` (100) for the release builders, general CI at 0,
 `ci-light` (−100) and `ci-dev` (−200) waiting rather than preempting.
 
