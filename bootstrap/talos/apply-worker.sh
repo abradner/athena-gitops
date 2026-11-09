@@ -101,7 +101,7 @@ check_name() {
   fi
   for n in "${names[@]}"; do
     if [ "$n" = "${ip##*.}" ]; then
-      echo "two workers would both be named ...-${ip##*.} (an address listed twice, or a repeated last octet). Nothing was applied." >&2
+      echo "two workers share the last octet ${ip##*.} (an address listed twice, or the same octet in two subnets), so their names would not identify their addresses. Nothing was applied." >&2
       exit 1
     fi
   done

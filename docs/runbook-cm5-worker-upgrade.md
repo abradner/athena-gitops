@@ -209,7 +209,7 @@ before starting.
 
    ```bash
    for i in $(seq 300); do kubectl get node "$NODE" >/dev/null 2>&1 && break; sleep 2; done
-   kubectl cordon "$NODE"               # fails if it never registered (10 min): stop and look"
+   kubectl cordon "$NODE"               # fails if it never registered (10 min): stop and look
    kubectl get pods -A -o wide --field-selector spec.nodeName=$NODE   # only DaemonSet pods expected
    ```
 

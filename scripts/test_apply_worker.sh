@@ -147,7 +147,12 @@ if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ] && grep -q 'not a dotted IPv4' 
 echo "• two workers that would share a name → refuse BEFORE touching any node"
 setup 'WORKER_IP=("10.0.0.11"); NVME_WORKER_IP=("10.0.1.11"); GPU_WORKER_IP=(); GPU_VM_WORKER_IP=()'
 run
-if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ] && grep -q 'both be named' <<<"$output"; then pass "refused, nothing applied"; else fail "duplicate name: status=$status applies=$(applies)"; echo "$output" >&2; fi
+if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ] && grep -q 'share the last octet' <<<"$output"; then pass "refused, nothing applied"; else fail "duplicate name: status=$status applies=$(applies)"; echo "$output" >&2; fi
+
+echo "• a GPU worker sharing a CM5 worker's last octet → refuse BEFORE touching any node"
+setup 'WORKER_IP=("10.0.0.11"); NVME_WORKER_IP=(); GPU_WORKER_IP=(); GPU_VM_WORKER_IP=("10.0.2.11:9.5")'
+run
+if [ "$status" -ne 0 ] && [ "$(applies)" -eq 0 ] && grep -q 'share the last octet' <<<"$output"; then pass "refused, nothing applied"; else fail "GPU collision: status=$status applies=$(applies)"; echo "$output" >&2; fi
 
 echo "• the hostname is the address's last octet, per node, arch by class"
 setup 'WORKER_IP=("10.0.0.21" "10.0.0.22"); NVME_WORKER_IP=("10.0.0.31"); GPU_WORKER_IP=("10.0.0.41:9"); GPU_VM_WORKER_IP=()'
