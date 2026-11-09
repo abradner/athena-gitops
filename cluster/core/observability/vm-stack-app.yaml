@@ -97,18 +97,19 @@ spec:
             #
             # The operator mounts the volume named persistent-queue-data as
             # the buffer, and uses this one instead of its own sizeless
-            # emptyDir. maxDiskUsagePerURL is what bounds the buffer (1 GiB is
-            # also the operator's default, stated here so the two numbers sit
-            # together); sizeLimit is the kubelet's backstop above it, since
-            # going over it evicts the pod. It counts against the node's
-            # ephemeral storage.
+            # emptyDir. maxDiskUsagePerURL is what bounds the buffer: 2 GiB,
+            # the same as under statefulMode (where the operator derived it
+            # from the 2Gi PVC; a Deployment's default would be 1 GiB, halving
+            # the outage it covers). sizeLimit is the kubelet's backstop above
+            # it, with room for vmagent's overshoot, since going over it evicts
+            # the pod. It counts against the node's ephemeral storage.
             statefulMode: false
             remoteWriteSettings:
-              maxDiskUsagePerURL: 1GiB
+              maxDiskUsagePerURL: 2GiB
             volumes:
               - name: persistent-queue-data
                 emptyDir:
-                  sizeLimit: 2Gi
+                  sizeLimit: 3Gi
             # Placement, as for the otel collector (otel-collector-app.yaml):
             # prefer the large-NVMe workers, and a different node from the
             # collector, so one node loss takes at most one of the two. Soft.
