@@ -177,8 +177,8 @@ only works on nodes in maintenance mode (provisioning and reprovisioning).
 with a 128 GB NVMe, meant for GitHub runners and other workloads that need a
 lot of disk but keep nothing. They get the same `worker.yaml` plus
 `worker-nvme.patch.yaml`, which adds the label `athena.asn.casa/scratch=nvme`
-and a matching `PreferNoSchedule` taint. `apply-worker.sh` merges the two (see
-above) and applies the result. Things
+(no taint: see the patch for why it was dropped). `apply-worker.sh` merges the
+two (see above) and applies the result. Things
 to get right:
 
 - **Same image as the other workers.** Flash exactly the image the existing
@@ -195,19 +195,23 @@ to get right:
 - **After joining, confirm the NVMe placement:**
   - `talosctl -n <ip> get volumestatus EPHEMERAL` shows `nvme0n1`;
   - the node's `ephemeral-storage` is roughly 119 GiB, less filesystem overhead;
-  - `kubectl describe node` shows the label and taint;
+  - `kubectl describe node` shows the label, and no `athena.asn.casa/scratch`
+    taint. A node configured before the taint was dropped still carries it.
+    **Remove it by hand before applying the new config to that node live**
+    (`kubectl taint node <name> athena.asn.casa/scratch=nvme:PreferNoSchedule-`):
+    Talos may otherwise try to remove the taint itself, NodeRestriction refuses
+    that (below), and the refusal can block the node's labels too. Not tested;
+    a rebuild from maintenance mode is unaffected;
   - `talosctl -n <ip> get resolvers` shows `searchDomains: []`. This only
     means something from Talos 1.14, which applies DHCP search domains; 1.13
     ignores them, so on 1.13 it can't fail. On 1.14, check it **before any
     runner is scheduled there**: a DHCP-supplied search domain blackholes
     external API calls (AGENTS.md Gotcha #7).
-- **Taint a new scratch node by hand, once.** Talos cannot add a taint to a
-  node that has already registered (NodeRestriction: `not allowed to modify
-  taints`), and the refusal also stops it applying the label. As soon as the
-  node appears, run
-  `kubectl taint node <name> athena.asn.casa/scratch=nvme:PreferNoSchedule`.
-  Talos then applies the label. Found on the first GPU worker, 2026-10-17;
-  see docs/runbook-gpu-node-onboarding.md.
+- **Talos applies `nodeTaints` only at registration.** A taint added to the
+  config later is refused (NodeRestriction: `not allowed to modify taints`),
+  and the refusal also stops it applying labels. Found on the first GPU
+  worker, 2026-10-17; see docs/runbook-gpu-node-onboarding.md. The scratch
+  workers no longer carry a taint, so this now concerns the GPU workers.
 
 **GPU workers.** These are the nodes listed in `GPU_WORKER_IP` (as `<ip>:<gen>`):
 amd64 boxes with an Intel iGPU for the spritz video transcoder, on a Secure Boot
