@@ -57,19 +57,27 @@ TWO_NODES = [
 SPRITZ_SETS = ("zagreus-docker-amd64", "zagreus-ci", "zagreus-ci-x64")
 
 
+def frozen(cfg):
+    """The frozen world predates zagreus-ci's floor and the always-on node's
+    taint (9 Nov 2026): both have their own tests (test_always_on.py), and
+    the older scenarios keep the world they were written for."""
+    cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
+    cfg["sets"] = [{k: v for k, v in s.items() if not (s["name"] == "zagreus-ci" and k == "floor")}
+                   for s in cfg["sets"]]
+    cfg["toleratedTaintKeys"] = []
+    return cfg
+
+
 def production_config():
     cfg = live_config()
     cfg["sets"] = [s for s in cfg["sets"] if s["name"] in SPRITZ_SETS]
-    cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
-    return cfg
+    return frozen(cfg)
 
 
 def shared_config():
     """waker.conf's sets as deployed, spritz and Simplytics, on the frozen
     two-node world."""
-    cfg = live_config()
-    cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
-    return cfg
+    return frozen(live_config())
 
 
 def unpin(cfg):
@@ -632,8 +640,10 @@ class Caps(unittest.TestCase):
         """The arithmetic in waker.conf, checked: each node's slots, plus
         what else may land there, fit its allocatable memory and CPU
         (1 Nov 2026, after the RAM shuffle)."""
-        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44}
-        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95}
+        # zag-vm-01: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
+        # and kubelet's system-reserved (asn-infra zagreus/vm-runner).
+        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-vm-01": 7.1}
+        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-vm-01": 3.8}
         pod_gib = {"zagreus-ci": 6, "zagreus-ci-x64": 6, "zagreus-docker-amd64": 3 + 0.75}
         pod_cpu = {"zagreus-ci": 1.5, "zagreus-ci-x64": 1.5, "zagreus-docker-amd64": 1 + 0.25}
         # two light pods, bundle fill, coredns and slack, then the cache pruner
@@ -641,12 +651,17 @@ class Caps(unittest.TestCase):
         # two light pods, coredns, then cilium, the bundle fill and the other
         # DaemonSets, then the cache pruner (runners/ci-cache-prune.yaml)
         others_cpu = 2 * 0.25 + 0.1 + 0.156 + 0.005
+        # The always-on node is tainted: no light pods or coredns land there,
+        # only Cilium, the bundle fill, the cache pruner and the other
+        # DaemonSets.
+        always_on_gib, always_on_cpu = 0.25 + 0.5 + 0.03, 0.156 + 0.005
         nodes = live_config()["nodes"]
         self.assertEqual(set(alloc_gib), {n["name"] for n in nodes})
         for n in nodes:
-            used = sum(pod_gib[s] * k for s, k in n["slots"].items()) + others_gib
+            o_gib, o_cpu = (always_on_gib, always_on_cpu) if n.get("alwaysOn") else (others_gib, others_cpu)
+            used = sum(pod_gib[s] * k for s, k in n["slots"].items()) + o_gib
             self.assertLessEqual(used, alloc_gib[n["name"]], n["name"])
-            cpu = sum(pod_cpu[s] * k for s, k in n["slots"].items()) + others_cpu
+            cpu = sum(pod_cpu[s] * k for s, k in n["slots"].items()) + o_cpu
             self.assertLessEqual(cpu, alloc_cpu[n["name"]], n["name"])
 
 
@@ -686,7 +701,12 @@ class ThreeNodes(unittest.TestCase):
     order, sleep the last first."""
 
     def setUp(self):
+        # The Talos nodes: the always-on node has its own tests
+        # (test_always_on.py).
         self.cfg = live_config()
+        self.cfg["nodes"] = [n for n in self.cfg["nodes"] if not n.get("alwaysOn")]
+        self.cfg["sets"] = [{k: v for k, v in s.items() if not (s["name"] == "zagreus-ci" and k == "floor")}
+                            for s in self.cfg["sets"]]
         self.names = [n["name"] for n in self.cfg["nodes"]]
 
     def test_wake_follows_the_list(self):
@@ -713,6 +733,7 @@ class ThreeNodes(unittest.TestCase):
         caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
         # Simplytics, with no queue, gets none of the shared slots: spritz
         # keeps exactly what it had before sharing.
+        # Seven of zagreus-ci's eight: the eighth is the always-on node's.
         self.assertEqual(caps, {"zagreus-docker-amd64": 1, "zagreus-ci": 7, "zagreus-ci-x64": 2,
                                 "zagreus-simplytics-ci": 0})
 
@@ -2534,7 +2555,7 @@ class Floor(unittest.TestCase):
 
     def test_live_config_floors_the_builder_and_simplytics(self):
         floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
-        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 0, "zagreus-ci-x64": 0,
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 6, "zagreus-ci-x64": 0,
                                   "zagreus-simplytics-ci": 1})
 
     def test_a_negative_floor_is_refused(self):

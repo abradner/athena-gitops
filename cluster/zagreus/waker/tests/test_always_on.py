@@ -1,0 +1,354 @@
+"""An always-on node (README, "Always-on node"): a node the waker counts
+but never powers, cordons or sleeps. Its slots are room whenever it is
+Ready, so the first jobs of a burst start there with no wake, and the
+sleeping Talos nodes wake only for demand beyond it.
+
+    python3 -m unittest discover -s cluster/zagreus/waker/tests -v
+"""
+
+import os
+import re
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
+
+import waker as w  # noqa: E402
+from test_waker import (T0, TWO_NODES, WAKER_DIR, FakeAMT, FakeGitHub, FakeKube,  # noqa: E402
+                        FakeTalos, Clock, live_config, production_config, states)
+
+VM = "zag-vm-01"
+TAINT = "zagreus.asn.casa/always-on"
+
+
+def always_on_config():
+    """The frozen two-node world plus one always-on node with one zagreus-ci
+    slot, listed last (as in waker.conf)."""
+    cfg = production_config()
+    cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES] + [
+        {"name": VM, "alwaysOn": True, "slots": {"zagreus-ci": 1}}]
+    cfg["toleratedTaintKeys"] = [TAINT]
+    return cfg
+
+
+class AlwaysOnRig:
+    """The Rig of test_waker, with the always-on node: no AMT address, its
+    own taint, and allocatable for one heavy pod."""
+
+    def __init__(self):
+        self.cfg = always_on_config()
+        self.clock = Clock()
+        self.kube = FakeKube(self.cfg, self.clock)
+        self.kube.nodes[VM]["status"]["allocatable"] = {"cpu": "3800m", "memory": "7Gi"}
+        self.kube.taint(VM, TAINT)
+        self.github = FakeGitHub()
+        self.amt = FakeAMT(self.kube, self.clock)
+        self.amt.missing.add(VM)
+        self.talos = FakeTalos(self.kube, self.amt)
+        self.waker = w.Waker(self.cfg, self.kube, self.github, self.amt, self.talos,
+                             clock=self.clock, sleep=self.clock.sleep, my_node="cp1")
+
+    def job(self, labels, age_seconds, repo="abradner/spritz"):
+        import datetime as dt
+        self.github.jobs.append({
+            "repo": repo, "id": len(self.github.jobs) + 1, "name": "j", "labels": labels,
+            "created_at": dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=age_seconds)})
+
+    def tick(self, advance=0):
+        self.clock.sleep(advance)
+        self.waker.tick()
+
+    def put_talos_to_sleep(self):
+        self.tick()
+        self.tick(advance=61 * 60)
+        self.tick(advance=1)
+        self.tick(advance=1)
+        assert self.kube.asleep() == {"zag-amd64-01", "zag-amd64-02"}, self.kube.asleep()
+
+
+class Config(unittest.TestCase):
+    def test_always_on_must_be_a_boolean(self):
+        cfg = always_on_config()
+        cfg["nodes"][-1]["alwaysOn"] = "yes"
+        with self.assertRaises(ValueError):
+            w.validate_config(cfg)
+
+    def test_always_on_is_read_from_the_node(self):
+        cfg = always_on_config()
+        self.assertTrue(w.always_on(cfg, VM))
+        self.assertFalse(w.always_on(cfg, "zag-amd64-01"))
+        self.assertFalse(w.always_on(cfg, "no-such-node"))
+
+
+class Decisions(unittest.TestCase):
+    def setUp(self):
+        self.cfg = always_on_config()
+
+    def test_never_chosen_to_sleep_even_idle_and_last(self):
+        # choose_sleep walks the list from the end: the always-on node comes
+        # first and must be passed over, even with no wakeable set given.
+        st = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, VM: {}})
+        idle = {n: T0 for n in ("zag-amd64-01", "zag-amd64-02", VM)}
+        self.assertEqual(w.choose_sleep(self.cfg, st, idle, {}, {}, T0 + 2 * 3600), "zag-amd64-02")
+
+    def test_never_chosen_to_wake_even_if_marked_asleep_or_retry(self):
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True},
+                       VM: {"ready": False, "asleep": True, "retry": True}})
+        self.assertNotIn(VM, w.choose_wakes(self.cfg, {"zagreus-ci": 9}, st, {}, T0))
+
+    def test_its_slot_is_room_while_the_talos_nodes_sleep(self):
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True},
+                       VM: {}})
+        caps = w.compute_caps(self.cfg, st)
+        self.assertEqual(caps["zagreus-ci"], 1)
+        self.assertEqual(caps["zagreus-ci-x64"], 0)
+        self.assertEqual(caps["zagreus-docker-amd64"], 0)
+
+    def test_its_slot_counts_nothing_while_it_is_down(self):
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True},
+                       VM: {"ready": False}})
+        self.assertEqual(w.compute_caps(self.cfg, st)["zagreus-ci"], 0)
+
+    def test_wakes_cover_only_demand_beyond_it(self):
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True},
+                       VM: {}})
+        # Unmet is what the live caps (the VM's one slot) leave over: one job
+        # beyond it wakes the first Talos node only.
+        self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-01"])
+
+
+class Procedures(unittest.TestCase):
+    def test_idle_for_hours_it_is_never_cordoned_listed_or_shut_down(self):
+        r = AlwaysOnRig()
+        r.put_talos_to_sleep()
+        r.tick(advance=3 * 3600)
+        self.assertNotIn(VM, r.talos.calls)
+        self.assertNotIn(VM, r.kube.asleep())
+        self.assertFalse(r.kube.nodes[VM]["spec"].get("unschedulable"))
+        self.assertFalse(any(len(x) > 1 and x[1] == VM for x in r.amt.calls))
+
+    def test_put_to_sleep_refuses_it(self):
+        r = AlwaysOnRig()
+        r.tick()
+        self.assertFalse(r.waker.put_to_sleep(VM, r.waker.observe()))
+        self.assertNotIn(VM, r.talos.calls)
+        self.assertFalse(r.kube.nodes[VM]["spec"].get("unschedulable"))
+
+    def test_the_asleep_label_sync_never_writes_it(self):
+        # Review of 710b204: the label sync patched every configured node,
+        # the always-on one included (and logged a 404 every pass before it
+        # joined).
+        r = AlwaysOnRig()
+        r.put_talos_to_sleep()
+        r.tick(advance=3 * 3600)
+        self.assertFalse([x for x in r.kube.writes if x[0] != "AMT" and str(x[1]).endswith("/nodes/" + VM)],
+                         "the waker wrote the always-on node")
+        # Positive control: the Talos nodes' labels were written.
+        self.assertTrue([x for x in r.kube.writes if x[0] != "AMT" and str(x[1]).endswith("/nodes/zag-amd64-01")])
+
+    def test_the_startup_check_does_not_call_it_unwakeable(self):
+        cfg = always_on_config()
+        names = w.unwakeable_nodes(cfg, {"zag-amd64-01", "zag-amd64-02"})
+        self.assertEqual(names, [])
+        self.assertEqual(w.unwakeable_nodes(cfg, {"zag-amd64-01"}), ["zag-amd64-02"])
+
+    def test_the_waker_never_counts_it_as_wakeable(self):
+        r = AlwaysOnRig()
+        r.amt.missing.discard(VM)  # even with an AMT address by mistake
+        self.assertNotIn(VM, r.waker.wakeable())
+
+    def test_the_first_job_takes_its_slot_with_no_wake(self):
+        r = AlwaysOnRig()
+        r.put_talos_to_sleep()
+        r.amt.calls.clear()
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.tick(advance=60)
+        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 1)
+        self.assertEqual(r.amt.calls, [])
+
+    def test_a_second_job_wakes_one_talos_node(self):
+        r = AlwaysOnRig()
+        r.put_talos_to_sleep()
+        r.amt.calls.clear()
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.job(["self-hosted", "linux", "spritz-ci"], age_seconds=90)
+        r.kube.add_runner_pod(VM, "zagreus-ci")
+        r.tick(advance=60)
+        r.tick(advance=60)
+        powered = [n for n, s in r.amt.calls if s == w.POWER_ON]
+        self.assertEqual(powered, ["zag-amd64-01"])
+
+
+class FloorWithAlwaysOn(unittest.TestCase):
+    """The pilot's point (9 Nov 2026): zagreus-ci's floor equals the always-on
+    slot plus the room of 01+02, so a burst that fits there changes no cap,
+    and so restarts no listener, across the wake."""
+
+    ASLEEP = {"ready": False, "asleep": True}
+
+    def setUp(self):
+        self.cfg = live_config()
+        if not any(n.get("alwaysOn") for n in self.cfg["nodes"]):
+            self.skipTest("no always-on node configured")
+        self.ceilings = {"zagreus-docker-amd64": 1, "zagreus-ci": 8, "zagreus-ci-x64": 2,
+                         "zagreus-simplytics-ci": 2}
+        self.floor = next(s["floor"] for s in self.cfg["sets"] if s["name"] == "zagreus-ci")
+
+    def caps(self, **st):
+        node_states = states(**st)
+        room = w.compute_caps(self.cfg, node_states)
+        return room, w.floor_caps(self.cfg, room, self.ceilings, self.ceilings, node_states)
+
+    def test_the_floor_is_the_always_on_slot_plus_the_room_of_01_and_02(self):
+        vm = next(n for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        talos = {n["name"]: n for n in self.cfg["nodes"]}
+        want = sum(w.node_slots(self.cfg, n, "zagreus-ci")
+                   for n in (vm, talos["zag-amd64-01"], talos["zag-amd64-02"]))
+        self.assertEqual(self.floor, want)
+
+    def test_the_cap_does_not_change_from_asleep_to_01_and_02_awake(self):
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        _, asleep = self.caps(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                                 "zag-amd64-03": self.ASLEEP, vm: {}})
+        _, first = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": self.ASLEEP,
+                                "zag-amd64-03": self.ASLEEP, vm: {}})
+        _, both = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": {},
+                               "zag-amd64-03": self.ASLEEP, vm: {}})
+        self.assertEqual(asleep["zagreus-ci"], self.floor)
+        self.assertEqual(first["zagreus-ci"], self.floor)
+        self.assertEqual(both["zagreus-ci"], self.floor)
+
+    def test_claims_beyond_the_always_on_slot_wake_01_and_02_together(self):
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                       "zag-amd64-03": self.ASLEEP, vm: {}})
+        room = w.compute_caps(self.cfg, st)
+        # A full first wave at the floor: one runner on the VM, the rest
+        # claimed with no node.
+        claims = w.floor_claims(self.cfg, {"zagreus-ci": self.floor}, {"zagreus-ci": self.floor - 1}, room)
+        self.assertEqual(claims, {"zagreus-ci": self.floor - 1})
+        self.assertEqual(sorted(w.choose_wakes(self.cfg, claims, st, {}, T0)), ["zag-amd64-01", "zag-amd64-02"])
+
+    def test_demand_beyond_the_floor_wakes_03_and_lifts_the_cap_to_the_ceiling(self):
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        st = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
+        self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-03"])
+        _, caps = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}, vm: {}})
+        self.assertEqual(caps["zagreus-ci"], 8)
+
+    def test_the_floor_wins_over_the_pools_fair_share_squeeze(self):
+        # Review of 710b204, kept on purpose: with spritz holding the whole
+        # pool and Simplytics queued, fair share would squeeze zagreus-ci to
+        # 5. The floor lifts it back to 6, because the squeeze is itself a
+        # cap change and a listener restart. Simplytics is not starved: its
+        # own floor claims one job, and its Pending pod is older than any
+        # spritz pod created after it, so it takes the next free slot
+        # (README, "Simplytics' floor").
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        node_states = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
+        room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 10, "zagreus-simplytics-ci": 1},
+                              ceilings=self.ceilings)
+        # Positive control: fair share does squeeze spritz below the floor.
+        self.assertLess(room["zagreus-ci"], self.floor, room)
+        self.assertGreaterEqual(room["zagreus-simplytics-ci"], 1, room)
+        caps = w.floor_caps(self.cfg, room, self.ceilings, self.ceilings, node_states)
+        self.assertEqual(caps["zagreus-ci"], self.floor)
+        self.assertGreaterEqual(caps["zagreus-simplytics-ci"], 1)
+
+    def test_with_the_vm_down_the_floor_still_holds_and_the_talos_nodes_take_it(self):
+        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        room, caps = self.caps(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                                  "zag-amd64-03": self.ASLEEP, vm: {"ready": False}})
+        self.assertEqual(room["zagreus-ci"], 0)
+        self.assertEqual(caps["zagreus-ci"], self.floor)
+
+
+class LiveBurst(unittest.TestCase):
+    """The deployed waker.conf end to end, with the always-on node Ready and
+    the three Talos nodes asleep."""
+
+    def rig(self):
+        from test_sharing import LiveRig
+        r = LiveRig(always_on=True)
+        if not r.always_on:
+            self.skipTest("no always-on node configured")
+        r.put_all_to_sleep()
+        return r
+
+    def ci_cap(self, r):
+        return r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"]
+
+    def ci_cap_writes(self, r, since):
+        return [x for x in r.kube.writes[since:]
+                if x[0] != "AMT" and "zagreus-ci" in str(x[1]) and "maxRunners" in str(x[2])
+                and "x64" not in str(x[1])]
+
+    def test_asleep_the_cap_sits_at_the_floor(self):
+        r = self.rig()
+        self.assertEqual(self.ci_cap(r), 6)
+        self.assertNotIn(r.always_on[0], r.kube.asleep())
+
+    def test_one_job_runs_on_the_vm_with_no_wake(self):
+        r = self.rig()
+        r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), [])
+
+    def test_a_first_wave_wakes_01_and_02_and_changes_no_cap(self):
+        r = self.rig()
+        mark = len(r.kube.writes)
+        for _ in range(6):
+            r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        # Five beyond the VM's one: 02 covers three, then 01 two.
+        self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
+        r.tick(advance=120)
+        self.assertEqual(self.ci_cap(r), 6)
+        self.assertEqual(self.ci_cap_writes(r, mark), [])
+
+
+class LiveFiles(unittest.TestCase):
+    """waker.conf, the runner templates and the RBAC have to agree about the
+    always-on node."""
+
+    RUNNERS = os.path.join(WAKER_DIR, "..", "runners")
+
+    def always_on_nodes(self):
+        return [n["name"] for n in live_config()["nodes"] if n.get("alwaysOn")]
+
+    def test_the_waker_tolerates_the_always_on_taint(self):
+        if not self.always_on_nodes():
+            self.skipTest("no always-on node configured")
+        self.assertIn(TAINT, live_config()["toleratedTaintKeys"])
+
+    def test_every_template_with_its_slots_tolerates_the_taint(self):
+        # The waker offers an always-on node's slots to every set that draws
+        # on them (a shared pool included): each such set's pods must
+        # tolerate the taint, or the offer strands its jobs.
+        cfg = live_config()
+        files = {"zagreus-ci": "spritz/ci.yaml", "zagreus-ci-x64": "spritz/ci-x64.yaml",
+                 "zagreus-docker-amd64": "spritz/docker-amd64.yaml",
+                 "zagreus-simplytics-ci": "simplytics/ci.yaml"}
+        for n in cfg["nodes"]:
+            if not n.get("alwaysOn"):
+                continue
+            for s in cfg["sets"]:
+                if w.node_slots(cfg, n, s["name"]) <= 0:
+                    continue
+                with open(os.path.join(self.RUNNERS, files[s["name"]])) as f:
+                    text = f.read()
+                # In the runner pod template, not the listener's: the part
+                # after "template:" at the values' indent.
+                runner = text.split("\n        template:\n", 1)
+                self.assertEqual(len(runner), 2, s["name"])
+                self.assertRegex(runner[1], r"- key: " + re.escape(TAINT), s["name"])
+
+
+if __name__ == "__main__":
+    unittest.main()

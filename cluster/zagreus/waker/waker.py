@@ -226,6 +226,21 @@ def validate_config(cfg):
                                  "slots and has none of its own")
             if int(slots) < 0:
                 raise ValueError(f"node {n['name']}: negative slots for {set_name}")
+        if not isinstance(n.get("alwaysOn", False), bool):
+            raise ValueError(f"node {n['name']}: alwaysOn must be true or false")
+
+
+def always_on(cfg, name):
+    """The node is always on (README, "Always-on node"): the waker counts its
+    slots whenever it is Ready, and never powers, cordons or sleeps it."""
+    return any(n["name"] == name and n.get("alwaysOn") is True for n in cfg["nodes"])
+
+
+def unwakeable_nodes(cfg, wakeable):
+    """Configured nodes the waker could not power on again, so will never put
+    to sleep: worth an error at start. An always-on node is never slept by
+    design, so it is not one of them."""
+    return sorted(n["name"] for n in cfg["nodes"] if not n.get("alwaysOn") and n["name"] not in wakeable)
 
 
 def slot_key(s):
@@ -933,7 +948,7 @@ def choose_wakes(cfg, unmet, node_states, backoff_until, now_s, room=None):
     eligible = []
     for n in cfg["nodes"]:
         st = node_states.get(n["name"])
-        if st is None:
+        if st is None or always_on(cfg, n["name"]):
             continue
         # Listed asleep, or left off the list after a failure and not Ready:
         # retried once its backoff has passed.
@@ -1002,7 +1017,7 @@ def choose_sleep(cfg, node_states, idle_since, unmet, backoff_until, now_s,
         return None
     hungry = {name for name, u in unmet.items() if u > 0}
     for n in reversed(cfg["nodes"]):
-        if wakeable is not None and n["name"] not in wakeable:
+        if always_on(cfg, n["name"]) or (wakeable is not None and n["name"] not in wakeable):
             continue
         st = node_states.get(n["name"])
         if st is None or not node_awake(st) or st["busy"]:
@@ -1610,9 +1625,11 @@ class Waker:
         self.raised_at = {}  # pool set -> when its cap was last raised
 
     def wakeable(self):
-        """Nodes the waker can power on again; it puts no other to sleep."""
+        """Nodes the waker can power on again; it puts no other to sleep. Never
+        an always-on node, even one given an AMT address or a MAC by mistake."""
         return {n["name"] for n in self.cfg["nodes"]
-                if self.amt.available(n["name"]) or (self.wol.get(n["name"]) and self.wol.get("_broadcast"))}
+                if not n.get("alwaysOn") and
+                (self.amt.available(n["name"]) or (self.wol.get(n["name"]) and self.wol.get("_broadcast")))}
 
     # ----- what the mode allows
 
@@ -1666,6 +1683,8 @@ class Waker:
         asleep = set(names)
         for n in self.cfg["nodes"]:
             name = n["name"]
+            if n.get("alwaysOn"):
+                continue  # never asleep, never written (README, "Always-on node")
             want = name in asleep
             if self.asleep_labelled.get(name) == want:
                 continue
@@ -2547,6 +2566,9 @@ class Waker:
 
     def put_to_sleep(self, node, snap):
         cfg = self.cfg
+        if always_on(cfg, node):
+            LOG.error("not sleeping %s: it is always on", node)
+            return False
         unknown = sorted(n for n, c in snap["ceilings"].items() if c is None) + sorted(snap.get("degraded", ()))
         if unknown:
             # No ceiling has ever been read for a set: keep things as they
@@ -2798,7 +2820,7 @@ def main(argv):
         LOG.error("GITHUB_TOKEN is not set: demand cannot be read, so nothing will wake")
     if cfg["mode"] == "full" and not waker.talos.available():
         LOG.error("mode full without talosctl or a talosconfig: sleeps will abort")
-    unwakeable = sorted({n["name"] for n in cfg["nodes"]} - waker.wakeable())
+    unwakeable = unwakeable_nodes(cfg, waker.wakeable())
     if unwakeable:
         LOG.error("no AMT address or credentials (and no Wake-on-LAN) for %s: "
                   "they will never be put to sleep", unwakeable)

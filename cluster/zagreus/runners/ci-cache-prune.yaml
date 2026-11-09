@@ -228,6 +228,12 @@ spec:
               - matchExpressions:
                   - {key: zagreus.asn.casa/role, operator: In, values: [amd64-runner]}
                   - {key: zagreus.asn.casa/asleep, operator: DoesNotExist}
+      # The always-on VM too (waker README, "Always-on node"): its runner
+      # pods mount the same cache.
+      tolerations:
+        - key: zagreus.asn.casa/always-on
+          operator: Exists
+          effect: NoSchedule
       # The runner user, which owns every cache (the runner image's
       # entrypoint hands the mount points to it).
       securityContext:
