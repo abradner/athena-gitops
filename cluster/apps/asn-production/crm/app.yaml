@@ -17,7 +17,16 @@ metadata:
   name: crm-web
   namespace: asn-production
 spec:
-  replicas: 1
+  # Two replicas so losing one worker node (the CM5 workers share a switch,
+  # uplink and power supply) doesn't take the site down. Rolling update adds
+  # the new pod and waits for it to be Ready before removing an old one, so
+  # something always answers during a deploy or restart.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: crm-web
@@ -26,6 +35,14 @@ spec:
       labels:
         app: crm-web
     spec:
+      # Soft: a pod beside its twin beats a pod left Pending while a node is down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: crm-web
       imagePullSecrets:
         - name: ghcr-pull
       containers:
@@ -72,6 +89,21 @@ spec:
               memory: 384Mi
             limits:
               memory: 768Mi
+---
+# crm-web: Rails against the shared Postgres. Each pod holds its own connection
+# pool, so every replica spends connections on that server: count them before
+# raising replicas.
+# Without a PDB a drain could evict both replicas at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: crm-web
+  namespace: asn-production
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: crm-web
 ---
 # Temporal worker — same image, separate process (bin/temporal-worker).
 # Nothing is delivered without it: the web process only starts workflows, so

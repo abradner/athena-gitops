@@ -14,7 +14,16 @@ metadata:
   name: chuvar-web
   namespace: asn-production
 spec:
-  replicas: 1
+  # Two replicas so losing one worker node (the CM5 workers share a switch,
+  # uplink and power supply) doesn't take the site down. Rolling update adds
+  # the new pod and waits for it to be Ready before removing an old one, so
+  # something always answers during a deploy or restart.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: chuvar-web
@@ -23,6 +32,14 @@ spec:
       labels:
         app: chuvar-web
     spec:
+      # Soft: a pod beside its twin beats a pod left Pending while a node is down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: chuvar-web
       imagePullSecrets:
         - name: ghcr-pull
       containers:
@@ -53,6 +70,19 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+---
+# chuvar-web: static site, no database: a second replica costs ~32Mi and nothing else.
+# Without a PDB a drain could evict both replicas at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chuvar-web
+  namespace: asn-production
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: chuvar-web
 ---
 apiVersion: v1
 kind: Service
