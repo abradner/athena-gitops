@@ -14,10 +14,11 @@ metadata:
   name: chuvar-web
   namespace: asn-production
 spec:
-  # Two replicas so losing one worker node (the CM5 workers share a switch,
-  # uplink and power supply) doesn't take the site down. Rolling update adds
-  # the new pod and waits for it to be Ready before removing an old one, so
-  # something always answers during a deploy or restart.
+  # Two replicas so a single node loss or drain doesn't take the site down.
+  # The spread is soft and nothing moves pods back afterwards, so after a
+  # node loss both can end up on one node until the next rollout.
+  # Rolling update adds the new pod and waits for it to be Ready before
+  # removing an old one, so something answers during a deploy or restart.
   replicas: 2
   strategy:
     type: RollingUpdate
@@ -71,8 +72,9 @@ spec:
             limits:
               memory: 128Mi
 ---
-# chuvar-web: static site, no database: a second replica costs ~32Mi and nothing else.
-# Without a PDB a drain could evict both replicas at once.
+# Without a PDB a drain could evict both replicas at once. AlwaysAllow lets
+# a drain evict pods that aren't Ready (say, while the database is down),
+# instead of hanging until they recover.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -80,6 +82,7 @@ metadata:
   namespace: asn-production
 spec:
   minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
       app: chuvar-web
