@@ -56,8 +56,9 @@ unlimited (`resourcebuilder.go`, `math.MaxInt32`).
 
 A set may carry `"floor": n` in `waker.conf`: the least `maxRunners` the
 waker writes for it, offered while its nodes sleep. `zagreus-docker-amd64`
-has one (1), and since 6 Nov 2026 `zagreus-simplytics-ci` has one (1):
-"Simplytics' floor", below.
+has one (1), since 6 Nov 2026 `zagreus-simplytics-ci` has one (1):
+"Simplytics' floor", below, and since 9 Nov 2026 `zagreus-ci` has six:
+"zagreus-ci's floor", below.
 
 **Why.** A job that queues while its set is at 0 can be held by GitHub
 after the waker wakes a node and raises the cap: the raise restarts the
@@ -151,6 +152,50 @@ Simplytics idle, spritz keeps the whole pool, as before (the floor does
 not take a slot from it, `Shared.test_the_floor_does_not_take_an_idle_slot_from_spritz`).
 Unpinned: its pods may land on any amd64 node, and every amd64 node has
 pool slots, so the floor never stands down while a node is awake.
+
+### zagreus-ci's floor (9 Nov 2026, with the always-on node)
+
+**6**: the always-on node's one slot plus the five of 01 and 02. The cap
+reads 6 asleep, with 01 alone and with 01 and 02 awake, so a first wave
+that fits there (a spritz CI run is five heavy `ci` jobs plus two x64)
+changes no cap and restarts no listener. It changes only when 03 joins
+(6 -> 8) and when it leaves. `test_always_on.LiveBurst` runs the deployed
+config through it.
+
+**Why.** Each cap raise at a wake re-creates the listener, and the new
+listener sees no jobs until GitHub offers them again: 6–40 s usually, 125 s
+and 303 s on 8 Nov (2 of 7 measured raises), and up to an hour in the
+held-jobs incidents of 28 Oct–3 Nov.
+
+**What it costs.** zagreus-ci still carries the classic labels
+(`self-hosted, linux, spritz-ci, …`). While the Talos nodes sleep it claims
+up to six jobs that ask only for those labels, and five of them wait a
+minute or two for a wake instead of running at once on a classic runner.
+`warn_floor_matches` logs each one. Whether to drop the classic labels
+(an Argo recreate of the set) is still open.
+
+## Always-on node
+
+A node with `"alwaysOn": true` in `waker.conf` (zag-vm-01 since 9 Nov 2026:
+a ballooning Debian VM on a Proxmox host, joined to zagreus as a worker;
+built from asn-infra `zagreus/vm-runner`). The waker:
+
+- counts its slots as room whenever it is Ready, like any awake node;
+- never powers it, cordons it, sleeps it or lists it asleep: `choose_sleep`,
+  `choose_wakes`, `wakeable` and `put_to_sleep` all pass it over, even if
+  it is given an AMT address or a MAC by mistake;
+- wakes Talos nodes only for demand beyond it.
+
+So the first job of a burst starts on it in seconds, with no wake, and
+zagreus-ci's floor (above) hands the rest over at once to wait for 01 and
+02. With it down (NotReady) its slots count for nothing and the waker
+behaves as before; the floor still holds the cap.
+
+It carries the taint `zagreus.asn.casa/always-on:NoSchedule`, so only
+runner pods land there. The key is in `toleratedTaintKeys`, and every set
+drawing on its slots (zagreus-ci, and Simplytics through the shared pool)
+tolerates it; `test_always_on.LiveFiles` checks the two agree. The bundle
+fill DaemonSet tolerates it too, so its pods get the same gem tree.
 
 ## Caps from slots (built, not enabled)
 

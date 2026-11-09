@@ -636,14 +636,28 @@ class LiveRig(SharedRig):
     """The deployed waker.conf (three nodes, live allocatable), with the
     taints the node controller and Cilium put on a sleeping node."""
 
-    def __init__(self, mode="full"):
+    def __init__(self, mode="full", always_on=False):
         self.cfg = live_config()
         self.cfg.update(mode=mode)
+        if not always_on:
+            # The Talos nodes alone, as before the always-on pilot (9 Nov
+            # 2026): these scenarios were written for that world, and the
+            # always-on node and zagreus-ci's floor that came with it have
+            # their own tests (test_always_on.py, LiveRig(always_on=True)).
+            self.cfg["nodes"] = [n for n in self.cfg["nodes"] if not n.get("alwaysOn")]
+            self.cfg["sets"] = [{k: v for k, v in s.items() if not (s["name"] == CI and k == "floor")}
+                                for s in self.cfg["sets"]]
         self.clock = Clock()
         self.kube = FakeKube(self.cfg, self.clock)
         self.kube.node_controller_taints = True
         for name, a in LIVE_ALLOCATABLE.items():
             self.kube.nodes[name]["status"]["allocatable"] = dict(a)
+        self.always_on = [n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn")]
+        for name in self.always_on:
+            # As built (asn-infra zagreus/vm-runner): 4 vCPU, 8 GiB, its own
+            # taint, and no AMT or Wake-on-LAN.
+            self.kube.nodes[name]["status"]["allocatable"] = {"cpu": "3800m", "memory": "7300Mi"}
+            self.kube.taint(name, "zagreus.asn.casa/always-on")
         # The ceilings as the Applications write them.
         runners = os.path.join(WAKER_DIR, "..", "runners")
         files = {CI: "spritz/ci.yaml", X64: "spritz/ci-x64.yaml", BUILDER: "spritz/docker-amd64.yaml",
@@ -655,6 +669,7 @@ class LiveRig(SharedRig):
         self.spritz = FakeGitHub()
         self.simplytics = FakeGitHub()
         self.amt = FakeAMT(self.kube, self.clock)
+        self.amt.missing |= set(self.always_on)
         self.talos = FakeTalos(self.kube, self.amt)
         self.waker = w.Waker(self.cfg, self.kube, {"default": self.spritz, "simplytics": self.simplytics},
                              self.amt, self.talos, clock=self.clock, sleep=self.clock.sleep, my_node="cp1")

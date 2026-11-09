@@ -55,6 +55,13 @@ spec:
           spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 60
+            # The always-on VM (waker README, "Always-on node") carries this
+            # taint so only runner pods land there. Its slot is offered to
+            # every set drawing on the zagreus-ci pool, so each must tolerate it.
+            tolerations:
+              - key: zagreus.asn.casa/always-on
+                operator: Exists
+                effect: NoSchedule
             affinity:
               nodeAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:

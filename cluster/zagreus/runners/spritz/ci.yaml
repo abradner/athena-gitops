@@ -51,13 +51,14 @@ spec:
         # CPU binds on the two i7s: zag-amd64-01 fits the builder and three
         # heavy pods (6.51 of 7.95 CPU; a fourth makes 8.01), zag-amd64-02
         # fits four (6.76; a fifth makes 8.26). Memory binds on the i5:
-        # zag-amd64-03 fits two (14.25 of 14.4 GiB). Nine heavy pods in all:
-        # this set 7, ci-x64.yaml 2. Re-check whenever a request, a DaemonSet
+        # zag-amd64-03 fits two (14.25 of 14.4 GiB). The always-on VM
+        # zag-vm-01 (4 vCPU, 8 GiB, ballooning) fits one. Ten heavy pods in
+        # all: this set 8, ci-x64.yaml 2. Re-check whenever a request, a DaemonSet
         # or a node changes. The node waker drives the live value from the
         # awake nodes, and this is its ceiling (README, "Runners";
         # ../../waker/waker.conf holds the per-node slots that sum to it, and
         # its test_configured_slots_fit_the_nodes checks the sums).
-        maxRunners: 7
+        maxRunners: 8
         listenerTemplate:
           spec:
             nodeSelector:
@@ -74,6 +75,13 @@ spec:
           spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 60
+            # The always-on VM (waker README, "Always-on node") carries this
+            # taint so only runner pods land there. Its slot is offered to
+            # every set drawing on the zagreus-ci pool, so each must tolerate it.
+            tolerations:
+              - key: zagreus.asn.casa/always-on
+                operator: Exists
+                effect: NoSchedule
             affinity:
               nodeAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:

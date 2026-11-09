@@ -242,6 +242,11 @@ spec:
       priorityClassName: ci-dev
       nodeSelector:
         zagreus.asn.casa/role: amd64-runner
+      # The always-on VM too, so its CI pods get the same gem tree.
+      tolerations:
+        - key: zagreus.asn.casa/always-on
+          operator: Exists
+          effect: NoSchedule
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
