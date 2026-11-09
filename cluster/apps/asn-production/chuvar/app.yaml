@@ -14,7 +14,17 @@ metadata:
   name: chuvar-web
   namespace: asn-production
 spec:
-  replicas: 1
+  # Two replicas so a single node loss or drain doesn't take the site down.
+  # The spread is soft and nothing moves pods back afterwards, so after a
+  # node loss both can stay on one node; a later reschedule may spread them.
+  # Rolling update adds the new pod and waits for it to be Ready before
+  # removing an old one, so something answers during a deploy or restart.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: chuvar-web
@@ -23,6 +33,14 @@ spec:
       labels:
         app: chuvar-web
     spec:
+      # Soft: a pod beside its twin beats a pod left Pending while a node is down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: chuvar-web
       imagePullSecrets:
         - name: ghcr-pull
       containers:
@@ -53,6 +71,22 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+---
+# Without a PDB a drain could evict both replicas at once. AlwaysAllow lets
+# a drain evict pods that aren't Ready (say, a bad image that never passes
+# its probe),
+# instead of hanging until they recover.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chuvar-web
+  namespace: asn-production
+spec:
+  minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: chuvar-web
 ---
 apiVersion: v1
 kind: Service
