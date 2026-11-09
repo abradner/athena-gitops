@@ -601,18 +601,19 @@ for bot PRs.
 
 A node's slots must fit on it even when everything else that can land there
 does. That means two light pods (768 MiB, 250m each), the bundle fill,
-coredns and the DaemonSets: about 2.25 GiB and 0.76 CPU. A heavy pod requests
+coredns and the DaemonSets (the cache pruner included, from 9 Nov 2026):
+about 2.28 GiB and 0.77 CPU. A heavy pod requests
 6 GiB and 1.5 CPU. The builder requests 3.75 GiB and 1.25 CPU with its dind.
 Figures from 1 Nov 2026, after the RAM shuffle (01 and 02 at 32 GB, 03 at 16).
 
-- zag-amd64-01 carries three heavy pods and the builder: 18 + 3.75 + 2.25 =
-  24 GiB of 30.3, and 4.5 + 1.25 + 0.76 = 6.51 CPU of 7.95. A fourth heavy
-  pod would need 8.01 CPU, so CPU binds, not memory.
-- zag-amd64-02 carries four heavy pods: 24 + 2.25 = 26.25 GiB, 6.76 CPU. A
-  fifth would need 8.26 CPU. The builder's slot belongs to 01, so it never
+- zag-amd64-01 carries three heavy pods and the builder: 18 + 3.75 + 2.28 =
+  24 GiB of 30.3, and 4.5 + 1.25 + 0.77 = 6.52 CPU of 7.95. A fourth heavy
+  pod would need 8.02 CPU, so CPU binds, not memory.
+- zag-amd64-02 carries four heavy pods: 24 + 2.28 = 26.28 GiB, 6.77 CPU. A
+  fifth would need 8.27 CPU. The builder's slot belongs to 01, so it never
   lands on 02 or 03 (its template names 01: "Floor").
-- zag-amd64-03 (i5-7500, 4 threads) carries two: 12 + 2.25 = 14.25 GiB of
-  14.4, and 3.76 CPU of 3.95. It is last in the list, so it wakes last and
+- zag-amd64-03 (i5-7500, 4 threads) carries two: 12 + 2.28 = 14.28 GiB of
+  14.4, and 3.77 CPU of 3.95. It is last in the list, so it wakes last and
   sleeps first.
 
 The configured slots are an upper bound, not a promise. Each pass, the

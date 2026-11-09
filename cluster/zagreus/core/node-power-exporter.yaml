@@ -17,7 +17,8 @@
 # Who can read :9100: anything that can reach a node's address on the CI VLAN.
 # Runner pods cannot (core/runner-network-policy.yaml denies them every private
 # address and allows no `host` egress); the router lets in only the metrics
-# store. What it serves is CPU, memory, load, temperatures and RAPL counters.
+# store. What it serves is CPU, memory, load, temperatures, RAPL counters and
+# how full /var is.
 #
 # Not privileged. RAPL's energy_uj has been readable by root only since the
 # Platypus side channel (CVE-2020-8694), so the container runs as uid 0, which
@@ -84,8 +85,12 @@ spec:
           args:
             - --path.procfs=/host/proc
             - --path.sysfs=/host/sys
-            # Only what the dashboard uses. Filesystem, network and the rest
-            # are off: smaller pages, and nothing about job workloads leaks.
+            # Mount points are read from the host's /proc/1/mountinfo and
+            # statted under this prefix; only /var is mounted there (below).
+            - --path.rootfs=/host/root
+            # Only what the dashboard and the disk alert use. Network and the
+            # rest are off: smaller pages, and nothing about job workloads
+            # leaks.
             - --collector.disable-defaults
             - --collector.rapl
             - --collector.cpu
@@ -96,6 +101,13 @@ spec:
             - --collector.thermal_zone
             - --collector.time
             - --collector.uname
+            # /var alone: Talos's EPHEMERAL volume, which holds the CI caches,
+            # the builders' Docker data, images and every pod's scratch space.
+            # The infrastructure repo alerts when it fills
+            # (observability/rules/zagreus-disk.yaml); a full /var taints the
+            # node DiskPressure and its runner pods sit Pending.
+            - --collector.filesystem
+            - --collector.filesystem.mount-points-include=^/var$
             # The node waker's queue-age gauges (waker/README.md, "Queue
             # watchdog"): it writes the ConfigMap mounted below, and the
             # metrics store scrapes them with everything else. Every node
@@ -136,6 +148,7 @@ spec:
           volumeMounts:
             - {name: proc, mountPath: /host/proc, readOnly: true}
             - {name: sys, mountPath: /host/sys, readOnly: true}
+            - {name: var, mountPath: /host/root/var, readOnly: true}
             - {name: waker-metrics, mountPath: /textfile, readOnly: true}
       volumes:
         # Created by the waker on its first write, so optional: until then
@@ -146,3 +159,5 @@ spec:
           hostPath: {path: /proc, type: Directory}
         - name: sys
           hostPath: {path: /sys, type: Directory}
+        - name: var
+          hostPath: {path: /var, type: Directory}

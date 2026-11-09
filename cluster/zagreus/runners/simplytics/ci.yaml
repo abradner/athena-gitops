@@ -88,6 +88,8 @@ spec:
                 env:
                   - name: RUNNER_CACHE_DIRS
                     value: /home/runner/.local/share/mise:/home/runner/.cache/ms-playwright:/home/runner/.bun/install/cache
+                  # As spritz's (spritz/ci.yaml): old browser revisions are
+                  # pruned on the node by ../ci-cache-prune.yaml instead.
                   - name: PLAYWRIGHT_SKIP_BROWSER_GC
                     value: "1"
                   - name: MISE_CACHE_DIR

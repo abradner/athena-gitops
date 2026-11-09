@@ -646,12 +646,15 @@ class Caps(unittest.TestCase):
         alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-vm-01": 3.8}
         pod_gib = {"zagreus-ci": 6, "zagreus-ci-x64": 6, "zagreus-docker-amd64": 3 + 0.75}
         pod_cpu = {"zagreus-ci": 1.5, "zagreus-ci-x64": 1.5, "zagreus-docker-amd64": 1 + 0.25}
-        others_gib = 2 * 0.75 + 0.25 + 0.5  # two light pods, bundle fill, coredns and slack
-        # two light pods, coredns, then cilium, the bundle fill and the other DaemonSets
-        others_cpu = 2 * 0.25 + 0.1 + 0.156
+        # two light pods, bundle fill, coredns and slack, then the cache pruner
+        others_gib = 2 * 0.75 + 0.25 + 0.5 + 0.03
+        # two light pods, coredns, then cilium, the bundle fill and the other
+        # DaemonSets, then the cache pruner (runners/ci-cache-prune.yaml)
+        others_cpu = 2 * 0.25 + 0.1 + 0.156 + 0.005
         # The always-on node is tainted: no light pods or coredns land there,
-        # only Cilium, the bundle fill and the other DaemonSets.
-        always_on_gib, always_on_cpu = 0.25 + 0.5, 0.156
+        # only Cilium, the bundle fill, the cache pruner and the other
+        # DaemonSets.
+        always_on_gib, always_on_cpu = 0.25 + 0.5 + 0.03, 0.156 + 0.005
         nodes = live_config()["nodes"]
         self.assertEqual(set(alloc_gib), {n["name"] for n in nodes})
         for n in nodes:
@@ -719,9 +722,9 @@ class ThreeNodes(unittest.TestCase):
     # Live allocatable (1 Nov 2026) less the worst case of everything else
     # that may land there (two light pods, coredns, DaemonSets), in CPU and
     # GiB. Requests as the pod templates give them.
-    FREE = {"zag-amd64-01": (7.95 - 0.76, 30.34 - 2.25),
-            "zag-amd64-02": (7.95 - 0.76, 30.22 - 2.25),
-            "zag-amd64-03": (3.95 - 0.76, 14.44 - 2.25)}
+    FREE = {"zag-amd64-01": (7.95 - 0.765, 30.34 - 2.28),
+            "zag-amd64-02": (7.95 - 0.765, 30.22 - 2.28),
+            "zag-amd64-03": (3.95 - 0.765, 14.44 - 2.28)}
     REQ = {"zagreus-ci": (1.5, 6.0), "zagreus-ci-x64": (1.5, 6.0), "zagreus-docker-amd64": (1.25, 3.75),
            "zagreus-simplytics-ci": (1.5, 6.0)}
 
