@@ -1,0 +1,199 @@
+---
+# The Intel iGPU's clock and idle time, on the GPU workers only.
+#
+# On a GPU worker the iGPU and the CPU cores share one package power budget,
+# and heavy load on either can pull the iGPU clock down mid-encode (the spritz
+# transcoder and atmosphere gpurenderd comments both warn of it). The private
+# infra repo's "host power" dashboard sets this clock beside the host's
+# package watts, which only the hypervisor can read, to show whether that
+# happens.
+#
+# i915 publishes the clock and its RC6 (idle sleep) residency as
+# world-readable sysfs files, so this needs no privilege, no
+# gpu.intel.com/i915 share and no new image: a busybox loop in the
+# node-exporter image writes a textfile, and a node_exporter with only the
+# textfile collector serves it on the pod network. It does not split work by
+# engine (render vs video); that needs the i915 PMU (intel_gpu_top,
+# CAP_PERFMON), deliberately not done here.
+#
+# A DaemonSet of its own, on the GPU workers only, rather than a sidecar in the
+# chart's node-exporter (vm-stack-app.yaml): those sidecars are ordinary pod
+# containers, so a crash or OOM of one would make every node's node-exporter
+# pod NotReady and drop that node's metrics. Here a failure costs only the
+# iGPU series. Like bootfacts, the loop never exits: a failed read is
+# athena_igpu_ok 0.
+#
+# Scraped by the in-cluster vmagent (selectAllByDefault) through the
+# VMPodScrape below, and written to the external store like every other
+# athena metric.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: igpu-metrics
+  namespace: observability
+  labels:
+    app: igpu-metrics
+spec:
+  selector:
+    matchLabels:
+      app: igpu-metrics
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: igpu-metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The GPU workers, as the Intel GPU plugin selects them.
+      nodeSelector:
+        spritz.dev/gpu: intel
+      tolerations:
+        - key: spritz.dev/gpu
+          operator: Equal
+          value: intel
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: igpu
+          image: quay.io/prometheus/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              out=/textfile/igpu.prom
+              # The first DRM card driven by i915 (connector entries like
+              # card0-DP-1 skipped). Symlinks in sysfs are relative, so they
+              # resolve under /host/sys too.
+              card() {
+                for c in /host/sys/class/drm/card[0-9]*; do
+                  case "$c" in *-*) continue ;; esac
+                  d=$(readlink "$c/device/driver" 2>/dev/null) || continue
+                  [ "${d##*/}" = i915 ] && [ -e "$c/gt_act_freq_mhz" ] || continue
+                  echo "$c"
+                  return 0
+                done
+                return 1
+              }
+              # A whole-number file's value, or failure.
+              rd() {
+                v=$(cat "$1" 2>/dev/null) || return 1
+                case "$v" in ''|*[!0-9]*) return 1 ;; esac
+                echo "$v"
+              }
+              emit() {
+                c=$1
+                l="card=\"${c##*/}\""
+                ok=1
+                echo '# HELP athena_igpu_frequency_actual_mhz The iGPU clock the hardware is running at (i915 gt_act_freq_mhz). A sample, not an average.'
+                echo '# TYPE athena_igpu_frequency_actual_mhz gauge'
+                if v=$(rd "$c/gt_act_freq_mhz"); then echo "athena_igpu_frequency_actual_mhz{$l} $v"; else ok=0; fi
+                echo '# HELP athena_igpu_frequency_requested_mhz The iGPU clock the driver asked for (i915 gt_cur_freq_mhz).'
+                echo '# TYPE athena_igpu_frequency_requested_mhz gauge'
+                if v=$(rd "$c/gt_cur_freq_mhz"); then echo "athena_igpu_frequency_requested_mhz{$l} $v"; else ok=0; fi
+                echo '# HELP athena_igpu_frequency_max_mhz The iGPU hardware maximum clock (i915 gt_RP0_freq_mhz).'
+                echo '# TYPE athena_igpu_frequency_max_mhz gauge'
+                if v=$(rd "$c/gt_RP0_freq_mhz"); then echo "athena_igpu_frequency_max_mhz{$l} $v"; else ok=0; fi
+                # Newer kernels expose RC6 per GT; older ones on the card.
+                r=$c/gt/gt0/rc6_residency_ms
+                [ -e "$r" ] || r=$c/power/rc6_residency_ms
+                echo '# HELP athena_igpu_rc6_residency_seconds_total Time the iGPU has spent in RC6, its idle sleep state, since boot. 1 - rate() is the share of time it was awake.'
+                echo '# TYPE athena_igpu_rc6_residency_seconds_total counter'
+                if v=$(rd "$r"); then
+                  printf 'athena_igpu_rc6_residency_seconds_total{%s} %d.%03d\n' "$l" $((v / 1000)) $((v % 1000))
+                else ok=0; fi
+                echo '# HELP athena_igpu_ok 1 when every iGPU file was read; 0 means a read failed.'
+                echo '# TYPE athena_igpu_ok gauge'
+                echo "athena_igpu_ok{$l} $ok"
+              }
+              # Exit at once on TERM, so a pod roll never waits on the sleep.
+              trap 'exit 0' TERM INT
+              while :; do
+                if c=$(card); then
+                  emit "$c" > "$out.tmp" && mv "$out.tmp" "$out"
+                  sleep 15 & wait $!
+                else
+                  # A GPU worker without its card (driver not bound yet):
+                  # report nothing rather than a stale reading.
+                  rm -f "$out"
+                  sleep 60 & wait $!
+                fi
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 4Mi
+            limits:
+              memory: 16Mi
+          volumeMounts:
+            - {name: sys, mountPath: /host/sys, readOnly: true}
+            - {name: textfile, mountPath: /textfile}
+        - name: exporter
+          image: quay.io/prometheus/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+          args:
+            - --collector.disable-defaults
+            - --collector.textfile
+            - --collector.textfile.directory=/textfile
+            - --web.listen-address=:9101
+            - --web.disable-exporter-metrics
+          ports:
+            - name: metrics
+              containerPort: 9101
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 2m
+              memory: 12Mi
+            limits:
+              memory: 32Mi
+          readinessProbe:
+            httpGet: {path: /, port: metrics}
+            periodSeconds: 30
+          volumeMounts:
+            - {name: textfile, mountPath: /textfile, readOnly: true}
+      volumes:
+        # Read-only host sysfs, as the chart's node-exporter mounts it. The
+        # namespace is labelled privileged for that (namespace.yaml).
+        - name: sys
+          hostPath: {path: /sys, type: Directory}
+        - name: textfile
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: igpu-metrics
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app: igpu-metrics
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      # The node's name on every sample, so a second GPU worker reads as a
+      # second line, not as another pod address.
+      relabelConfigs:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
