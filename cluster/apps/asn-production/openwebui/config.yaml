@@ -1,0 +1,65 @@
+---
+# Non-secret settings. Design and the reason for each: asn-infra llm/frontend/README.md.
+#
+# Open WebUI copies most of these into its database on FIRST start ("persistent config") and
+# reads them from there afterwards: changing a value here later does nothing for those keys.
+# Change them in Admin > Settings instead (or set ENABLE_PERSISTENT_CONFIG=false deliberately).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-config
+  namespace: asn-production
+data:
+  WEBUI_NAME: "Open WebUI"
+  WEBUI_URL: "https://chat.athena.asn.casa"
+  CORS_ALLOW_ORIGIN: "https://chat.athena.asn.casa"
+  ENV: "prod"
+  # accounts: no self-signup; new accounts wait for an admin; TOTP required for everyone
+  ENABLE_SIGNUP: "false"
+  DEFAULT_USER_ROLE: "pending"
+  ENABLE_MFA: "true"
+  MFA_ALLOW_OAUTH_BYPASS: "false"
+  MFA_ALLOW_TRUSTED_HEADER_BYPASS: "false"
+  WEBUI_ADMIN_NAME: "Admin"
+  # models: only the OpenAI-compatible endpoint (URL and key come from the Secret)
+  ENABLE_OLLAMA_API: "false"
+  ENABLE_OPENAI_API: "true"
+  # the GPU host serves one request at a time: no background generations queued ahead of users
+  ENABLE_FOLLOW_UP_GENERATION: "false"
+  ENABLE_TAGS_GENERATION: "false"
+  ENABLE_AUTOCOMPLETE_GENERATION: "false"
+  # files: every upload goes to the eml-loader, which uses Tika and restores email headers
+  CONTENT_EXTRACTION_ENGINE: "external"
+  EXTERNAL_DOCUMENT_LOADER_URL: "http://openwebui-loader:8000"
+  # state lives off-cluster: Postgres (with pgvector) for accounts, chats and vectors, Garage for files
+  VECTOR_DB: "pgvector"
+  STORAGE_PROVIDER: "s3"
+  S3_ENDPOINT_URL: "http://garage.infra.asn.casa:3900"
+  S3_BUCKET_NAME: "openwebui-production"
+  S3_REGION_NAME: "garage"
+  S3_ADDRESSING_STYLE: "path"
+  # web search through the in-cluster SearXNG
+  ENABLE_WEB_SEARCH: "true"
+  WEB_SEARCH_ENGINE: "searxng"
+  SEARXNG_QUERY_URL: "http://openwebui-searxng:8080/search?q=<query>"
+  WEB_SEARCH_RESULT_COUNT: "3"
+  # code interpreter (runs in the user's browser); kill switch: Admin > Settings > Code Execution
+  ENABLE_CODE_INTERPRETER: "true"
+  ANONYMIZED_TELEMETRY: "false"
+  DO_NOT_TRACK: "true"
+  SCARF_NO_ANALYTICS: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-searxng-settings
+  namespace: asn-production
+data:
+  settings.yml: |
+    use_default_settings: true
+    server:
+      limiter: false        # the only client is Open WebUI in this namespace
+      image_proxy: false
+      public_instance: false
+    search:
+      formats: [html, json] # Open WebUI asks for JSON
