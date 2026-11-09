@@ -2,9 +2,12 @@
 # built-in builder only. spritz's workflows build through a buildx builder of
 # the docker-container driver (`name: spritz`, keep-state), whose cache lives
 # in its own volume and is bounded only by that builder's buildkitd config in
-# the workflows. That cap is not set yet (a follow-up, to be tried on a
-# throwaway branch first, since it changes every image build); one home
-# builder's cache grew from ~3 GB to 28 GB in two weeks without it.
+# the workflows. spritz sets it at every keep-state step (buildkitd-config-
+# inline, 25 GB; grep maxUsedSpace there); one home builder's cache grew from
+# ~3 GB to 28 GB in two weeks before it. Runner images built from that spritz
+# change on also carry a job-completed hook that prunes stopped containers,
+# anonymous volumes and dangling images from this daemon after each job; the
+# builders here run it once their runner pin moves to such an image.
 apiVersion: v1
 kind: ConfigMap
 metadata:

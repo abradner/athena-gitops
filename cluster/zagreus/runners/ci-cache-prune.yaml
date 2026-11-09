@@ -1,0 +1,229 @@
+# Prunes the per-node CI caches under /var/lib/ci-cache/ on the amd64 runner
+# nodes, once /var is 70% full or more. Those caches are host paths so they
+# outlive each single-job runner pod (README, "Warm without being
+# persistent"), which also means nothing else ever removes anything from them:
+# a Playwright bump leaves the old browsers (the runner pods set
+# PLAYWRIGHT_SKIP_BROWSER_GC, since a pod's own install would delete browsers a
+# concurrent job is using), a Ruby bump the old compiled Ruby, and bun's cache
+# only grows.
+#
+# What it removes, spritz's and simplytics' trees alike (prune.sh has the
+# detail): all but the newest two revisions of each browser; a mise install
+# outside the newest three of its tool and unused for 14 days; mise downloads
+# over a day old; a bun cache entry over 30 days old. "Unused" is the newest
+# access time of the files inside, which relatime keeps to within a day (a
+# directory's own atime is no use: listing it bumps it). bun goes by age
+# alone, since installing from its cache need not read a file. Below the
+# threshold it removes nothing, so a node with room keeps everything warm.
+# Each removal is a rename into .ci-cache-prune-trash/ and only then a
+# delete, so a pass killed part-way never leaves a half-emptied install
+# that mise or Playwright would take for complete. Not touched: bundle-trees/ (spritz-bundle-fill prunes its
+# own), and the builders' /var/lib/arc-docker (BuildKit's GC caps in spritz's
+# workflows, and dockerd's in core/dind-daemon.yaml).
+#
+# The races, all on a node already over 70%: a job on an old branch using a
+# browser three revisions back loses it mid-run, and a job installing from a
+# bun entry that turns 30 days old that minute may fail. A rerun reinstalls
+# either. A Ruby in use is safe: running it keeps its atime fresh. This
+# assumes relatime on /var (Talos's default); under noatime, mise installs
+# outside the newest three would read as unused.
+#
+# Requests are tiny and the pod is ci-dev priority, so it never holds a slot
+# a CI pod wants; waker/tests counts it with the other DaemonSets.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ci-cache-prune
+  namespace: arc-runners
+data:
+  prune.sh: |
+    #!/bin/bash
+    # Prunes this node's CI caches under /cache (= /var/lib/ci-cache) once /var
+    # is PRUNE_AT percent full or more, then sleeps. Each pass logs what it found
+    # and what it removed. Only these trees are touched, for spritz and for
+    # simplytics alike:
+    #   <root>/ms-playwright   all but the newest KEEP_BROWSERS revisions of
+    #                          each browser
+    #   <root>/mise            installs/<tool>/<version> outside the newest
+    #                          KEEP_TOOLS of its tool AND unused for IDLE_DAYS;
+    #                          downloads/ older than a day
+    #   <root>/bun             cache entries older than BUN_DAYS
+    # bundle-trees/ belongs to spritz-bundle-fill, which prunes it itself.
+    set -uo pipefail
+
+    PRUNE_AT=${PRUNE_AT:-70}
+    KEEP_BROWSERS=${KEEP_BROWSERS:-2}
+    KEEP_TOOLS=${KEEP_TOOLS:-3}
+    IDLE_DAYS=${IDLE_DAYS:-14}
+    BUN_DAYS=${BUN_DAYS:-30}
+    INTERVAL=${INTERVAL:-3600}
+    CACHE=${CACHE:-/cache}
+    ROOTS=("$CACHE" "$CACHE/simplytics")
+
+    TRASH="$CACHE/.ci-cache-prune-trash"
+
+    log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
+    used_pct() { df -P "$CACHE" | awk 'NR == 2 { sub("%", "", $5); print $5 }'; }
+
+    # Take a directory out of the cache in one step, by renaming it into the
+    # trash (same filesystem, so rename is atomic), and only then delete it. A
+    # pass killed part-way (the waker labelling the node asleep, a rollout, a
+    # shutdown) or an rm that fails half-way then leaves debris only in the
+    # trash, never a half-emptied install that mise or Playwright would take for
+    # a complete one. The trash is emptied at the start of every pass.
+    remove() {
+      local d=$1 dest
+      dest="$TRASH/$(date +%s%N)-${d##*/}"
+      # Renaming a directory to a new parent needs write permission on it.
+      chmod u+w -- "$d" 2>/dev/null
+      if mv -T -- "$d" "$dest"; then
+        log "removed ${d#"$CACHE"/}"
+        empty_trash
+      else
+        log "could not remove ${d#"$CACHE"/}"
+      fi
+    }
+
+    # Deletes whatever is in the trash, even where a tool left it read-only
+    # (mise's markers, Go-style caches).
+    empty_trash() {
+      [ -d "$TRASH" ] || return 0
+      chmod -R u+w -- "$TRASH" 2>/dev/null
+      find "$TRASH" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null \
+        || log "trash not fully emptied; retrying next pass"
+    }
+
+    # Newest access time of the files directly in a directory, in epoch seconds.
+    # relatime updates it about once a day, which is all IDLE_DAYS needs.
+    last_used() { find "$1" -maxdepth 2 -type f -printf '%A@\n' 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1; }
+
+    prune_playwright() {
+      local dir=$1 family
+      [ -d "$dir" ] || return 0
+      # Revision directories are <browser>-<number>: chromium-1187,
+      # chromium_headless_shell-1187, firefox-1490, webkit-2203, ffmpeg-1011.
+      for family in $(find "$dir" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended -regex '.*/[a-z_]+-[0-9]+' -printf '%f\n' | sed 's/-[0-9]*$//' | sort -u); do
+        find "$dir" -mindepth 1 -maxdepth 1 -type d -name "${family}-*" -printf '%f\n' \
+          | grep -E "^${family}-[0-9]+$" | sort -t- -k2,2 -n -r | tail -n +"$((KEEP_BROWSERS + 1))" \
+          | while read -r old; do
+              # Not one installed in the last day, whatever its number.
+              if [ -n "$(find "$dir/$old" -maxdepth 0 -mmin -1440)" ]; then continue; fi
+              remove "$dir/$old"
+            done
+      done
+    }
+
+    prune_mise() {
+      local dir=$1 tool now cutoff
+      [ -d "$dir/installs" ] || return 0
+      now=$(date +%s); cutoff=$((now - IDLE_DAYS * 86400))
+      for tool in "$dir"/installs/*/; do
+        tool=${tool%/}
+        # Real version directories only: mise also keeps symlinks (latest, 3.4).
+        find "$tool" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V -r | tail -n +"$((KEEP_TOOLS + 1))" \
+          | while read -r v; do
+              used=$(last_used "$tool/$v/bin"); used=${used:-0}
+              if [ "$used" -ge "$cutoff" ]; then continue; fi
+              remove "$tool/$v"
+            done
+      done
+      [ -d "$dir/downloads" ] && find "$dir/downloads" -mindepth 2 -maxdepth 2 -mmin +1440 -print0 \
+        | while IFS= read -r -d '' d; do remove "$d"; done
+    }
+
+    prune_bun() {
+      local dir=$1
+      [ -d "$dir" ] || return 0
+      # By age alone. Access times can't show use here: bun installs from its
+      # cache by hardlink or a copy that need not read the file (a reflink on
+      # XFS), so a package used daily can look untouched. An entry older than
+      # BUN_DAYS that is still wanted is downloaded again, which is cheap; a
+      # job installing from that very entry at that moment may fail, a rare
+      # event on a node already over the threshold, fixed by a rerun.
+      find "$dir" -mindepth 1 -maxdepth 1 -mtime +"$BUN_DAYS" -print0 \
+        | while IFS= read -r -d '' d; do remove "$d"; done
+    }
+
+    pass() {
+      local pct root
+      empty_trash
+      pct=$(used_pct)
+      case "$pct" in
+        ''|*[!0-9]*) log "cannot read /var usage ('$pct'); skipping"; return ;;
+      esac
+      if [ "$pct" -lt "$PRUNE_AT" ]; then log "/var ${pct}% used, under ${PRUNE_AT}%: nothing to do"; return; fi
+      log "/var ${pct}% used, at or over ${PRUNE_AT}%: pruning"
+      for root in "${ROOTS[@]}"; do
+        prune_playwright "$root/ms-playwright"
+        prune_mise "$root/mise"
+        prune_bun "$root/bun"
+      done
+      log "/var $(used_pct)% used after pruning"
+    }
+
+    if [ "${1:-}" = "--once" ]; then mkdir -p -- "$TRASH"; pass; exit 0; fi
+    # PID 1 ignores SIGTERM unless it traps it. Stopping mid-pass is safe (see
+    # remove), so stop at once rather than wait out the grace period.
+    trap 'log "stopping"; exit 0' TERM INT
+    mkdir -p -- "$TRASH"
+    while :; do
+      pass
+      sleep "$INTERVAL" & wait $!
+    done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ci-cache-prune
+  namespace: arc-runners
+spec:
+  selector:
+    matchLabels: {app: ci-cache-prune}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Stateless; see core/node-power-exporter.yaml for why not 1 here.
+      maxUnavailable: "100%"
+  template:
+    metadata:
+      labels: {app: ci-cache-prune}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      priorityClassName: ci-dev
+      terminationGracePeriodSeconds: 5
+      # The nodes whose runner pods mount /var/lib/ci-cache, and not one the
+      # waker has put to sleep: a DaemonSet pod that can never start there
+      # keeps the Application Progressing (core/node-power-exporter.yaml).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: zagreus.asn.casa/role, operator: In, values: [amd64-runner]}
+                  - {key: zagreus.asn.casa/asleep, operator: DoesNotExist}
+      # The runner user, which owns every cache (the runner image's
+      # entrypoint hands the mount points to it).
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: prune
+          image: debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+          command: ["/bin/bash", "/scripts/prune.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 5m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+            - {name: scripts, mountPath: /scripts, readOnly: true}
+      volumes:
+        - {name: cache, hostPath: {path: /var/lib/ci-cache, type: DirectoryOrCreate}}
+        - {name: scripts, configMap: {name: ci-cache-prune}}
