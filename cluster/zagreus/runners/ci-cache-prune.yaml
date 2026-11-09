@@ -17,7 +17,9 @@
 # threshold it removes nothing, so a node with room keeps everything warm.
 # Each removal is a rename into .ci-cache-prune-trash/ and only then a
 # delete, so a pass killed part-way never leaves a half-emptied install
-# that mise or Playwright would take for complete. Not touched: bundle-trees/ (spritz-bundle-fill prunes its
+# that mise or Playwright would take for complete. A trash it cannot use, or
+# a pass where every removal failed, exits non-zero: the pod restarts and
+# its log says why, rather than pruning nothing in silence. Not touched: bundle-trees/ (spritz-bundle-fill prunes its
 # own), and the builders' /var/lib/arc-docker (BuildKit's GC caps in spritz's
 # workflows, and dockerd's in core/dind-daemon.yaml).
 #
@@ -50,6 +52,10 @@ data:
     #                          downloads/ older than a day
     #   <root>/bun             cache entries older than BUN_DAYS
     # bundle-trees/ belongs to spritz-bundle-fill, which prunes it itself.
+    #
+    # Fails loudly rather than pruning nothing in silence: it exits non-zero
+    # (the pod restarts, and its log says why) when the trash directory is
+    # missing or not writable, and when every removal a pass attempted failed.
     set -uo pipefail
 
     PRUNE_AT=${PRUNE_AT:-70}
@@ -61,7 +67,10 @@ data:
     CACHE=${CACHE:-/cache}
     ROOTS=("$CACHE" "$CACHE/simplytics")
 
+    # Created and handed to uid 1000 by the DaemonSet's init container:
+    # /var/lib/ci-cache itself is the kubelet's, root-owned.
     TRASH="$CACHE/.ci-cache-prune-trash"
+    removed=0 failed=0
 
     log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
     used_pct() { df -P "$CACHE" | awk 'NR == 2 { sub("%", "", $5); print $5 }'; }
@@ -79,9 +88,11 @@ data:
       chmod u+w -- "$d" 2>/dev/null
       if mv -T -- "$d" "$dest"; then
         log "removed ${d#"$CACHE"/}"
+        removed=$((removed + 1))
         empty_trash
       else
         log "could not remove ${d#"$CACHE"/}"
+        failed=$((failed + 1))
       fi
     }
 
@@ -104,13 +115,14 @@ data:
       # Revision directories are <browser>-<number>: chromium-1187,
       # chromium_headless_shell-1187, firefox-1490, webkit-2203, ffmpeg-1011.
       for family in $(find "$dir" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended -regex '.*/[a-z_]+-[0-9]+' -printf '%f\n' | sed 's/-[0-9]*$//' | sort -u); do
-        find "$dir" -mindepth 1 -maxdepth 1 -type d -name "${family}-*" -printf '%f\n' \
-          | grep -E "^${family}-[0-9]+$" | sort -t- -k2,2 -n -r | tail -n +"$((KEEP_BROWSERS + 1))" \
-          | while read -r old; do
-              # Not one installed in the last day, whatever its number.
-              if [ -n "$(find "$dir/$old" -maxdepth 0 -mmin -1440)" ]; then continue; fi
-              remove "$dir/$old"
-            done
+        # Loops read from process substitution, not a pipe, so remove()'s
+        # counters stay in this shell.
+        while read -r old; do
+          # Not one installed in the last day, whatever its number.
+          if [ -n "$(find "$dir/$old" -maxdepth 0 -mmin -1440)" ]; then continue; fi
+          remove "$dir/$old"
+        done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -name "${family}-*" -printf '%f\n' \
+                   | grep -E "^${family}-[0-9]+$" | sort -t- -k2,2 -n -r | tail -n +"$((KEEP_BROWSERS + 1))")
       done
     }
 
@@ -121,15 +133,15 @@ data:
       for tool in "$dir"/installs/*/; do
         tool=${tool%/}
         # Real version directories only: mise also keeps symlinks (latest, 3.4).
-        find "$tool" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V -r | tail -n +"$((KEEP_TOOLS + 1))" \
-          | while read -r v; do
-              used=$(last_used "$tool/$v/bin"); used=${used:-0}
-              if [ "$used" -ge "$cutoff" ]; then continue; fi
-              remove "$tool/$v"
-            done
+        while read -r v; do
+          used=$(last_used "$tool/$v/bin"); used=${used:-0}
+          if [ "$used" -ge "$cutoff" ]; then continue; fi
+          remove "$tool/$v"
+        done < <(find "$tool" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V -r | tail -n +"$((KEEP_TOOLS + 1))")
       done
-      [ -d "$dir/downloads" ] && find "$dir/downloads" -mindepth 2 -maxdepth 2 -mmin +1440 -print0 \
-        | while IFS= read -r -d '' d; do remove "$d"; done
+      [ -d "$dir/downloads" ] || return 0
+      while IFS= read -r -d '' d; do remove "$d"; done \
+        < <(find "$dir/downloads" -mindepth 2 -maxdepth 2 -mmin +1440 -print0)
     }
 
     prune_bun() {
@@ -141,12 +153,21 @@ data:
       # BUN_DAYS that is still wanted is downloaded again, which is cheap; a
       # job installing from that very entry at that moment may fail, a rare
       # event on a node already over the threshold, fixed by a rerun.
-      find "$dir" -mindepth 1 -maxdepth 1 -mtime +"$BUN_DAYS" -print0 \
-        | while IFS= read -r -d '' d; do remove "$d"; done
+      while IFS= read -r -d '' d; do remove "$d"; done \
+        < <(find "$dir" -mindepth 1 -maxdepth 1 -mtime +"$BUN_DAYS" -print0)
+    }
+
+    # The trash must exist and be ours, or every removal would fail.
+    check_trash() {
+      if [ ! -d "$TRASH" ] || [ ! -w "$TRASH" ]; then
+        log "FATAL: trash $TRASH is missing or not writable by uid $(id -u); nothing can be pruned"
+        exit 1
+      fi
     }
 
     pass() {
       local pct root
+      check_trash
       empty_trash
       pct=$(used_pct)
       case "$pct" in
@@ -154,19 +175,23 @@ data:
       esac
       if [ "$pct" -lt "$PRUNE_AT" ]; then log "/var ${pct}% used, under ${PRUNE_AT}%: nothing to do"; return; fi
       log "/var ${pct}% used, at or over ${PRUNE_AT}%: pruning"
+      removed=0 failed=0
       for root in "${ROOTS[@]}"; do
         prune_playwright "$root/ms-playwright"
         prune_mise "$root/mise"
         prune_bun "$root/bun"
       done
-      log "/var $(used_pct)% used after pruning"
+      log "/var $(used_pct)% used after pruning: ${removed} removed, ${failed} failed"
+      if [ "$failed" -gt 0 ] && [ "$removed" -eq 0 ]; then
+        log "FATAL: every removal failed; exiting so the pod restarts and shows it"
+        exit 1
+      fi
     }
 
-    if [ "${1:-}" = "--once" ]; then mkdir -p -- "$TRASH"; pass; exit 0; fi
+    if [ "${1:-}" = "--once" ]; then pass; exit 0; fi
     # PID 1 ignores SIGTERM unless it traps it. Stopping mid-pass is safe (see
     # remove), so stop at once rather than wait out the grace period.
     trap 'log "stopping"; exit 0' TERM INT
-    mkdir -p -- "$TRASH"
     while :; do
       pass
       sleep "$INTERVAL" & wait $!
@@ -210,9 +235,28 @@ spec:
         runAsGroup: 1000
         runAsNonRoot: true
         seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # /var/lib/ci-cache is the kubelet's (hostPath DirectoryOrCreate),
+        # root-owned 0755, so uid 1000 cannot create the trash in it. Make
+        # it here and hand it over; install -d also corrects an existing
+        # one's owner and mode. Root with CHOWN and FOWNER only.
+        - name: trash
+          image: &image debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+          command: ["install", "-d", "-o", "1000", "-g", "1000", "-m", "0700", "/cache/.ci-cache-prune-trash"]
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [CHOWN, FOWNER]}
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
       containers:
         - name: prune
-          image: debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+          image: *image
           command: ["/bin/bash", "/scripts/prune.sh"]
           securityContext:
             allowPrivilegeEscalation: false
