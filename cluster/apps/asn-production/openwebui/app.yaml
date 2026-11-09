@@ -24,7 +24,9 @@ spec:
     spec:
       containers:
         - name: web
-          image: ghcr.io/open-webui/open-webui:v0.12.3
+          # v0.13.x migrates the database forward only and must not run beside an older pod:
+          # strategy Recreate above. Upgrading means a new image here, never two versions at once.
+          image: ghcr.io/open-webui/open-webui:v0.13.3
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

@@ -38,6 +38,12 @@ data:
   S3_BUCKET_NAME: "openwebui-production"
   S3_REGION_NAME: "garage"
   S3_ADDRESSING_STYLE: "path"
+  # retrieval sized for a 10k-token model: v0.13.1 raised the defaults (top-k 10, whole files up
+  # to 50,000 characters), which would fill the context on their own. First start only (see top).
+  RAG_TOP_K: "3"
+  RAG_TOP_K_RERANKER: "3"
+  CHUNK_SIZE: "1000"
+  RAG_FULL_TEXT_CHAR_THRESHOLD: "8000"
   # web search through the in-cluster SearXNG
   ENABLE_WEB_SEARCH: "true"
   WEB_SEARCH_ENGINE: "searxng"
