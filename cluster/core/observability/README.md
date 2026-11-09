@@ -75,10 +75,11 @@ Alertmanager, running inside the thing it monitored, would have gone silent with
 `vmalert` went out with them specifically so `absent()` rules can fire when athena stops
 reporting; a rule that only evaluates while the cluster is healthy cannot tell you it is not.
 
-The stores' PVCs left the cluster with them. One deliberate exception remains: vmagent
-runs `statefulMode` with a small PVC purely as a remote-write buffer, so a temporary
-obs-metrics outage loses nothing. That buffer is disposable — losing it costs at most
-the buffered window, never history.
+The stores' PVCs left the cluster with them. No PVC remains in this namespace. vmagent and
+the otel collector each keep a small disk buffer, so a temporary outage of the store they send
+to loses nothing; both buffers are size-limited `emptyDir` volumes, not PVCs, because a
+node-local PVC pinned its pod to one node and stranded it there when the node died. That
+buffer is disposable — losing it costs at most the buffered window, never history.
 
 ## Where things are now
 

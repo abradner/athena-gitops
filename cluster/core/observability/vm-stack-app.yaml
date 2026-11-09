@@ -86,13 +86,51 @@ spec:
               - url: http://obs-metrics.infra.asn.casa:8428/api/v1/write
             # Survive the remote target being briefly away (CT reboot):
             # buffer to disk instead of dropping samples.
-            statefulMode: true
-            statefulStorage:
-              volumeClaimTemplate:
-                spec:
-                  resources:
-                    requests:
-                      storage: 2Gi
+            #
+            # A Deployment with an emptyDir buffer, not statefulMode with a
+            # node-local PVC. The PVC pinned the pod to one node, and a
+            # StatefulSet does not replace a pod whose node has died until
+            # someone deletes it by hand; node losses left scraping down that
+            # way (2026-11-07, 2026-11-08). A Deployment's replacement starts
+            # elsewhere once the dead node's pod is evicted. The buffer is disposable either way:
+            # losing it costs at most the buffered window, never history.
+            #
+            # The operator mounts the volume named persistent-queue-data as
+            # the buffer, and uses this one instead of its own sizeless
+            # emptyDir. maxDiskUsagePerURL is what bounds the buffer (1 GiB is
+            # also the operator's default, stated here so the two numbers sit
+            # together); sizeLimit is the kubelet's backstop above it, since
+            # going over it evicts the pod. It counts against the node's
+            # ephemeral storage.
+            statefulMode: false
+            remoteWriteSettings:
+              maxDiskUsagePerURL: 1GiB
+            volumes:
+              - name: persistent-queue-data
+                emptyDir:
+                  sizeLimit: 2Gi
+            # Placement, as for the otel collector (otel-collector-app.yaml):
+            # prefer the large-NVMe workers, and a different node from the
+            # collector, so one node loss takes at most one of the two. Soft.
+            affinity:
+              nodeAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 50
+                    preference:
+                      matchExpressions:
+                        - key: athena.asn.casa/scratch
+                          operator: In
+                          values: ["nvme"]
+              podAntiAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    podAffinityTerm:
+                      topologyKey: kubernetes.io/hostname
+                      namespaces: ["observability"]
+                      labelSelector:
+                        matchLabels:
+                          app.kubernetes.io/name: opentelemetry-collector
+                          app.kubernetes.io/instance: otel-collector
             resources:
               requests:
                 cpu: 50m
