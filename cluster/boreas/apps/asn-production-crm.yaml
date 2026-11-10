@@ -1,0 +1,41 @@
+---
+# Points at the SAME path the primary's own Application uses: two Argo
+# instances, two clusters, one set of manifests, so an image bump reaches both
+# zones without anything being copied or kept in step by hand.
+#
+# Web tier only (cluster/boreas/README.md, "Warm web tier only").
+# temporal.yaml: the Temporal worker and the PostSync Job that registers the
+# retry sweeper's schedule. No Temporal frontend is reachable from this zone,
+# so the worker would CrashLoop and the Job would fail every sync. The web
+# tier still takes submissions: crm writes each one to the database before it
+# tries to start the notification workflow, and a failed start is rescued.
+# The primary's sweeper finds those rows and delivers them, so here a
+# notification is late, not lost.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-asn-production-crm
+  namespace: argocd
+spec:
+  project: boreas-workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-production/crm
+    directory:
+      exclude: 'temporal.yaml'
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

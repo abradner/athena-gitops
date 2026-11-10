@@ -388,7 +388,9 @@ available — Arm, for now, on price.
 was onboarded: spritz, spritz-marketing and mcg publish amd64 and arm64;
 chuvar, counta and crm publish arm64 only, so they cannot run in an Intel zone
 until their publish workflows add amd64. The statement above was true of the
-repo it was checked against and was generalised from there.
+repo it was checked against and was generalised from there. Those three
+workflows gained amd64 the same day (each now refuses to publish unless both
+architectures are in the manifest), and boreas runs their web tiers.
 
 ### The burn rate, which governs everything
 

@@ -55,9 +55,10 @@ spec:
       containers:
         - name: web
           # Pinned sha-<commit> tag (crm AGENTS.md §7: never a branch tag).
-          # Deploying crm = bump this tag everywhere in this file to a sha
-          # published by crm's docker.yml and let Argo sync it.
-          image: ghcr.io/abradner/crm:v202609071235@sha256:c6445c2e78cf39aae1a0b8a0d1aa90214ee6f172d85088945f0b46b83c57d6b9
+          # Deploying crm = bump this tag everywhere in this directory
+          # (app.yaml and temporal.yaml) to a sha published by crm's
+          # docker.yml and let Argo sync it.
+          image: ghcr.io/abradner/crm:sha-d1a1b545c35c3c53c337fced64ef43fab75c39e8@sha256:ef40b9d574d1f514bbb717dafd18ad4f2f45390b3f86219da39a7b0b9b1979a9
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -111,110 +112,6 @@ spec:
   selector:
     matchLabels:
       app: crm-web
----
-# Temporal worker — same image, separate process (bin/temporal-worker).
-# Nothing is delivered without it: the web process only starts workflows, so
-# a slow or failing Telegram send never sits in the request path (crm
-# AGENTS.md §4.5). It is also why crm has to run *inside* the cluster — the
-# Temporal frontend is ClusterIP-only with no ingress on 7233.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: crm-temporal-worker
-  namespace: asn-production
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: crm-temporal-worker
-  template:
-    metadata:
-      labels:
-        app: crm-temporal-worker
-    spec:
-      imagePullSecrets:
-        - name: ghcr-pull
-      containers:
-        - name: worker
-          image: ghcr.io/abradner/crm:v202609071235@sha256:c6445c2e78cf39aae1a0b8a0d1aa90214ee6f172d85088945f0b46b83c57d6b9
-          imagePullPolicy: IfNotPresent
-          args: ["./bin/temporal-worker"]
-          env:
-            - name: TEMPORAL_ADDRESS
-              value: temporal-frontend.asn-production.svc.cluster.local:7233
-            - name: TEMPORAL_NAMESPACE
-              value: crm
-          envFrom:
-            - secretRef:
-                name: crm-app
-          resources:
-            requests:
-              cpu: 25m
-              memory: 256Mi
-            limits:
-              memory: 512Mi
----
-# Registers the retry sweeper's Temporal schedule. crm's sweeper is what
-# catches a submission whose notification workflow never started — the
-# durability half of "a stranger's message is never silently lost"
-# (AGENTS.md §2 principle 3), so the schedule existing is load-bearing, not
-# housekeeping. Idempotent: the rake task is safe to re-run.
-#
-# PostSync so it runs after the worker Deployment is up, and after the
-# namespace-registration hook in ../temporal (also PostSync, same wave).
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: crm-temporal-schedules
-  namespace: asn-production
-  annotations:
-    argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-spec:
-  backoffLimit: 3
-  activeDeadlineSeconds: 600
-  template:
-    spec:
-      restartPolicy: Never
-      imagePullSecrets:
-        - name: ghcr-pull
-      containers:
-        - name: ensure-schedules
-          image: ghcr.io/abradner/crm:v202609071235@sha256:c6445c2e78cf39aae1a0b8a0d1aa90214ee6f172d85088945f0b46b83c57d6b9
-          imagePullPolicy: IfNotPresent
-          # The namespace-registration hook lives in a *different* Argo
-          # Application (../temporal), so nothing orders it before this one —
-          # a first sync can reach here with the `crm` namespace not yet
-          # created, and the rake task would fail on a namespace-not-found
-          # that a retry fixes. Retry rather than lean on backoffLimit, which
-          # would burn all its attempts inside a few seconds.
-          # `command` deliberately bypasses the image entrypoint: this Job
-          # must not run db:prepare (the web Deployment owns migrations).
-          command:
-            - sh
-            - -c
-            - |
-              for attempt in $(seq 1 20); do
-                ./bin/rails temporal:ensure_schedules && exit 0
-                echo "ensure_schedules attempt $attempt failed; retrying in 10s"
-                sleep 10
-              done
-              echo "ensure_schedules never succeeded — the retry sweeper is NOT scheduled" >&2
-              exit 1
-          env:
-            - name: TEMPORAL_ADDRESS
-              value: temporal-frontend.asn-production.svc.cluster.local:7233
-            - name: TEMPORAL_NAMESPACE
-              value: crm
-          envFrom:
-            - secretRef:
-                name: crm-app
-          resources:
-            requests:
-              cpu: 50m
-              memory: 256Mi
-            limits:
-              memory: 512Mi
 ---
 apiVersion: v1
 kind: Service

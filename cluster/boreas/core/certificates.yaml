@@ -5,8 +5,13 @@
 # same as on the primary.
 #
 # This zone issues its own copies with the same issuer config and DNS-01
-# tokens (its own ACME account key); nothing is copied between clusters. Four
+# tokens (its own ACME account key); nothing is copied between clusters. Seven
 # certificates once, then renewals, is well inside Let's Encrypt's limits.
+#
+# Waves follow the primary's: 3 for the names in the simplytics Cloudflare
+# account (chuvar.ai, inbox.simplytics.ai, spritz.events), which issue off the
+# second DNS-01 solver the ClusterIssuers gain in wave 2; that file explains
+# the deadlock a wave-1 placement causes.
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -52,6 +57,54 @@ spec:
   secretName: rabalex-wedding-tls
   dnsNames:
     - "rabalex.wedding"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: chuvar-ai-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: chuvar-ai-tls
+  dnsNames:
+    - "chuvar.ai"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: counta-click-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: counta-click-tls
+  dnsNames:
+    - "counta.click"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: inbox-simplytics-ai-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: inbox-simplytics-ai-tls
+  dnsNames:
+    - "inbox.simplytics.ai"
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod

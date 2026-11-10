@@ -1,0 +1,37 @@
+---
+# Points at the SAME path the primary's own Application uses: two Argo
+# instances, two clusters, one set of manifests, so an image bump reaches both
+# zones without anything being copied or kept in step by hand.
+#
+# Web tier only (cluster/boreas/README.md, "Warm web tier only").
+# purge-cronjob.yaml: the nightly `rake pens:purge` retention sweep. The
+# primary runs it against the same database; a second copy here would run it
+# twice, across the WAN.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-asn-production-counta
+  namespace: argocd
+spec:
+  project: boreas-workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-production/counta
+    directory:
+      exclude: 'purge-cronjob.yaml'
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
