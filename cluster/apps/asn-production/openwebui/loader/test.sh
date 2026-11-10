@@ -44,15 +44,15 @@ def email(frm, to, subject, date, body, cc=None):
     m.set_content(body)
     return m
 
-inner = email("Sam Client <sam@example.com>", "rabby@example.com", "Q3 budget follow-up",
+inner = email("Sam Client <sam@example.com>", "alice@example.com", "Q3 budget follow-up",
               "Mon, 3 Nov 2026 09:12:00 +1100",
-              "Hi Rabby,\nThe Q3 travel line is over by $4,210. Can you confirm the revised figure is $18,950?\nThanks, Sam")
+              "Hi Alice,\nThe Q3 travel line is over by $4,210. Can you confirm the revised figure is $18,950?\nThanks, Sam")
 # Tika reads the HTML alternative when there is one, so it carries the same sentence, on one
 # line long enough that quoted-printable soft-wraps it (the default loader split "$=\n18,950").
-inner.add_alternative("<p>Hi Rabby,</p><p>The Q3 travel line is over by <b>$4,210</b>. Can you "
+inner.add_alternative("<p>Hi Alice,</p><p>The Q3 travel line is over by <b>$4,210</b>. Can you "
                       "confirm the revised figure is <b>$18,950</b>?</p><p>Thanks, Sam</p>", subtype="html")
 inner_bytes = bytes(inner)
-fwd = email("Rabby <rabby@example.com>", "boss@example.com", "Fwd: Q3 budget follow-up",
+fwd = email("Alice <alice@example.com>", "boss@example.com", "Fwd: Q3 budget follow-up",
             "Tue, 4 Nov 2026 08:30:00 +1100", "FYI, see below. Numbers attached.", cc="finance@example.com")
 fwd.add_attachment(inner_bytes, maintype="message", subtype="rfc822", filename="Q3 budget follow-up.eml")
 fwd.add_attachment(xls, maintype="application", subtype="vnd.ms-excel", filename="budget.xls")
@@ -97,7 +97,7 @@ code, doc = put(inner_bytes, "message/rfc822", "mail.eml")
 text = doc["page_content"] if doc else ""
 check("eml: 200", code == 200)
 check("eml: From header kept", "From: Sam Client <sam@example.com>" in text)
-check("eml: To header kept", "To: rabby@example.com" in text)
+check("eml: To header kept", "To: alice@example.com" in text)
 check("eml: Date kept (as UTC)", "Date (UTC): 2026-11-02T22:12:00Z" in text)
 check("eml: Subject kept", "Subject: Q3 budget follow-up" in text)
 check("eml: body figure intact (no quoted-printable split)", "$18,950" in text)
