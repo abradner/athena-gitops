@@ -1,0 +1,14 @@
+# Open WebUI (app.yaml). Kustomize only to carry the eml-loader's code as a real file
+# (loader/loader.py; loader/test.sh runs against it), as cluster/zagreus/waker/ does; the name
+# hash rolls the loader pod whenever the code changes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - app.yaml
+  - config.yaml
+  - external-secrets.yaml
+configMapGenerator:
+  - name: openwebui-loader-code
+    namespace: asn-production
+    files:
+      - loader/loader.py
