@@ -1,0 +1,76 @@
+---
+# AppProjects for this cluster. Argo projects are per-cluster, so these mirror
+# the primary's rather than being shared with it.
+#
+# Wave -1: these must exist before any Application referencing them syncs.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: boreas-core-project
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: Foundational cluster services for the boreas zone
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+    - 'https://kubernetes-sigs.github.io/metrics-server/'
+    - 'https://charts.external-secrets.io'
+    - 'https://charts.jetstack.io'
+    - 'https://victoriametrics.github.io/helm-charts/'
+    - 'https://postfinance.github.io/kubelet-csr-approver'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: argocd
+    - server: 'https://kubernetes.default.svc'
+      namespace: kube-system
+    - server: 'https://kubernetes.default.svc'
+      namespace: external-secrets
+    - server: 'https://kubernetes.default.svc'
+      namespace: cert-manager
+    - server: 'https://kubernetes.default.svc'
+      namespace: default
+    - server: 'https://kubernetes.default.svc'
+      namespace: cloudflared
+    - server: 'https://kubernetes.default.svc'
+      namespace: observability
+    - server: 'https://kubernetes.default.svc'
+      namespace: local-path-storage
+    # The per-zone override ConfigMaps land in the workload namespaces, so this
+    # project must be allowed to write there. Without it Argo rejects the sync
+    # as "one or more synchronization tasks are not valid", which reads like a
+    # broken manifest rather than a project-scope problem.
+    - server: 'https://kubernetes.default.svc'
+      namespace: spritz-production
+    - server: 'https://kubernetes.default.svc'
+      namespace: asn-production
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+---
+# Production namespaces only, named exactly rather than by wildcard: staging
+# never runs in a secondary zone (docs/design-multi-az-boreas.md §4d), and a
+# project that cannot write to a staging namespace makes that structural
+# instead of a convention.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: boreas-workloads
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: Production web tiers, synced from the same paths as the primary
+  sourceRepos:
+    - 'https://github.com/abradner/athena-gitops.git'
+  destinations:
+    - server: 'https://kubernetes.default.svc'
+      namespace: spritz-production
+    - server: 'https://kubernetes.default.svc'
+      namespace: asn-production
+  # No cluster-scoped kinds at all. A destination list limits only namespaced
+  # resources, so allowing Namespace here would let a manifest under a shared
+  # path create any namespace. The two production namespaces come from
+  # core/namespaces.yaml instead, and the workload Applications don't create
+  # namespaces.
+  clusterResourceWhitelist: []

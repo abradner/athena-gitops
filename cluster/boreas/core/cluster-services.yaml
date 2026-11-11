@@ -1,0 +1,55 @@
+---
+# Required, not optional: spritz-web is driven by a HorizontalPodAutoscaler,
+# and without a metrics source it reads <unknown>/70% and never scales,
+# including up when this zone is the one serving. Same chart and version as
+# the primary (cluster/core/metrics-server/metrics-server-app.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-metrics-server
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    targetRevision: 3.14.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# Approves the kubelet's serving-certificate CSRs. A pair with
+# `serverTLSBootstrap: true` in the node's machine config: without the
+# bootstrap the kubelet serves a self-signed certificate with no IP SANs and
+# metrics-server refuses it; with the bootstrap but no approver the CSR is
+# never signed and the failure looks identical.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-kubelet-csr-approver
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: https://postfinance.github.io/kubelet-csr-approver
+    chart: kubelet-csr-approver
+    targetRevision: 1.2.15
+    helm:
+      valuesObject:
+        providerRegex: '.*'
+        # The node's hostname does not resolve in DNS here, so requiring a
+        # forward lookup would reject every CSR.
+        bypassDnsResolution: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

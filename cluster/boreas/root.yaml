@@ -1,0 +1,49 @@
+---
+# The boreas app-of-apps root. Applied once by hand on the boreas cluster
+# (kubectl apply -f cluster/boreas/root.yaml); after that it manages itself.
+#
+# boreas runs its own Argo CD, in its own cluster, rather than being a remote
+# cluster of the primary's Argo. A disaster-recovery zone whose reconciliation
+# stops when the primary stops would fail exactly when it is needed.
+#
+# The primary never syncs this directory: its root reads only the top level of
+# cluster/ (recurse defaults to false), and cluster-apps reads cluster/apps.
+#
+# Prune is off at this level so a bad rename degrades to "orphaned, fix in git"
+# rather than cascading deletes.
+#
+# Every Application and AppProject in this tree is prefixed `boreas-`, and that
+# is a safety property rather than tidiness: without it these share names with
+# the primary's, and applying this file to the wrong cluster would silently
+# repoint the primary's own root at this path.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-root
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/boreas
+    # Do NOT add `directory: {recurse: false}`: false is Go's zero value, gets
+    # dropped on serialization, and the git/live mismatch is a permanent sync
+    # loop. See the note in cluster/root.yaml.
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

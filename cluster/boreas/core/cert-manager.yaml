@@ -1,0 +1,59 @@
+---
+# cert-manager: same chart and version as the primary
+# (cluster/core/cert-manager/cert-manager-app.yaml; move them together).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-cert-manager
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.21.1
+    helm:
+      parameters:
+        - name: crds.enabled
+          value: 'true'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# The issuers and their Cloudflare DNS-01 tokens are read straight from the
+# primary's files rather than copied: nothing about them differs per zone.
+# The Application itself is excluded so this cluster never adopts the
+# primary's `cert-manager` Application (project `core` does not exist here).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-cert-manager-issuers
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/core/cert-manager
+    directory:
+      exclude: 'cert-manager-app.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
