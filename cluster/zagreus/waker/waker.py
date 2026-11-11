@@ -277,12 +277,15 @@ def owns(s, job):
 
 
 def share_need(cfg, demand, unstarted):
-    """Per set in a shared pool: queued jobs it has not claimed yet, the
-    slots it would take now. A claimed job's runner already holds its slot
-    (compute_caps counts it as the set's own)."""
+    """Per set in a shared pool, or drawing on a node whose slots are shared
+    ("slotsShared"): queued jobs it has not claimed yet, the slots it would
+    take now. A claimed job's runner already holds its slot (compute_caps
+    counts it as the set's own)."""
     pooled = {m for members in shared_pools(cfg).values() for m in members}
+    on_shared = {s["name"] for s in cfg["sets"] for n in cfg["nodes"]
+                 if n.get("slotsShared") and node_slots(cfg, n, s["name"]) > 0}
     return {name: max(0, d - min(unstarted.get(name, 0), d))
-            for name, d in demand.items() if name in pooled}
+            for name, d in demand.items() if name in pooled | on_shared}
 
 
 # --------------------------------------------------------------------------
@@ -866,6 +869,13 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                     per_node[e[0]["name"]][m] -= cut
                     excess -= cut
 
+    def needs(name):
+        """The set's wanted total is above what it has been given so far
+        (want: compute_caps' sharing argument, per set)."""
+        if not want or name not in want:
+            return False
+        return int(want[name]) > caps[name] - int(by_name[name].get("base", 0))
+
     served = set()
     for s in cfg["sets"]:
         name = s["name"]
@@ -877,7 +887,17 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                 fair_cap(pools[key], short)
             share(pools[key], recent or {})
         for e in entries:
+            # A shared node's slot goes first to a set that still needs one
+            # (Codex on 4c84909: an idle ci took it on paper by waker.conf
+            # order, and a third x64 job waited beside the empty VM).
+            if e[0].get("slotsShared") and want and not needs(name):
+                continue
             offer(e, name, slots_left(e, name))
+    # Whatever no needing set took: waker.conf order, as before.
+    for s in cfg["sets"]:
+        for e in entries:
+            if e[0].get("slotsShared"):
+                offer(e, s["name"], slots_left(e, s["name"]))
     return caps
 
 
