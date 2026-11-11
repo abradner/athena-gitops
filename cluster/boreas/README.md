@@ -83,7 +83,9 @@ none.
 | `core/shared-from-primary.yaml` | tunnel config, credentials and the redirect route, read straight from the primary's paths |
 | `core/gateway.yaml`, `core/certificates.yaml` | production listeners only. Derived copies |
 | `core/observability.yaml` | `cluster: boreas` on every series, remote-written to the out-of-cluster tier |
-| `core/external-secrets.yaml` | the same vault, this zone's own service-account token |
+| `core/external-secrets.yaml`, `secret-store/` | the same vault, this zone's own service-account token. The store has its own Application with retries, because on the first sync it was applied before ESO's webhook answered |
+| `core/cloudflare-tokens.yaml` | this zone's own DNS-01 tokens, under the Secret names the shared issuers use, so each zone's credential can be scoped and revoked separately |
+| `core/spritz-overrides.yaml`, and `hpa.yaml` excluded | one spritz web pod with two threads: a warm standby with a small footprint on the shared database |
 
 **One web pod each, small pools.** Each web pod here holds its own
 connections to the primary's database (no pooler yet), so the standby is kept

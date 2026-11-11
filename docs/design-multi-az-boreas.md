@@ -1,7 +1,10 @@
 # Design — boreas, a second availability zone
 
-Status: **approved, in progress.** Started 2026-09-03. Target: serving from two
-sites before 2026-10-08.
+Status: **approved; boreas running since 2026-11-11** (`cluster/boreas/`, its
+own Argo CD, connectors at zero). Started 2026-09-03 with a target of serving
+from two sites before 2026-10-08; §4c records why that slipped. Still open: the
+watchdog (Phase 5), an object-storage node of boreas's own, and a Temporal
+frontend reachable from outside the primary.
 
 Placeholders throughout — `<dr-site>`, `<dr-zone-domain>`, `<dr-host>`. Concrete
 addresses, hardware and host state live in the private infrastructure repo, not
@@ -281,14 +284,15 @@ The remaining per-cluster differences that are not app config — connector
 replicas, the observability cluster label, workflow-engine replicas — are one
 file each and can simply be separate files under a boreas directory.
 
-**In git, 2026-11-10: `cluster/boreas/`.** Option 2 as written, with boreas
-running its own Argo CD. Two departures from the text above, both recorded in
+**In git 2026-11-10, running since 2026-11-11: `cluster/boreas/`.** Option 2 as written, with boreas
+running its own Argo CD. Three departures from the text above, all recorded in
 that directory's README. The override ConfigMap is empty for now: boreas's own
 object-storage node has not joined yet, and the primary's Temporal frontend is
 not reachable from outside its cluster. boreas runs the production web tiers
 only, with queue workers, Temporal workers and cron held off until a
-promotion. And replica counts are not reduced (§4d expected minimums of one):
-nothing here patches them, and the node has the room.
+promotion. And spritz web runs a single pod with a small database pool: its
+autoscaler is excluded in this zone rather than patched, so one warm standby
+pod holds few connections to the shared database.
 
 ## 4c. Revision, 2026-09-05 — Deimos becomes the second zone
 
