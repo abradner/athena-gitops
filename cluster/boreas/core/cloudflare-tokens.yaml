@@ -2,12 +2,9 @@
 # This zone's Cloudflare DNS-01 tokens, under the Secret names the shared
 # ClusterIssuers (cluster/core/cert-manager/letsencrypt-issuers.yaml) expect.
 #
-# Separate tokens from the primary's because Cloudflare tokens carry an IP
-# filter, and the primary's allow only the primary site. These are scoped to
-# DNS edit on the zones this zone's certificates need, and filtered to its ISP's
-# address block, since its public address is sticky but not fixed (the private
-# infra repo holds the specifics and the plan to drop the filter's role).
-# Stored as a field of the same 1Password items as the primary's tokens: the
+# Separate tokens from the primary's, so each zone's credential is scoped to
+# its own use and can be revoked alone. The private infra repo holds their
+# scope and restrictions. Stored as a field of the same 1Password items as the primary's tokens: the
 # service account reads the whole vault either way, so separate items would
 # add no isolation.
 apiVersion: external-secrets.io/v1

@@ -28,10 +28,9 @@ spec:
       - ServerSideApply=true
 ---
 # The ClusterIssuers are read straight from the primary's file: nothing about
-# them differs per zone. Their DNS-01 tokens do: the primary's are
-# IP-restricted to the primary site, and Cloudflare refuses them from here
-# ("10502: Too many authentication failures", first sync 2026-11-11). This
-# zone's own tokens come in through core/cloudflare-tokens.yaml under the SAME
+# them differs per zone. Their DNS-01 tokens do: each zone has its own, so a
+# zone's credential can be scoped and revoked without touching the other. This
+# zone's tokens come in through core/cloudflare-tokens.yaml under the SAME
 # Secret names, so the shared issuers work unchanged.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
