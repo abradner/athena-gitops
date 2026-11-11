@@ -30,12 +30,18 @@ spec:
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: spritz-production
+  # The HPA owns spritz-web's replica count, as on the primary
+  # (cluster/apps/spritz-production-app.yaml): Argo must not reconcile it.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: spritz-web
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
-    syncOptions:
-    - CreateNamespace=true
     retry:
       limit: 5
       backoff:

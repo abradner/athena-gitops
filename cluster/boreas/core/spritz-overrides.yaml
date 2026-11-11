@@ -25,6 +25,10 @@
 # Kept as an empty object rather than left out so each of those lands as a
 # one-line diff, and so the reference is exercised (not optional-and-absent)
 # from the first sync.
+#
+# A change here does NOT reach running pods: envFrom is read when a pod
+# starts. After syncing a change, restart the workloads that read it
+# (`kubectl -n spritz-production rollout restart deploy`).
 apiVersion: v1
 kind: ConfigMap
 metadata:
