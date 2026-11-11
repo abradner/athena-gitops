@@ -522,6 +522,45 @@ def unmet_by_set(demand, live_caps, runners, unstarted):
     return out
 
 
+def shared_slot_relief(cfg, unmet, demand, spare, live, runners, unstarted, per_node, node_states):
+    """Unmet demand an idle shared slot can take after all (README,
+    "Always-on node"). On a "slotsShared" node compute_caps gives a free
+    slot to the first set in waker.conf order, on paper. If that set's other
+    room already covers its demand, the slot is idle: another set listed on
+    the node, with demand unmet and a claim it can still make (its live cap
+    above its runners, a floor's say), will have its pod bind there. So that
+    demand is no reason to wake a node (review of fb8f86c: one x64 job woke
+    01 with the VM idle).
+
+    per_node: compute_caps' offers per awake node and set, own runners
+    included; node_states supplies each node's own runners."""
+    out = dict(unmet)
+    for n in cfg["nodes"]:
+        offers = (per_node or {}).get(n["name"])
+        if not n.get("slotsShared") or not offers:
+            continue
+        own = (node_states.get(n["name"]) or {}).get("own") or {}
+        for holder, k in offers.items():
+            free = k - own.get(holder, 0)
+            if free <= 0:
+                continue
+            # Does the holder need this slot? Not if its demand is met
+            # without it.
+            if unmet_by_set({holder: demand.get(holder, 0)}, {holder: (spare.get(holder) or 0) - free},
+                            runners, unstarted)[holder] > 0:
+                continue
+            for other in n.get("slots", {}):
+                if other == holder or free <= 0 or out.get(other, 0) <= 0:
+                    continue
+                cap = live.get(other)
+                if cap is None or cap <= runners.get(other, 0):
+                    continue  # no claim left to make: its pod could not bind here
+                lend = min(free, out[other], cap - runners.get(other, 0))
+                out[other] -= lend
+                free -= lend
+    return out
+
+
 def share_overlap(unmet, demand, alts, live_caps, runners, unstarted):
     """Unmet demand a set with overlapping labels can still absorb. A job
     counted for one set (demand_by_set) may be claimed by, or offered to,
@@ -2046,12 +2085,14 @@ class Waker:
         and found stale is not uncertain, and lowers at once. force: lower
         now (the sleep procedure, before a cordon). recount False: a second
         apply in the same pass, which must not count as the next pass."""
+        per_node = {}
         wanted = compute_caps(self.cfg, states or snap["states"], self.cap_requests(snap), snap.get("unplaced"),
-                              **self.share_args(snap))
+                              per_node=per_node, **self.share_args(snap))
         room = bound_caps(wanted, snap["live"], snap["ceilings"])
         target = floor_caps(self.cfg, room, snap["live"], snap["ceilings"], states or snap["states"])
         if states is None:
             snap["room"] = room
+            snap["room_per_node"] = per_node
         changed = {}
 
         def raising(s):
@@ -2268,6 +2309,8 @@ class Waker:
                                    alts=self.alts)
             unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
         unmet = share_overlap(unmet, demand, self.alts, spare, snap["runners"], snap["unstarted"])
+        unmet = shared_slot_relief(self.cfg, unmet, demand, spare, snap["live"], snap["runners"],
+                                   snap["unstarted"], snap.get("room_per_node"), snap["states"])
         for name, n in floor_claims(self.cfg, snap["runners"], snap["unplaced"], snap.get("room", {})).items():
             unmet[name] = unmet.get(name, 0) + n
         for name in snap.get("blind", ()):

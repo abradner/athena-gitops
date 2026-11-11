@@ -233,6 +233,15 @@ schedules first takes the VM, and the other set's claims wait for 01 and 02.
 The capacity test counts a shared node's slots as one pod.
 `test_always_on.SharedVmSlot` covers it.
 
+On paper `compute_caps` hands an idle shared slot to the first set in
+waker.conf order (zagreus-ci). `shared_slot_relief` stops that from
+waking a node for the other set: if the holder's other room already
+covers its demand, and the other set has unmet demand and a claim it can
+still make, that demand is not counted as unmet. One x64 job then takes the
+idle VM with no wake, and one job of each set still wakes one node. The slot
+metrics' `configured` reads 1 for each set on the VM, though only one runs
+at a time.
+
 It carries the taint `zagreus.asn.casa/always-on:NoSchedule`, so only
 runner pods land there. The key is in `toleratedTaintKeys`, and every set
 drawing on its slots (zagreus-ci, zagreus-ci-x64, and Simplytics through

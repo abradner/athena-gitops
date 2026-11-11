@@ -416,6 +416,39 @@ class SharedVmSlot(unittest.TestCase):
         self.assertTrue(vm.get("slotsShared"))
         self.assertEqual(vm["slots"], {"zagreus-ci": 1, "zagreus-ci-x64": 1})
 
+    def live_rig(self):
+        from test_sharing import LiveRig
+        r = LiveRig(always_on=True)
+        if not r.always_on:
+            self.skipTest("no always-on node configured")
+        r.put_all_to_sleep()
+        return r
+
+    def test_one_x64_job_takes_the_idle_vm_slot_with_no_wake(self):
+        # Review of fb8f86c: the idle slot went to zagreus-ci on paper
+        # (waker.conf order), so one x64 job counted as unmet and woke 01,
+        # though its pod then bound to the VM anyway.
+        from test_sharing import X64
+        r = self.live_rig()
+        r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), [])
+
+    def test_one_ci_job_takes_the_idle_vm_slot_with_no_wake(self):
+        r = self.live_rig()
+        r.spritz_job(age=5)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), [])
+
+    def test_one_job_of_each_still_wakes_a_node_for_the_second(self):
+        # Positive control: the slot is lent, not doubled.
+        from test_sharing import X64
+        r = self.live_rig()
+        r.spritz_job(age=5)
+        r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(len(r.woken()), 1, r.woken())
+
     def test_the_live_proof_wave_with_a_shared_slot_changes_no_cap(self):
         from test_sharing import LiveRig, X64
         r = LiveRig(always_on=True)
