@@ -804,15 +804,17 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                 per_node[e[0]["name"]][name] += fit
         return fit
 
-    def share(members, totals):
+    def share(members, totals, among=None):
         """Serve each set up to its total, one slot at a time; return what
-        could not be served."""
+        could not be served. among: the node entries to serve from (default
+        every awake one)."""
+        among = entries if among is None else among
         want = {m: int(totals.get(m, 0)) - (caps[m] - int(by_name[m].get("base", 0))) for m in members}
         want = {m: n for m, n in want.items() if n > 0}
         short = {}
         while want:
             m = min(want, key=lambda x: (caps[x], -float((turn or {}).get(x, 0)), rank[x]))
-            if not any(offer(e, m, 1) for e in entries):
+            if not any(offer(e, m, 1) for e in among):
                 short[m] = want.pop(m)  # nowhere left for this set; the others may still fit
                 continue
             want[m] -= 1
@@ -885,7 +887,10 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             short = share(pools[key], want or {})
             if short:
                 fair_cap(pools[key], short)
-            share(pools[key], recent or {})
+            # The hold (recent) waits for current demand on shared nodes
+            # (Codex on a1d16ba): served there only after every set's
+            # current need, below.
+            share(pools[key], recent or {}, [e for e in entries if not e[0].get("slotsShared")])
         for e in entries:
             # A shared node's slot goes first to a set that still needs one
             # (Codex on 4c84909: an idle ci took it on paper by waker.conf
@@ -893,7 +898,12 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             if e[0].get("slotsShared") and want and not needs(name):
                 continue
             offer(e, name, slots_left(e, name))
-    # Whatever no needing set took: waker.conf order, as before.
+    # Then the pools' holds on shared nodes, then whatever is left in
+    # waker.conf order, as before.
+    shared_entries = [e for e in entries if e[0].get("slotsShared")]
+    if shared_entries and recent:
+        for key in served:
+            share(pools[key], recent, shared_entries)
     for s in cfg["sets"]:
         for e in entries:
             if e[0].get("slotsShared"):

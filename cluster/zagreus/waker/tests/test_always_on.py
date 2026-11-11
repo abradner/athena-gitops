@@ -508,6 +508,29 @@ class SharedVmSlot(unittest.TestCase):
         r.tick(advance=30)
         self.assertEqual(r.kube.ars[("arc-runners", X64)]["spec"]["maxRunners"], 3)
 
+    def test_cis_sticky_hold_does_not_keep_the_vm_from_waiting_x64(self):
+        # Codex on a1d16ba (P2): after a ci burst, the pool's "recent" hold
+        # (shareHoldSeconds) reserved the VM slot for ci before current
+        # demand was served, and a waiting x64 job sat beside the empty VM
+        # until the hold expired.
+        from test_sharing import LiveRig, X64
+        r = LiveRig(always_on=True)
+        if not r.always_on:
+            self.skipTest("no always-on node configured")
+        r.tick()
+        for _ in range(8):
+            r.spritz_job(age=5)
+        r.tick(advance=30)
+        r.spritz.jobs.clear()
+        for i, node in enumerate(("zag-amd64-01", "zag-amd64-02")):
+            r.kube.add_runner_pod(node, X64, name=f"x64-busy-{i}")
+            r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: X64}},
+                                              "status": {"jobRequestId": 960 + i}})
+        r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=30)
+        r.tick(advance=30)
+        self.assertEqual(r.kube.ars[("arc-runners", X64)]["spec"]["maxRunners"], 3)
+
     def test_with_no_demand_the_idle_shared_slot_still_goes_to_ci(self):
         # Unchanged when nobody is waiting: waker.conf order, as before.
         cfg = live_config()
