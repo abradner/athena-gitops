@@ -19,7 +19,7 @@ import waker as w  # noqa: E402
 from test_waker import (T0, TWO_NODES, WAKER_DIR, FakeAMT, FakeGitHub, FakeKube,  # noqa: E402
                         FakeTalos, Clock, live_config, production_config, states)
 
-VM = "zag-vm-01"
+VM = "zag-amd64vm-01"
 TAINT = "zagreus.asn.casa/always-on"
 
 
