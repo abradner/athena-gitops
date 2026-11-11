@@ -643,10 +643,10 @@ class Caps(unittest.TestCase):
         """The arithmetic in waker.conf, checked: each node's slots, plus
         what else may land there, fit its allocatable memory and CPU
         (1 Nov 2026, after the RAM shuffle)."""
-        # zag-vm-01: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
+        # zag-amd64vm-01: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
         # and kubelet's system-reserved (asn-infra zagreus/vm-runner).
-        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-vm-01": 7.1}
-        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-vm-01": 3.8}
+        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-amd64vm-01": 7.1}
+        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-amd64vm-01": 3.8}
         pod_gib = {"zagreus-ci": 6, "zagreus-ci-x64": 6, "zagreus-docker-amd64": 3 + 0.75}
         pod_cpu = {"zagreus-ci": 1.5, "zagreus-ci-x64": 1.5, "zagreus-docker-amd64": 1 + 0.25}
         # two light pods, bundle fill, coredns and slack, then the cache pruner

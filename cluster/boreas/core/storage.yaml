@@ -1,0 +1,23 @@
+---
+# local-path-provisioner, read straight from the primary's vendored manifest:
+# nothing in it is per-zone. The only claim on it here is vmagent's 2 Gi
+# buffer (observability.yaml); application state lives off-cluster in both
+# zones.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-storage
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/core/storage
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: local-path-storage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -280,6 +280,16 @@ rather than assuming now.
 The remaining per-cluster differences that are not app config — connector
 replicas, the observability cluster label, workflow-engine replicas — are one
 file each and can simply be separate files under a boreas directory.
+
+**In git, 2026-11-10: `cluster/boreas/`.** Option 2 as written, with boreas
+running its own Argo CD. Two departures from the text above, both recorded in
+that directory's README. The override ConfigMap is empty for now: boreas's own
+object-storage node has not joined yet, and the primary's Temporal frontend is
+not reachable from outside its cluster. boreas runs the production web tiers
+only, with queue workers, Temporal workers and cron held off until a
+promotion. And replica counts are not reduced (§4d expected minimums of one):
+nothing here patches them, and the node has the room.
+
 ## 4c. Revision, 2026-09-05 — Deimos becomes the second zone
 
 The DR host lost a second drive from an already-degraded array, its pool
@@ -368,11 +378,17 @@ zone when it returns.
 Every node in the primary cluster is arm64, so nothing there has ever forced an
 amd64 build. That raised a worry about the third zone, which runs on Intel.
 
-**Answered: the images are multi-arch.** The publish workflow assembles
+**Answered for spritz: its images are multi-arch.** Its publish workflow assembles
 per-architecture digests into a manifest list and explicitly guards against
 publishing a single-arch manifest under the full tag set. So the third zone can
 be Intel, and a cloud zone can be whichever architecture is cheaper or
 available — Arm, for now, on price.
+
+**Corrected 2026-11-10: not every app is.** Checked image by image when boreas
+was onboarded: spritz, spritz-marketing and mcg publish amd64 and arm64;
+chuvar, counta and crm publish arm64 only, so they cannot run in an Intel zone
+until their publish workflows add amd64. The statement above was true of the
+repo it was checked against and was generalised from there.
 
 ### The burn rate, which governs everything
 

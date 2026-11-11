@@ -1,0 +1,31 @@
+---
+# Zone-specific core: secrets, certificates, the Gateway, the tunnel
+# connectors held at zero, metrics, and the per-zone override ConfigMaps.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-core
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/boreas/core
+    directory:
+      recurse: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

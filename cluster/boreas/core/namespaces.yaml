@@ -1,0 +1,14 @@
+---
+# The only namespaces workloads may land in. Created here, by the core project,
+# because boreas-workloads may create no cluster-scoped resources (see
+# projects.yaml). A workload Application that syncs before these exist fails
+# and retries until they do.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spritz-production
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: asn-production

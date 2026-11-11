@@ -1,0 +1,73 @@
+# DERIVED COPY of cluster/core/networking/certificates.yaml: the certificates
+# the boreas Gateway (gateway.yaml) references, and no others. Move them
+# together with that file. The athena wildcard is here because the tunnel
+# connectors verify the https-tunnel listener as tunnel.athena.asn.casa, the
+# same as on the primary.
+#
+# This zone issues its own copies with the same issuer config and DNS-01
+# tokens (its own ACME account key); nothing is copied between clusters. Four
+# certificates once, then renewals, is well inside Let's Encrypt's limits.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: athena-wildcard-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: athena-wildcard-tls
+  dnsNames:
+    - "*.athena.asn.casa"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mcg-rest-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: mcg-rest-tls
+  dnsNames:
+    - "mcg.rest"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rabalex-wedding-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: rabalex-wedding-tls
+  dnsNames:
+    - "rabalex.wedding"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spritz-events-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: spritz-events-tls
+  dnsNames:
+    - "spritz.events"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod

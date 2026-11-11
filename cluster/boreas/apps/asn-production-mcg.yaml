@@ -1,0 +1,28 @@
+---
+# Points at the SAME path the primary's own Application uses: two Argo
+# instances, two clusters, one set of manifests, so an image bump reaches both
+# zones without anything being copied or kept in step by hand.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-asn-production-mcg
+  namespace: argocd
+spec:
+  project: boreas-workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/asn-production/mcg
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: asn-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
