@@ -522,7 +522,8 @@ def unmet_by_set(demand, live_caps, runners, unstarted):
     return out
 
 
-def shared_slot_relief(cfg, unmet, demand, spare, live, runners, unstarted, per_node, node_states):
+def shared_slot_relief(cfg, unmet, demand, spare, live, runners, unstarted, per_node, node_states,
+                       per_node_own=None):
     """Unmet demand an idle shared slot can take after all (README,
     "Always-on node"). On a "slotsShared" node compute_caps gives a free
     slot to the first set in waker.conf order, on paper. If that set's other
@@ -533,13 +534,19 @@ def shared_slot_relief(cfg, unmet, demand, spare, live, runners, unstarted, per_
     01 with the VM idle).
 
     per_node: compute_caps' offers per awake node and set, own runners
-    included; node_states supplies each node's own runners."""
+    included. per_node_own: its own runners per node, the claimed but
+    unbound runners it placed there on paper included (Codex on 5bc56d1:
+    a slot reserved for such a claim is not free). Without it, the bound
+    runners in node_states."""
     out = dict(unmet)
     for n in cfg["nodes"]:
         offers = (per_node or {}).get(n["name"])
         if not n.get("slotsShared") or not offers:
             continue
-        own = (node_states.get(n["name"]) or {}).get("own") or {}
+        if per_node_own is not None and n["name"] in per_node_own:
+            own = per_node_own[n["name"]]
+        else:
+            own = (node_states.get(n["name"]) or {}).get("own") or {}
         for holder, k in offers.items():
             free = k - own.get(holder, 0)
             if free <= 0:
@@ -648,7 +655,7 @@ def untolerated_taint(node, tolerated_keys=()):
 
 
 def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=None,
-                 want=None, recent=None, turn=None, ceilings=None):
+                 want=None, recent=None, turn=None, ceilings=None, per_node_own=None):
     """base + what each awake node can still take, per driven set (no
     ceiling, but see ceilings below).
 
@@ -754,6 +761,9 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
 
     given = {}  # (node, set) -> slots offered on top of its own runners
     for n, own, _ in entries:
+        if per_node_own is not None:
+            # Its own runners, the claims placed on it on paper included.
+            per_node_own[n["name"]] = dict(own)
         for name in caps:
             caps[name] += own.get(name, 0)
             if per_node is not None:
@@ -2085,14 +2095,15 @@ class Waker:
         and found stale is not uncertain, and lowers at once. force: lower
         now (the sleep procedure, before a cordon). recount False: a second
         apply in the same pass, which must not count as the next pass."""
-        per_node = {}
+        per_node, per_node_own = {}, {}
         wanted = compute_caps(self.cfg, states or snap["states"], self.cap_requests(snap), snap.get("unplaced"),
-                              per_node=per_node, **self.share_args(snap))
+                              per_node=per_node, per_node_own=per_node_own, **self.share_args(snap))
         room = bound_caps(wanted, snap["live"], snap["ceilings"])
         target = floor_caps(self.cfg, room, snap["live"], snap["ceilings"], states or snap["states"])
         if states is None:
             snap["room"] = room
             snap["room_per_node"] = per_node
+            snap["room_per_node_own"] = per_node_own
         changed = {}
 
         def raising(s):
@@ -2310,7 +2321,8 @@ class Waker:
             unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
         unmet = share_overlap(unmet, demand, self.alts, spare, snap["runners"], snap["unstarted"])
         unmet = shared_slot_relief(self.cfg, unmet, demand, spare, snap["live"], snap["runners"],
-                                   snap["unstarted"], snap.get("room_per_node"), snap["states"])
+                                   snap["unstarted"], snap.get("room_per_node"), snap["states"],
+                                   per_node_own=snap.get("room_per_node_own"))
         for name, n in floor_claims(self.cfg, snap["runners"], snap["unplaced"], snap.get("room", {})).items():
             unmet[name] = unmet.get(name, 0) + n
         for name in snap.get("blind", ()):

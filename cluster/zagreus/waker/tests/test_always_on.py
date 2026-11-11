@@ -440,6 +440,54 @@ class SharedVmSlot(unittest.TestCase):
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
         self.assertEqual(r.woken(), [])
 
+    def test_relief_never_lends_a_slot_reserved_for_an_unbound_claim(self):
+        # Codex on 5bc56d1 (P2), at the function level: in the live rig the
+        # ci claim's own floor wake masks it. compute_caps places the
+        # claimed, unbound ci runner on the VM on paper; that slot is taken.
+        cfg = live_config()
+        vm = next(n["name"] for n in cfg["nodes"] if n.get("alwaysOn"))
+        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                       "zag-amd64-03": self.ASLEEP, vm: {"free": (3.6, 6.6)}})
+        reqs = {"zagreus-docker-amd64": (1.25, 3.75), "zagreus-ci": (1.5, 6.0),
+                "zagreus-ci-x64": (1.5, 6.0), "zagreus-simplytics-ci": (1.5, 6.0)}
+        per_node, per_node_own = {}, {}
+        room = w.compute_caps(cfg, st, reqs, unplaced={"zagreus-ci": 1},
+                              per_node=per_node, per_node_own=per_node_own)
+        self.assertEqual(per_node_own[vm].get("zagreus-ci"), 1)  # placed on paper
+        demand = {"zagreus-ci": 1, "zagreus-ci-x64": 1}
+        runners = {"zagreus-ci": 1, "zagreus-ci-x64": 0}
+        unstarted = {"zagreus-ci": 1, "zagreus-ci-x64": 0}
+        spare = {"zagreus-ci": room["zagreus-ci"], "zagreus-ci-x64": room["zagreus-ci-x64"]}
+        unmet = w.unmet_by_set(demand, spare, runners, unstarted)
+        self.assertEqual(unmet["zagreus-ci-x64"], 1)
+        out = w.shared_slot_relief(cfg, unmet, demand, spare, {"zagreus-ci": 6, "zagreus-ci-x64": 2},
+                                   runners, unstarted, per_node, st, per_node_own=per_node_own)
+        self.assertEqual(out["zagreus-ci-x64"], 1)
+
+    def test_a_claimed_unbound_ci_runner_keeps_the_slot_from_an_x64_job(self):
+        # Codex on 5bc56d1 (P2): a ci runner that has claimed its job but
+        # whose pod is not bound yet holds the VM slot on paper. The relief
+        # read only bound pods, saw the slot free, and lent it to an x64 job:
+        # no wake, though the VM fits only one of them.
+        from test_sharing import X64
+        r = self.live_rig()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-ci"}},
+                                          "status": {}})  # claimed, job not handed over yet
+        r.spritz_job(age=5)
+        r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(len(r.woken()), 1, r.woken())
+
+    def test_a_claimed_unbound_simplytics_runner_keeps_the_slot_too(self):
+        from test_sharing import X64
+        r = self.live_rig()
+        r.kube.ers["arc-runners"].append({"metadata": {"labels": {w.SCALE_SET_LABEL: "zagreus-simplytics-ci"}},
+                                          "status": {}})
+        r.sim_job(age=5)
+        r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(len(r.woken()), 1, r.woken())
+
     def test_one_job_of_each_still_wakes_a_node_for_the_second(self):
         # Positive control: the slot is lent, not doubled.
         from test_sharing import X64
