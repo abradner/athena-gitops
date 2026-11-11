@@ -224,10 +224,19 @@ zagreus-ci's floor (above) hands the rest over at once to wait for 01 and
 02. With it down (NotReady) its slots count for nothing and the waker
 behaves as before; the floor still holds the cap.
 
+**One slot, either set (`"slotsShared": true`, 11 Nov 2026).** The VM has
+room for one heavy pod. It lists a slot for zagreus-ci and one for
+zagreus-ci-x64, and `slotsShared` makes them one pool: a runner of either set
+holds it, so `compute_caps` never offers both, even with no room figures
+(slots alone). With both sets at their floors (6 and 2) the pod that
+schedules first takes the VM, and the other set's claims wait for 01 and 02.
+The capacity test counts a shared node's slots as one pod.
+`test_always_on.SharedVmSlot` covers it.
+
 It carries the taint `zagreus.asn.casa/always-on:NoSchedule`, so only
 runner pods land there. The key is in `toleratedTaintKeys`, and every set
-drawing on its slots (zagreus-ci, and Simplytics through the shared pool)
-tolerates it; `test_always_on.LiveFiles` checks the two agree. The bundle
+drawing on its slots (zagreus-ci, zagreus-ci-x64, and Simplytics through
+the shared pool) tolerates it; `test_always_on.LiveFiles` checks the two agree. The bundle
 fill DaemonSet tolerates it too, so its pods get the same gem tree.
 
 ## Caps from slots (built, not enabled)

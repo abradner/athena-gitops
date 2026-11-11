@@ -366,6 +366,73 @@ class X64Floor(unittest.TestCase):
         self.assertEqual(w.floor_caps(cfg, room, ceilings, ceilings, st)["zagreus-ci-x64"], 2)
 
 
+class SharedVmSlot(unittest.TestCase):
+    """11 Nov 2026 (Alex: one zagreus VM per pve node replaces the classic
+    CTs): x64 jobs may run on the always-on VM too. It has one heavy slot,
+    which either set may take, never both: "slotsShared" on the node."""
+
+    def cfg(self):
+        cfg = always_on_config()
+        vm = cfg["nodes"][-1]
+        vm["slots"] = {"zagreus-ci": 1, "zagreus-ci-x64": 1}
+        vm["slotsShared"] = True
+        return cfg
+
+    ASLEEP = {"ready": False, "asleep": True}
+
+    def test_slots_shared_must_be_a_boolean(self):
+        cfg = self.cfg()
+        cfg["nodes"][-1]["slotsShared"] = "yes"
+        with self.assertRaises(ValueError):
+            w.validate_config(cfg)
+
+    def test_an_idle_shared_slot_is_offered_once_not_to_each_set(self):
+        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP, VM: {}})
+        caps = w.compute_caps(self.cfg(), st)
+        self.assertEqual(caps["zagreus-ci"] + caps["zagreus-ci-x64"], 1, caps)
+
+    def test_an_x64_runner_on_the_vm_leaves_ci_nothing_there(self):
+        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                       VM: {"own": {"zagreus-ci-x64": 1}}})
+        caps = w.compute_caps(self.cfg(), st)
+        self.assertEqual((caps["zagreus-ci"], caps["zagreus-ci-x64"]), (0, 1), caps)
+
+    def test_a_ci_runner_on_the_vm_leaves_x64_nothing_there(self):
+        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                       VM: {"own": {"zagreus-ci": 1}}})
+        caps = w.compute_caps(self.cfg(), st)
+        self.assertEqual((caps["zagreus-ci"], caps["zagreus-ci-x64"]), (1, 0), caps)
+
+    def test_an_unshared_node_still_offers_each_set_its_own_slots(self):
+        # Positive control: without the flag the same node offers both.
+        cfg = self.cfg()
+        cfg["nodes"][-1].pop("slotsShared")
+        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP, VM: {}})
+        caps = w.compute_caps(cfg, st)
+        self.assertEqual(caps["zagreus-ci"] + caps["zagreus-ci-x64"], 2, caps)
+
+    def test_the_live_vm_shares_its_slot_between_ci_and_x64(self):
+        vm = next(n for n in live_config()["nodes"] if n.get("alwaysOn"))
+        self.assertTrue(vm.get("slotsShared"))
+        self.assertEqual(vm["slots"], {"zagreus-ci": 1, "zagreus-ci-x64": 1})
+
+    def test_the_live_proof_wave_with_a_shared_slot_changes_no_cap(self):
+        from test_sharing import LiveRig, X64
+        r = LiveRig(always_on=True)
+        if not r.always_on:
+            self.skipTest("no always-on node configured")
+        r.put_all_to_sleep()
+        mark = len(r.kube.writes)
+        for _ in range(6):
+            r.spritz_job(age=5)
+        for _ in range(2):
+            r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
+        writes = [p for v, p, b in r.kube.writes[mark:] if v == "PATCH" and "/autoscalingrunnersets/" in p]
+        self.assertEqual(writes, [])
+
+
 class LiveFiles(unittest.TestCase):
     """waker.conf, the runner templates and the RBAC have to agree about the
     always-on node."""

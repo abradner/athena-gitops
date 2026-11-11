@@ -662,9 +662,11 @@ class Caps(unittest.TestCase):
         self.assertEqual(set(alloc_gib), {n["name"] for n in nodes})
         for n in nodes:
             o_gib, o_cpu = (always_on_gib, always_on_cpu) if n.get("alwaysOn") else (others_gib, others_cpu)
-            used = sum(pod_gib[s] * k for s, k in n["slots"].items()) + o_gib
+            # A node whose slots are shared runs one of them at a time.
+            agg = max if n.get("slotsShared") else sum
+            used = agg(pod_gib[s] * k for s, k in n["slots"].items()) + o_gib
             self.assertLessEqual(used, alloc_gib[n["name"]], n["name"])
-            cpu = sum(pod_cpu[s] * k for s, k in n["slots"].items()) + o_cpu
+            cpu = agg(pod_cpu[s] * k for s, k in n["slots"].items()) + o_cpu
             self.assertLessEqual(cpu, alloc_cpu[n["name"]], n["name"])
 
 

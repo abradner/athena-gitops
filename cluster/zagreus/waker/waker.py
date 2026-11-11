@@ -228,6 +228,8 @@ def validate_config(cfg):
                 raise ValueError(f"node {n['name']}: negative slots for {set_name}")
         if not isinstance(n.get("alwaysOn", False), bool):
             raise ValueError(f"node {n['name']}: alwaysOn must be true or false")
+        if not isinstance(n.get("slotsShared", False), bool):
+            raise ValueError(f"node {n['name']}: slotsShared must be true or false")
 
 
 def always_on(cfg, name):
@@ -669,9 +671,10 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             continue
         if set_requests is None or "free" not in st:
             # Slots alone: offered as configured whatever runs there, except
-            # in a shared pool, where one set's runners hold the slots the
-            # others would be offered.
-            entries.append([n, {k: v for k, v in (st.get("own") or {}).items() if k in pooled}, None])
+            # in a shared pool, or on a node whose slots are shared, where
+            # one set's runners hold the slots the others would be offered.
+            entries.append([n, {k: v for k, v in (st.get("own") or {}).items()
+                                if k in pooled or n.get("slotsShared")}, None])
         else:
             entries.append([n, dict(st.get("own") or {}), list(st["free"])])
 
@@ -719,7 +722,12 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
 
     def slots_left(e, name):
         n, own = e[0], e[1]
-        members = pools.get(pooled.get(name), [name])
+        members = set(pools.get(pooled.get(name), [name]))
+        if n.get("slotsShared"):
+            # One pool of slots for every set listed on the node (README,
+            # "Always-on node"): any of their runners holds it.
+            for s in n.get("slots", {}):
+                members |= set(pools.get(s, [s]))
         used = sum(own.get(m, 0) + given.get((n["name"], m), 0) for m in members)
         return node_slots(cfg, n, name) - used
 
