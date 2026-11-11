@@ -123,10 +123,14 @@ is turning on the background side above.
 
 From a host with this cluster's kubeconfig:
 
+Prerequisites, already true on the running cluster and part of the node's
+build (private repo): Cilium with this repo's `bootstrap/kubernetes/cilium-values.yaml`
+and the Gateway API CRDs. Nothing below works on a cluster without a CNI.
+
 0. Apply the node's machine config with kubelet `serverTLSBootstrap: true`
    (private repo). Without it metrics-server can't verify the kubelet, and
    spritz's HPA, and with it the Application, never goes healthy.
-1. `helm install argocd argo/argo-cd -n argocd --create-namespace --version <the primary's pin> -f bootstrap/kubernetes/argocd-values-boreas.yaml`. Argo isn't self-managed here: upgrade it with the same command.
+1. `helm repo add argo https://argoproj.github.io/argo-helm --force-update`, then `helm install argocd argo/argo-cd -n argocd --create-namespace --version <the primary's pin> -f bootstrap/kubernetes/argocd-values-boreas.yaml`. Argo isn't self-managed here: upgrade it with the same command.
 2. Load this zone's 1Password service-account token as `external-secrets/op-token` (key `token`) with `EXPECT_CONTEXT=boreas bootstrap/kubernetes/load1p-account-token.sh` (token from the environment; it creates the namespace first and refuses any other cluster). Never pass the token through argv.
 3. Apply the zone's LB pool (private repo), then `kubectl apply -f cluster/boreas/root.yaml`.
 

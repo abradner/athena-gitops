@@ -68,6 +68,9 @@ spec:
       namespace: spritz-production
     - server: 'https://kubernetes.default.svc'
       namespace: asn-production
-  clusterResourceWhitelist:
-    - group: ''
-      kind: Namespace
+  # No cluster-scoped kinds at all. A destination list limits only namespaced
+  # resources, so allowing Namespace here would let a manifest under a shared
+  # path create any namespace. The two production namespaces come from
+  # core/namespaces.yaml instead, and the workload Applications don't create
+  # namespaces.
+  clusterResourceWhitelist: []
