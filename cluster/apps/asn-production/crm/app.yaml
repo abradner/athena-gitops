@@ -58,7 +58,7 @@ spec:
           # Deploying crm = bump this tag everywhere in this directory
           # (app.yaml and temporal.yaml) to a sha published by crm's
           # docker.yml and let Argo sync it.
-          image: ghcr.io/abradner/crm:sha-d1a1b545c35c3c53c337fced64ef43fab75c39e8@sha256:ef40b9d574d1f514bbb717dafd18ad4f2f45390b3f86219da39a7b0b9b1979a9
+          image: ghcr.io/abradner/crm:sha-472e5f66b08fb0553a96ab90e086ce71a3016651@sha256:c3e70d0c193e34151e92799fb0c408f7873234ed64aff0a481d0faac8d3bc757
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
