@@ -69,7 +69,7 @@ spritz's containers carry an **optional** last `envFrom` entry,
 `optional` makes the reference a no-op. Here, `core/spritz-overrides.yaml`
 supplies it. Because it comes last, its keys win.
 
-**It is empty today, deliberately.** Both keys §4b expects wait on something
+**It holds one key today, `RAILS_MAX_THREADS`.** Both keys §4b expects wait on something
 that doesn't exist yet: this zone's own object-storage node, and a Temporal
 frontend reachable from outside the primary cluster. The file says which key
 lands when. The asn-production apps carry no such reference yet. mcg needs
@@ -85,11 +85,13 @@ none.
 | `core/observability.yaml` | `cluster: boreas` on every series, remote-written to the out-of-cluster tier |
 | `core/external-secrets.yaml` | the same vault, this zone's own service-account token |
 
-**Replica counts are the primary's.** §4d expected autoscaler minimums of one
-here. Nothing patches them, since the node has the room. One cost to know:
-on a single node, a drain can't satisfy a `minAvailable: 1` budget (the
-replacement pod has nowhere to go), so anything that drains this node waits
-on those budgets.
+**One web pod each, small pools.** Each web pod here holds its own
+connections to the primary's database (no pooler yet), so the standby is kept
+small: spritz runs without its autoscaler and budget (`hpa.yaml` is
+excluded), so one pod, and `RAILS_MAX_THREADS=2` in its override caps
+threads and pool size. That caps it at two connections per database the pod
+touches. mcg runs one pod with its default three threads. Scale up by hand
+when this zone takes traffic (below).
 
 **Derived copies name their source and move together.** The header of each
 copy says which file it follows. An image bump to the connectors, a new
@@ -103,6 +105,7 @@ does, it's done by hand, from a host that can reach this cluster's API:
 
 ```bash
 kubectl -n cloudflared scale deploy/cloudflared-personal deploy/cloudflared-simplytics --replicas=1
+kubectl -n spritz-production scale deploy/spritz-web --replicas=2   # if it needs more than one pod
 # back to the primary:
 kubectl -n cloudflared scale deploy/cloudflared-personal deploy/cloudflared-simplytics --replicas=0
 ```

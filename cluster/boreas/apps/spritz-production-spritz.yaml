@@ -14,6 +14,12 @@
 # temporal-worker.yaml: no Temporal frontend is reachable from this zone yet.
 # transcoder.yaml: needs an Intel iGPU, which this zone does not have; it
 # would sit Pending forever.
+# hpa.yaml: the autoscaler (minimum 2) and its PodDisruptionBudget. Without
+# them spritz-web runs one pod, which is all a warm standby needs. Every pod
+# holds its own connections to the primary's database, and on one node a
+# minAvailable budget can never be met by a drain. When this zone takes
+# traffic, scale it by hand (cluster/boreas/README.md); Argo ignores
+# spec.replicas, so the scale sticks.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -26,7 +32,7 @@ spec:
     targetRevision: main
     path: cluster/apps/spritz-production/spritz
     directory:
-      exclude: '{solid-queue.yaml,temporal-worker.yaml,transcoder.yaml}'
+      exclude: '{solid-queue.yaml,temporal-worker.yaml,transcoder.yaml,hpa.yaml}'
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: spritz-production
