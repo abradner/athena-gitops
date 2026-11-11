@@ -52,8 +52,10 @@ spec:
         # heavy pods (6.52 of 7.95 CPU; a fourth makes 8.02), zag-amd64-02
         # fits four (6.77; a fifth makes 8.27). Memory binds on the i5:
         # zag-amd64-03 fits two (14.28 of 14.4 GiB). The always-on VM
-        # zag-amd64vm-01 (4 vCPU, 8 GiB, ballooning) fits one. Ten heavy pods in
-        # all: this set 8, ci-x64.yaml 2. Re-check whenever a request, a DaemonSet
+        # zag-amd64vm-01 (4 vCPU, 8 GiB, ballooning) fits one, which this set and
+        # ci-x64.yaml share (waker.conf "slotsShared"). Ten heavy pods in all:
+        # this set's ceiling 8, ci-x64.yaml's 3, the VM's slot counted in both.
+        # Re-check whenever a request, a DaemonSet
         # or a node changes. The node waker drives the live value from the
         # awake nodes, and this is its ceiling (README, "Runners";
         # ../../waker/waker.conf holds the per-node slots that sum to it, and

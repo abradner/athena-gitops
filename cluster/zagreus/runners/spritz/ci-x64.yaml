@@ -31,13 +31,15 @@ spec:
           namespace: arc-systems
           name: arc-gha-rs-controller
         minRunners: 0
-        # 2 of the nine 6 GiB pods the amd64 nodes fit, one on each i7;
-        # ci.yaml has the other 7 and the arithmetic. With X64 + spritz-ci it
+        # One 6 GiB pod on each i7, plus the always-on VM's one heavy slot,
+        # which it shares with ci.yaml (waker.conf "slotsShared": only one of
+        # the two runs there at a time); ci.yaml has the arithmetic. With
+        # X64 + spritz-ci it
         # takes spritz's
         # e2e jobs (runs-on: [self-hosted, linux, X64, spritz-ci]) when the
         # classic x64 runners are busy: on 26 Oct 2026 three e2e jobs waited
         # 20 min with this slot idle, because spritz-e2e matched no job.
-        maxRunners: 2
+        maxRunners: 3
         listenerTemplate:
           spec:
             nodeSelector:
@@ -54,6 +56,12 @@ spec:
           spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 60
+            # The always-on VM (waker README, "Always-on node") carries this
+            # taint so only runner pods land there; x64 shares its one slot.
+            tolerations:
+              - key: zagreus.asn.casa/always-on
+                operator: Exists
+                effect: NoSchedule
             affinity:
               nodeAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:
@@ -62,14 +70,15 @@ spec:
                         - key: zagreus.asn.casa/role
                           operator: In
                           values: [amd64-runner]
-                        # Pinned to the set's only slot nodes (waker.conf:
-                        # "pinnedToSlots", floor 2). A claim the floor makes
-                        # while they sleep waits for them, and can never land
-                        # on 03 or the always-on VM; unpinned, the floor would
-                        # stand down whenever 03 is up (waker README, "Floor").
+                        # Pinned to the set's slot nodes (waker.conf:
+                        # "pinnedToSlots", floor 2): 01, 02 and the always-on
+                        # VM, whose one heavy slot it shares with zagreus-ci
+                        # ("slotsShared"). A claim never lands on 03; unpinned,
+                        # the floor would stand down whenever 03 is up (waker
+                        # README, "Floor").
                         - key: kubernetes.io/hostname
                           operator: In
-                          values: [zag-amd64-01, zag-amd64-02]
+                          values: [zag-amd64-01, zag-amd64-02, zag-amd64vm-01]
             initContainers:
               # Copies this node's pre-installed gem tree (bundle-cache.yaml)
               # into the pod's own BUNDLE_PATH. The trees are mounted
