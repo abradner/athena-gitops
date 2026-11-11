@@ -281,7 +281,7 @@ The remaining per-cluster differences that are not app config — connector
 replicas, the observability cluster label, workflow-engine replicas — are one
 file each and can simply be separate files under a boreas directory.
 
-**In git, 2026-11-10: `cluster/boreas/`.** Option 2 as written, with boreas
+**In git 2026-11-10, running since 2026-11-11: `cluster/boreas/`.** Option 2 as written, with boreas
 running its own Argo CD. Two departures from the text above, both recorded in
 that directory's README. The override ConfigMap is empty for now: boreas's own
 object-storage node has not joined yet, and the primary's Temporal frontend is
