@@ -57,8 +57,9 @@ unlimited (`resourcebuilder.go`, `math.MaxInt32`).
 A set may carry `"floor": n` in `waker.conf`: the least `maxRunners` the
 waker writes for it, offered while its nodes sleep. `zagreus-docker-amd64`
 has one (1), since 6 Nov 2026 `zagreus-simplytics-ci` has one (1):
-"Simplytics' floor", below, and since 9 Nov 2026 `zagreus-ci` has six:
-"zagreus-ci's floor", below.
+"Simplytics' floor", below, since 9 Nov 2026 `zagreus-ci` has six:
+"zagreus-ci's floor", below, and since 10 Nov `zagreus-ci-x64` has two:
+"x64's floor", below.
 
 **Why.** A job that queues while its set is at 0 can be held by GitHub
 after the waker wakes a node and raises the cap: the raise restarts the
@@ -181,6 +182,30 @@ listener restart. Simplytics is not starved, because its own floor claims
 one job and its Pending pod, older than any spritz pod created after it,
 takes the next free slot
 (`test_always_on.FloorWithAlwaysOn.test_the_floor_wins_over_the_pools_fair_share_squeeze`).
+
+### x64's floor (10 Nov 2026)
+
+**2, pinned to 01 and 02**, the set's only slot nodes. The cap is 2 asleep
+and awake, so a spritz CI run's two x64 jobs are handed over at once and
+wait, Pending, for the wake that `floor_claims` triggers. The cap never
+steps, so no listener restarts.
+
+**Why.** The second always-on proof burst (10 Nov, 17:43Z):
+- zagreus-ci's floor took its wave with no cap change.
+- x64 had no floor. Its cap went 0 -> 1 after the wake and 1 -> 2 a minute later: two listener restarts.
+- The second x64 job waited 549 s, 305 s of it for GitHub's re-offer.
+
+**Why pinned.** 03 has no x64 slot. Unpinned, the floor stands down whenever
+03 is awake (`floor_caps`) and the cap follows 01 and 02's room, which is
+the builder's 4 Nov flapping ("Pinned, so it never stands down", above).
+The runner template now *requires* `kubernetes.io/hostname In [01, 02]`
+rather than preferring it. `PoolMerge.test_a_pinned_sets_template_names_exactly_its_slot_nodes`
+checks that the template and `waker.conf` agree.
+
+**What it costs.** The same as zagreus-ci's floor. x64 carries the classic
+labels (`self-hosted, linux, X64, spritz-ci`), so while 01 and 02 sleep it
+claims up to two classic-label X64 jobs, which wait for a wake instead of
+running at once on a classic runner.
 
 ## Always-on node
 

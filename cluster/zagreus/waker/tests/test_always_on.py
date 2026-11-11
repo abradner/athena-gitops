@@ -313,6 +313,59 @@ class LiveBurst(unittest.TestCase):
         self.assertEqual(self.ci_cap_writes(r, mark), [])
 
 
+class X64Floor(unittest.TestCase):
+    """10 Nov 2026, the second proof burst: zagreus-ci's floor took the first
+    wave with no cap change, but x64 had none. Its cap went 0 -> 1 after the
+    wake and 1 -> 2 a minute later, two listener restarts, and the second
+    job waited 549 s (305 s of it for GitHub's re-offer). x64 now holds a
+    floor of 2, pinned to 01 and 02, its only slot nodes."""
+
+    def rig(self):
+        from test_sharing import LiveRig
+        r = LiveRig(always_on=True)
+        if not r.always_on:
+            self.skipTest("no always-on node configured")
+        r.put_all_to_sleep()
+        return r
+
+    def cap(self, r, name):
+        return r.kube.ars[("arc-runners", name)]["spec"]["maxRunners"]
+
+    def cap_writes(self, r, name, since):
+        return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes[since:]
+                if v == "PATCH" and p.endswith("/autoscalingrunnersets/" + name)]
+
+    def test_asleep_x64_sits_at_its_floor(self):
+        r = self.rig()
+        self.assertEqual(self.cap(r, "zagreus-ci-x64"), 2)
+
+    def test_the_proof_wave_changes_neither_cap_across_the_wake(self):
+        from test_sharing import X64
+        r = self.rig()
+        mark = len(r.kube.writes)
+        for _ in range(6):
+            r.spritz_job(age=5)
+        for _ in range(2):
+            r.spritz_job(age=5, labels=(X64,))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
+        self.assertEqual(self.cap_writes(r, "zagreus-ci-x64", mark), [])
+        self.assertEqual(self.cap_writes(r, "zagreus-ci", mark), [])
+
+    def test_the_x64_floor_holds_with_03_awake(self):
+        # 03 has no x64 slot. Unpinned, the floor would stand down whenever 03
+        # is up and the cap would follow 01/02's room (the builder's 4 Nov
+        # flapping). Pinned, it holds.
+        cfg = live_config()
+        st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
+                       "zag-amd64-02": {"ready": False, "asleep": True},
+                       "zag-amd64-03": {}, VM: {}})
+        ceilings = {"zagreus-docker-amd64": 1, "zagreus-ci": 8, "zagreus-ci-x64": 2, "zagreus-simplytics-ci": 3}
+        room = w.compute_caps(cfg, st)
+        self.assertEqual(room["zagreus-ci-x64"], 0)
+        self.assertEqual(w.floor_caps(cfg, room, ceilings, ceilings, st)["zagreus-ci-x64"], 2)
+
+
 class LiveFiles(unittest.TestCase):
     """waker.conf, the runner templates and the RBAC have to agree about the
     always-on node."""
