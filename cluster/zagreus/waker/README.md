@@ -209,7 +209,7 @@ running at once on a classic runner.
 
 ## Always-on node
 
-A node with `"alwaysOn": true` in `waker.conf` (zag-vm-01 since 9 Nov 2026:
+A node with `"alwaysOn": true` in `waker.conf` (zag-amd64vm-01 since 9 Nov 2026:
 a ballooning Debian VM on a Proxmox host, joined to zagreus as a worker;
 built from asn-infra `zagreus/vm-runner`). The waker:
 

@@ -1,0 +1,87 @@
+---
+# Declared explicitly rather than left to CreateNamespace, which sets no
+# labels: the default `baseline` Pod Security policy refuses the node exporter
+# (hostNetwork, hostPID, hostPath).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+# VictoriaMetrics operator and agent for this zone. Same chart and version as
+# the primary (cluster/core/observability/vm-stack-app.yaml; move them
+# together).
+#
+# Not optional: the workload manifests carry VMServiceScrape and VMPodScrape
+# resources, so without the CRDs they fail to apply ("no matches for kind
+# VMServiceScrape") and the applications never sync.
+#
+# Everything stateful is off, as on the primary: metrics are remote-written to
+# the observability tier at the primary site, outside both clusters. The 2 Gi
+# buffer covers the link being down, which is when this zone is serving and
+# its metrics matter most.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-vm-stack
+  namespace: argocd
+spec:
+  project: boreas-core-project
+  source:
+    repoURL: 'https://victoriametrics.github.io/helm-charts/'
+    chart: victoria-metrics-k8s-stack
+    targetRevision: 0.91.2
+    helm:
+      valuesObject:
+        fullnameOverride: vmk8s
+        vmsingle:
+          enabled: false
+        vmalert:
+          enabled: false
+        alertmanager:
+          enabled: false
+        grafana:
+          enabled: false
+        vmagent:
+          enabled: true
+          spec:
+            # Makes this zone distinguishable in the primary's dashboards and
+            # alerts. Without it boreas series would double-count athena's.
+            externalLabels:
+              cluster: boreas
+            remoteWrite:
+              - url: http://obs-metrics.infra.asn.casa:8428/api/v1/write
+            statefulMode: true
+            statefulStorage:
+              volumeClaimTemplate:
+                spec:
+                  resources:
+                    requests:
+                      storage: 2Gi
+            resources:
+              requests:
+                cpu: 50m
+                memory: 192Mi
+              limits:
+                memory: 512Mi
+        # Talos exposes none of these and runs no kube-proxy, same as the
+        # primary: leaving them on produces permanently failing targets.
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,56 @@
+---
+# Points at the SAME path the primary's own Application uses: two Argo
+# instances, two clusters, one set of manifests, so an image bump reaches both
+# zones without anything being copied or kept in step by hand.
+#
+# Web tier only. The excluded files are this zone's background side, held
+# off until a promotion (cluster/boreas/README.md, "Warm web tier only").
+# Excluding is not the same as scaling to zero: Argo prunes what it no longer
+# renders, so nothing can drift them back up, and turning them on is a
+# one-line, reviewable change to this exclusion.
+#
+# solid-queue.yaml: the supervisor and the variant workers. Running them here
+# too would put job processing across the WAN to the primary's database.
+# temporal-worker.yaml: no Temporal frontend is reachable from this zone yet.
+# transcoder.yaml: needs an Intel iGPU, which this zone does not have; it
+# would sit Pending forever.
+# hpa.yaml: the autoscaler (minimum 2) and its PodDisruptionBudget. Without
+# them spritz-web runs one pod, which is all a warm standby needs. Every pod
+# holds its own connections to the primary's database, and on one node a
+# minAvailable budget can never be met by a drain. When this zone takes
+# traffic, scale it by hand (cluster/boreas/README.md); Argo ignores
+# spec.replicas, so the scale sticks.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boreas-spritz-production-spritz
+  namespace: argocd
+spec:
+  project: boreas-workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spritz-production/spritz
+    directory:
+      exclude: '{solid-queue.yaml,temporal-worker.yaml,transcoder.yaml,hpa.yaml}'
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spritz-production
+  # The HPA owns spritz-web's replica count, as on the primary
+  # (cluster/apps/spritz-production-app.yaml): Argo must not reconcile it.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: spritz-web
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

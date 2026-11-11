@@ -78,7 +78,7 @@ spec:
                         # README, "Floor").
                         - key: kubernetes.io/hostname
                           operator: In
-                          values: [zag-amd64-01, zag-amd64-02, zag-vm-01]
+                          values: [zag-amd64-01, zag-amd64-02, zag-amd64vm-01]
             initContainers:
               # Copies this node's pre-installed gem tree (bundle-cache.yaml)
               # into the pod's own BUNDLE_PATH. The trees are mounted
