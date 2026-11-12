@@ -12,7 +12,7 @@ step below lands as its own PR, and this file is updated as they land.
 | Job asks for | Who answers |
 |---|---|
 | bot PRs: a set's name (`zagreus-ci-light`, `zagreus-ci`, `zagreus-ci-x64`) | that set only |
-| human runs: `RUNNER_CI*` variables, falling back to class labels (`spritz-ci`, `X64`, `playwright-full`) | `zagreus-ci` (it carries the class labels too), `zagreus-ci-x64`, and the two Mac runners (`ARM64`, `spritz-ci`, `playwright-full`), whichever is free first |
+| human runs: `RUNNER_CI*` variables, falling back to class labels (`spritz-ci`, `X64`, `playwright-full`) | `zagreus-ci` (it carries the class labels too), `zagreus-ci-x64` (for `spritz-ci` and `X64`; `playwright-full` from step 1), and the two Mac runners (`ARM64`, `spritz-ci`, `playwright-full`), whichever is free first |
 
 - `zagreus-ci` and `zagreus-ci-x64` run the same pod on the same amd64 nodes.
   `ci.yaml` calls the x64 set "the older x64-only set, kept until spritz stops
@@ -89,15 +89,21 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   `self-hosted, linux, heavy, ARM64`) and starts the existing runner image
   with it (`ACTIONS_RUNNER_INPUT_JITCONFIG`: the image's ARC mode, already
   built). The runner takes one job and is gone.
-- **Not from a bot** means none of three identities ends in `[bot]`: the
-  run's actor, the pull request's author (for a PR), and the head commit's
-  author. The actor alone is not enough (on a `labeled` event it is whoever
-  clicked), and the commit author catches a bot's change merged by a human,
-  whose push run has no PR and a human actor. That last check relies on
-  spritz merging by squash or rebase only, which keep the bot as the commit
-  author; merge commits are disabled there (checked 12 Nov 2026), and
-  enabling them would let a human-authored merge commit through. This guard is a second line;
-  the first is that bot jobs name a set (above). spritz's own `runs-on`
+- **Not from a bot** means no identity behind the run ends in `[bot]`: the
+  run's actor, the pull request's author (for a PR), and the author of
+  **every commit** in the push (the compare API over the push's range), not
+  only the head commit. The actor alone is not enough (on a `labeled` event
+  it is whoever clicked), and the commit authors catch a bot's change merged
+  by a human, whose push run has no PR and a human actor. Rebase merging
+  keeps each commit's author; squash merging makes the *PR's* author the
+  commit author, so a bot commit pushed to a human's PR and squashed passes
+  the commit check, and only the PR-author check at PR time saw it. Merge
+  commits are disabled in spritz (checked 12 Nov 2026); enabling them would
+  let a human-authored merge commit through.
+- **This check gates only the start of a runner.** A JIT runner then takes
+  whatever matching job GitHub hands it within its idle window (below), with
+  no further check. For those later jobs the first line, bot jobs naming a
+  set (above), is the only guard. spritz's own `runs-on`
   expression checks the PR author only, so a merged bot change already runs
   as a human job on zagreus; that is unchanged, and the commit-author check
   keeps it off the Macs.
@@ -118,9 +124,13 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   JIT runner takes whichever matching job GitHub hands it, not necessarily
   the one it was started for. So the agent never stops a runner that is
   working: every 5 s it reads its own runner (`busy` in the runners API), and
-  only while that is `false` does it act. It stops the container and deletes
-  the runner when the job it was started for has gone elsewhere (another
-  runner, or cancelled), or after 60 s idle in any case. An idle runner can
+  only while that is `false` does it act. It removes the runner when the job
+  it was started for has gone elsewhere (another runner, or cancelled), or
+  after 60 s idle in any case. Removing is ordered against a job landing
+  between the read and the stop: re-read `busy` immediately before, delete
+  the runner through the API first, and stop the container only once the
+  delete has succeeded. That relies on GitHub refusing to delete a busy
+  runner, which is unverified: step 4 must test it before relying on it. An idle runner can
   still take a brand-new job within that window, ahead of zagreus; that
   residual is accepted.
 - The agent uses the credential the Mac runner uses today (a token with
