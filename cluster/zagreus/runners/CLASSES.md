@@ -3,7 +3,8 @@
 **Status: approved 12 Nov 2026; step 1 in progress.** Asked for by the operator on 12 Nov 2026, once
 the classic LXC runners were stopped: every runner can run any job, light and
 heavy stay apart, and each job says which architectures it accepts. The Macs
-take work only when zagreus has no free slot. This file is the design; each
+are to take work only when zagreus has not picked it up (today they take it
+first: below). This file is the design; each
 step below lands as its own PR, and this file is updated as they land.
 
 ## Today
@@ -15,8 +16,9 @@ step below lands as its own PR, and this file is updated as they land.
 
 - `zagreus-ci` and `zagreus-ci-x64` run the same pod on the same amd64 nodes.
   `ci.yaml` calls the x64 set "the older x64-only set, kept until spritz stops
-  naming it". Each has its own slots on the nodes (`../waker/waker.conf`), so
-  together they run more heavy pods than either alone.
+  naming it". Each has its own slots on the metal nodes (`../waker/waker.conf`;
+  the always-on VM's one slot is shared), so together they run more heavy pods
+  than either alone.
 - The classic LXC runners are stopped (12 Nov 2026).
 - A free Mac takes a human job at once, ahead of zagreus: preferred, not
   overflow. The Macs are laptops and come and go.
@@ -39,9 +41,9 @@ Two kinds, and nothing else:
 | a Mac overflow runner | `self-hosted, linux, heavy, ARM64` |
 
 `spritz-ci`, `spritz-light` and `playwright-full` go. `heavy` takes over
-`playwright-full`'s meaning (every browser engine installed): `zagreus-ci`
-and the Mac runners carry `playwright-full` today, so every heavy runner has
-it already.
+`playwright-full`'s meaning (every browser engine installed). `zagreus-ci`
+and the Mac runners carry `playwright-full` today; `zagreus-ci-x64` runs the
+same pod and gains the label in step 1, so every heavy runner has it.
 
 ### Jobs
 
@@ -79,28 +81,43 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
 
 - The Mac runs no standing runner. A small agent polls spritz's queued jobs.
 - When a job asks for labels a Mac satisfies (`[self-hosted, heavy]`, never
-  `X64`, never a set name), is **not from a bot**, and has waited **25 s**,
+  `X64`, never a set name), is **not from a bot**, **has not been claimed by
+  a zagreus set**, and has waited **25 s**,
   the agent asks GitHub for a just-in-time runner config
   (`POST /repos/abradner/spritz/actions/runners/generate-jitconfig`, with a
   `name`, `runner_group_id` 1 (the default group) and the labels
   `self-hosted, linux, heavy, ARM64`) and starts the existing runner image
   with it (`ACTIONS_RUNNER_INPUT_JITCONFIG`: the image's ARC mode, already
   built). The runner takes one job and is gone.
-- **Not from a bot** means both identities, as spritz's own `e2e_full_matrix`
-  guard checks them (`deploy/ci-runner/README.md`): the run's actor and, for
-  a pull request, its author must not end in `[bot]`. The actor alone is not
-  enough: on a `labeled` event the actor is whoever clicked. This guard is a
-  second line; the first is that bot jobs name a set (above).
+- **Not from a bot** means none of three identities ends in `[bot]`: the
+  run's actor, the pull request's author (for a PR), and the head commit's
+  author. The actor alone is not enough (on a `labeled` event it is whoever
+  clicked), and the commit author catches a bot's change merged by a human,
+  whose push run has no PR and a human actor. This guard is a second line;
+  the first is that bot jobs name a set (above). spritz's own `runs-on`
+  expression checks the PR author only, so a merged bot change already runs
+  as a human job on zagreus; that is unchanged, and the commit-author check
+  keeps it off the Macs.
+- **Not claimed by a zagreus set** matters because of the floor (below): a
+  job ARC has acquired still shows as queued on GitHub while its pod waits
+  for a wake. Whether a runner outside the set can take such a job at all is
+  not known (Open); if it can, the agent needs a way to see the claim before
+  step 4 ships.
 - 25 s is under the waker's 60 s grace before it wakes a metal node, so a Mac
-  covers a burst instead of a wake. ARC registers within seconds, so zagreus
-  always gets first refusal.
+  covers a burst instead of a wake. It is not "zagreus first" in every case:
+  an ARC listener restart (6 to 40 s usually, 125 and 303 s seen on 8 Nov,
+  `../waker/README.md`) leaves free zagreus capacity unclaimed, and a job
+  that waits through one may go to a Mac. That is overflow in the sense the
+  operator asked for: work zagreus has not picked up.
 - A closed laptop or stopped agent leaves nothing behind: no offline runner,
   no waker change.
 - **A runner that gets no job is stopped by the agent, not left to wait.** If
   ARC takes the job first, the Mac's JIT runner would otherwise sit idle and
-  take the *next* heavy job ahead of zagreus, which is "first", not
-  overflow. So the agent stops its container if no job has started within
-  60 s and deletes the runner through the API.
+  take the *next* heavy job ahead of zagreus. The agent polls the job it
+  started the runner for every 5 s; as soon as that job has a runner that
+  is not its own, it stops its container and deletes the runner through the
+  API. The residual window, up to about 5 s, can still hand a brand-new job
+  to the Mac first; it is accepted.
 - The agent uses the credential the Mac runner uses today (a token with
   admin rights on the repository, which `generate-jitconfig` requires), read
   once at start and never passed to the runner container.
@@ -115,12 +132,13 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 ## Steps (one PR each)
 
 1. **athena-gitops: add the class labels** to `zagreus-ci`, `zagreus-ci-x64`
-   (`heavy`) and `zagreus-ci-light`, keeping the old ones. Nothing routes differently yet.
+   (`heavy`, and `playwright-full` to match `zagreus-ci`) and
+   `zagreus-ci-light`, keeping the old ones. Nothing routes differently yet.
    `../waker/tests/test_classes.py` reads the sets' labels and checks the
    routing table above with the waker's own matcher. **Rollout:** ARC writes
-   labels only when it creates a scale set, so after the merge each of the two
-   AutoscalingRunnerSets is deleted and Argo recreates it (three: the x64 set
-   gains `heavy` too, below). That kills a
+   labels only when it creates a scale set, so after the merge each of the
+   three AutoscalingRunnerSets (`zagreus-ci`, `zagreus-ci-x64`,
+   `zagreus-ci-light`) is deleted and Argo recreates it. That kills a
    running job, so it is done with the set idle, on the operator's go, and
    checked by reading the labels back from GitHub
    (`gh api repos/abradner/spritz/actions/runners` lists ARC's runners only
@@ -155,9 +173,11 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 ## Open
 
-- Whether ARC's listener ever holds a job it has acquired at its cap, so the
-  Mac's runner could not take it. The waker's "held by GitHub?" warnings say
-  something like it happens; step 4's proof is the test.
+- Whether a job a scale set has acquired (a floor claim waiting for a wake)
+  can be taken by a runner outside the set. If GitHub reserves it for the
+  set, the Mac never sees floor jobs and nothing more is needed. If not, the
+  agent must learn of claims (for instance from the waker) before step 4
+  ships. Test this first in step 4.
 - The operator may add a Pi 5 as an arm64 heavy node. It would carry
   `heavy, ARM64` in a zagreus set of its own, and the Mac rule above is
   unchanged.
