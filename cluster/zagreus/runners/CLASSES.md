@@ -103,10 +103,12 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
 - **This check gates only the start of a runner.** A JIT runner then takes
   whatever matching job GitHub hands it within its idle window (below), with
   no further check. For those later jobs the first line, bot jobs naming a
-  set (above), is the only guard. spritz's own `runs-on`
-  expression checks the PR author only, so a merged bot change already runs
-  as a human job on zagreus; that is unchanged, and the commit-author check
-  keeps it off the Macs.
+  set (above), is the only guard. That first line has a gap of its own:
+  spritz's `runs-on` expression checks the PR author only, so a bot's
+  change merged by a human runs as a human job, asking for labels. The
+  commit check stops the agent starting a Mac runner for it, but a Mac
+  runner already idle in its window could take it. Closing that needs the
+  `runs-on` expression to check commit authors too (spritz, step 2).
 - **Not claimed by a zagreus set** matters because of the floor (below): a
   job ARC has acquired still shows as queued on GitHub while its pod waits
   for a wake. Whether a runner outside the set can take such a job at all is
@@ -162,7 +164,7 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
    (`gh api repos/abradner/spritz/actions/runners` lists ARC's runners only
    while they run, so the check is a job asking for `heavy` being picked up).
 2. **spritz: switch `runs-on`** to the table above. Bots by set name, humans
-   by labels. Both amd64 heavy sets carry `heavy` and `X64`, so either takes
+   by labels, and a push whose commits include a bot's counts as a bot. Both amd64 heavy sets carry `heavy` and `X64`, so either takes
    any human heavy job and no heavy capacity is lost before step 3.
 3. **athena-gitops: fold `zagreus-ci-x64` into `zagreus-ci`**, drop the old
    labels, remove `slotsShared` and the x64 floor from the waker, move the
