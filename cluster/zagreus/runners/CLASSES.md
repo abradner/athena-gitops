@@ -1,6 +1,6 @@
 # Runner classes: one way to ask for a runner (design, 12 Nov 2026)
 
-**Status: proposed, not built.** Asked for by the operator on 12 Nov 2026, once
+**Status: approved 12 Nov 2026; step 1 in progress.** Asked for by the operator on 12 Nov 2026, once
 the classic LXC runners were stopped: every runner can run any job, light and
 heavy stay apart, and each job says which architectures it accepts. The Macs
 take work only when zagreus has no free slot. This file is the design; each
@@ -99,13 +99,25 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 1. **athena-gitops: add the class labels** to `zagreus-ci` and
    `zagreus-ci-light`, keeping the old ones. Nothing routes differently yet.
-   Waker tests updated for the new labels.
+   `../waker/tests/test_classes.py` reads the sets' labels and checks the
+   routing table above with the waker's own matcher. **Rollout:** ARC writes
+   labels only when it creates a scale set, so after the merge each of the two
+   AutoscalingRunnerSets is deleted and Argo recreates it. That kills a
+   running job, so it is done with the set idle, on the operator's go, and
+   checked by reading the labels back from GitHub
+   (`gh api repos/abradner/spritz/actions/runners` lists ARC's runners only
+   while they run, so the check is a job asking for `heavy` being picked up).
 2. **spritz: switch `runs-on`** to the table above. Bots by set name, humans
-   by labels. While `zagreus-ci-x64` exists, an `X64` heavy job may land on
-   either set: same pod, same nodes.
+   by labels. `zagreus-ci-x64` carries no `heavy`, so from here every heavy
+   job, `X64` or not, goes to `zagreus-ci`; the x64 set idles until step 3
+   removes it. `zagreus-ci` has 8 heavy slots to the x64 set's 3, so nothing
+   is lost.
 3. **athena-gitops: fold `zagreus-ci-x64` into `zagreus-ci`**, drop the old
    labels, remove `slotsShared` and the x64 floor from the waker, move the
-   x64 set's node pins and `maxRunners` into `ci.yaml`.
+   x64 set's node pins and `maxRunners` into `ci.yaml`. The waker tests'
+   `SET_LABELS` fixture gives `zagreus-ci` no `X64`, though the live set has
+   carried it since 4 Nov 2026; two `DemandOnce` tests rely on that. Fix the
+   fixture here, when the x64 set they compare against goes.
 4. **spritz: the Mac overflow agent** (`deploy/ci-runner/`), replacing the
    standing Mac runners, then deregister runners 26 and 27. The spritz
    repository variables `RUNNER_CI*` are deleted after step 2 has run cleanly.

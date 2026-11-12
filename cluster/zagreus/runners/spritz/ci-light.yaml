@@ -30,7 +30,9 @@ spec:
         # (README, "Runners"). ARC writes them only when it CREATES the scale
         # set: after a change here, delete the AutoscalingRunnerSet and let
         # Argo recreate it, or GitHub keeps the old labels.
-        scaleSetLabels: [self-hosted, linux, spritz-light]
+        # light (12 Nov 2026): the runner class jobs will ask for instead of
+        # spritz-light (../CLASSES.md). Added beside the old label.
+        scaleSetLabels: [self-hosted, linux, light, spritz-light]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
