@@ -61,6 +61,9 @@ class Classes(unittest.TestCase):
 
     def test_the_old_class_labels_still_match_until_step_3(self):
         self.assertIn("zagreus-ci", takers(["self-hosted", "linux", "spritz-ci"]))
+        # e2e_full_matrix's label: both amd64 heavy sets carry it (step 1's one
+        # routing change: same pod, same nodes).
+        self.assertEqual(takers(["self-hosted", "linux", "playwright-full"]), ["zagreus-ci", "zagreus-ci-x64"])
         self.assertEqual(takers(["self-hosted", "linux", "spritz-light"]), ["zagreus-ci-light"])
 
 

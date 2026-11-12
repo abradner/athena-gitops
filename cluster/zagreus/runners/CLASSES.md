@@ -93,7 +93,10 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   run's actor, the pull request's author (for a PR), and the head commit's
   author. The actor alone is not enough (on a `labeled` event it is whoever
   clicked), and the commit author catches a bot's change merged by a human,
-  whose push run has no PR and a human actor. This guard is a second line;
+  whose push run has no PR and a human actor. That last check relies on
+  spritz merging by squash or rebase only, which keep the bot as the commit
+  author; merge commits are disabled there (checked 12 Nov 2026), and
+  enabling them would let a human-authored merge commit through. This guard is a second line;
   the first is that bot jobs name a set (above). spritz's own `runs-on`
   expression checks the PR author only, so a merged bot change already runs
   as a human job on zagreus; that is unchanged, and the commit-author check
@@ -111,13 +114,15 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   operator asked for: work zagreus has not picked up.
 - A closed laptop or stopped agent leaves nothing behind: no offline runner,
   no waker change.
-- **A runner that gets no job is stopped by the agent, not left to wait.** If
-  ARC takes the job first, the Mac's JIT runner would otherwise sit idle and
-  take the *next* heavy job ahead of zagreus. The agent polls the job it
-  started the runner for every 5 s; as soon as that job has a runner that
-  is not its own, it stops its container and deletes the runner through the
-  API. The residual window, up to about 5 s, can still hand a brand-new job
-  to the Mac first; it is accepted.
+- **A runner that gets no job is stopped by the agent, not left to wait.** A
+  JIT runner takes whichever matching job GitHub hands it, not necessarily
+  the one it was started for. So the agent never stops a runner that is
+  working: every 5 s it reads its own runner (`busy` in the runners API), and
+  only while that is `false` does it act. It stops the container and deletes
+  the runner when the job it was started for has gone elsewhere (another
+  runner, or cancelled), or after 60 s idle in any case. An idle runner can
+  still take a brand-new job within that window, ahead of zagreus; that
+  residual is accepted.
 - The agent uses the credential the Mac runner uses today (a token with
   admin rights on the repository, which `generate-jitconfig` requires), read
   once at start and never passed to the runner container.
@@ -133,7 +138,10 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 1. **athena-gitops: add the class labels** to `zagreus-ci`, `zagreus-ci-x64`
    (`heavy`, and `playwright-full` to match `zagreus-ci`) and
-   `zagreus-ci-light`, keeping the old ones. Nothing routes differently yet.
+   `zagreus-ci-light`, keeping the old ones. No job asks for `heavy` or
+   `light` yet. One routing change: `e2e_full_matrix` (which asks for
+   `playwright-full`) can now land on `zagreus-ci-x64` as well as
+   `zagreus-ci`, the same pod on the same amd64 nodes.
    `../waker/tests/test_classes.py` reads the sets' labels and checks the
    routing table above with the waker's own matcher. **Rollout:** ARC writes
    labels only when it creates a scale set, so after the merge each of the
