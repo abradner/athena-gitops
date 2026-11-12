@@ -130,9 +130,9 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
    any human heavy job and no heavy capacity is lost before step 3.
 3. **athena-gitops: fold `zagreus-ci-x64` into `zagreus-ci`**, drop the old
    labels, remove `slotsShared` and the x64 floor from the waker, move the
-   x64 set's capacity into `zagreus-ci`: its slots on zag-amd64-01 and -02
-   (one each) and their two `maxRunners`, so `zagreus-ci` goes from 8 to 10
-   and the always-on VM's shared slot becomes one plain `zagreus-ci` slot. The waker tests'
+   x64 set's capacity into `zagreus-ci` (its per-node slots in
+   `../waker/waker.conf` and its `maxRunners`), and make the always-on VM's
+   shared slot one plain `zagreus-ci` slot. The waker tests'
    `SET_LABELS` fixture gives `zagreus-ci` no `X64`, though the live set has
    carried it since 4 Nov 2026; two `DemandOnce` tests rely on that. Fix the
    fixture here, when the x64 set they compare against goes.
