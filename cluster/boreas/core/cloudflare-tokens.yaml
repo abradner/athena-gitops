@@ -1,0 +1,46 @@
+---
+# This zone's Cloudflare DNS-01 tokens, under the Secret names the shared
+# ClusterIssuers (cluster/core/cert-manager/letsencrypt-issuers.yaml) expect.
+#
+# Separate tokens from the primary's, so each zone's credential is scoped to
+# its own use and can be revoked alone. The private infra repo holds their
+# scope and restrictions. Stored as a field of the same 1Password items as the primary's tokens: the
+# service account reads the whole vault either way, so separate items would
+# add no isolation.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: cloudflare-api-token
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: cloudflare-api-token
+  data:
+    - secretKey: api-token
+      remoteRef:
+        key: cloudflare-dns/boreas-api-token
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: cloudflare-api-token-simplytics
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  refreshInterval: "24h"
+  secretStoreRef:
+    name: onepassword-backend
+    kind: ClusterSecretStore
+  target:
+    name: cloudflare-api-token-simplytics
+  data:
+    - secretKey: api-token
+      remoteRef:
+        key: cloudflare-dns-simplytics/boreas-api-token

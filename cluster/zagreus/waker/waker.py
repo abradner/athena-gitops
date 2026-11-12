@@ -228,6 +228,8 @@ def validate_config(cfg):
                 raise ValueError(f"node {n['name']}: negative slots for {set_name}")
         if not isinstance(n.get("alwaysOn", False), bool):
             raise ValueError(f"node {n['name']}: alwaysOn must be true or false")
+        if not isinstance(n.get("slotsShared", False), bool):
+            raise ValueError(f"node {n['name']}: slotsShared must be true or false")
 
 
 def always_on(cfg, name):
@@ -275,12 +277,15 @@ def owns(s, job):
 
 
 def share_need(cfg, demand, unstarted):
-    """Per set in a shared pool: queued jobs it has not claimed yet, the
-    slots it would take now. A claimed job's runner already holds its slot
-    (compute_caps counts it as the set's own)."""
+    """Per set in a shared pool, or drawing on a node whose slots are shared
+    ("slotsShared"): queued jobs it has not claimed yet, the slots it would
+    take now. A claimed job's runner already holds its slot (compute_caps
+    counts it as the set's own)."""
     pooled = {m for members in shared_pools(cfg).values() for m in members}
+    on_shared = {s["name"] for s in cfg["sets"] for n in cfg["nodes"]
+                 if n.get("slotsShared") and node_slots(cfg, n, s["name"]) > 0}
     return {name: max(0, d - min(unstarted.get(name, 0), d))
-            for name, d in demand.items() if name in pooled}
+            for name, d in demand.items() if name in pooled | on_shared}
 
 
 # --------------------------------------------------------------------------
@@ -520,6 +525,52 @@ def unmet_by_set(demand, live_caps, runners, unstarted):
     return out
 
 
+def shared_slot_relief(cfg, unmet, demand, spare, live, runners, unstarted, per_node, node_states,
+                       per_node_own=None):
+    """Unmet demand an idle shared slot can take after all (README,
+    "Always-on node"). On a "slotsShared" node compute_caps gives a free
+    slot to the first set in waker.conf order, on paper. If that set's other
+    room already covers its demand, the slot is idle: another set listed on
+    the node, with demand unmet and a claim it can still make (its live cap
+    above its runners, a floor's say), will have its pod bind there. So that
+    demand is no reason to wake a node (review of fb8f86c: one x64 job woke
+    01 with the VM idle).
+
+    per_node: compute_caps' offers per awake node and set, own runners
+    included. per_node_own: its own runners per node, the claimed but
+    unbound runners it placed there on paper included (Codex on 5bc56d1:
+    a slot reserved for such a claim is not free). Without it, the bound
+    runners in node_states."""
+    out = dict(unmet)
+    for n in cfg["nodes"]:
+        offers = (per_node or {}).get(n["name"])
+        if not n.get("slotsShared") or not offers:
+            continue
+        if per_node_own is not None and n["name"] in per_node_own:
+            own = per_node_own[n["name"]]
+        else:
+            own = (node_states.get(n["name"]) or {}).get("own") or {}
+        for holder, k in offers.items():
+            free = k - own.get(holder, 0)
+            if free <= 0:
+                continue
+            # Does the holder need this slot? Not if its demand is met
+            # without it.
+            if unmet_by_set({holder: demand.get(holder, 0)}, {holder: (spare.get(holder) or 0) - free},
+                            runners, unstarted)[holder] > 0:
+                continue
+            for other in n.get("slots", {}):
+                if other == holder or free <= 0 or out.get(other, 0) <= 0:
+                    continue
+                cap = live.get(other)
+                if cap is None or cap <= runners.get(other, 0):
+                    continue  # no claim left to make: its pod could not bind here
+                lend = min(free, out[other], cap - runners.get(other, 0))
+                out[other] -= lend
+                free -= lend
+    return out
+
+
 def share_overlap(unmet, demand, alts, live_caps, runners, unstarted):
     """Unmet demand a set with overlapping labels can still absorb. A job
     counted for one set (demand_by_set) may be claimed by, or offered to,
@@ -607,7 +658,7 @@ def untolerated_taint(node, tolerated_keys=()):
 
 
 def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=None,
-                 want=None, recent=None, turn=None, ceilings=None):
+                 want=None, recent=None, turn=None, ceilings=None, per_node_own=None):
     """base + what each awake node can still take, per driven set (no
     ceiling, but see ceilings below).
 
@@ -669,9 +720,10 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             continue
         if set_requests is None or "free" not in st:
             # Slots alone: offered as configured whatever runs there, except
-            # in a shared pool, where one set's runners hold the slots the
-            # others would be offered.
-            entries.append([n, {k: v for k, v in (st.get("own") or {}).items() if k in pooled}, None])
+            # in a shared pool, or on a node whose slots are shared, where
+            # one set's runners hold the slots the others would be offered.
+            entries.append([n, {k: v for k, v in (st.get("own") or {}).items()
+                                if k in pooled or n.get("slotsShared")}, None])
         else:
             entries.append([n, dict(st.get("own") or {}), list(st["free"])])
 
@@ -712,6 +764,9 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
 
     given = {}  # (node, set) -> slots offered on top of its own runners
     for n, own, _ in entries:
+        if per_node_own is not None:
+            # Its own runners, the claims placed on it on paper included.
+            per_node_own[n["name"]] = dict(own)
         for name in caps:
             caps[name] += own.get(name, 0)
             if per_node is not None:
@@ -719,7 +774,12 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
 
     def slots_left(e, name):
         n, own = e[0], e[1]
-        members = pools.get(pooled.get(name), [name])
+        members = set(pools.get(pooled.get(name), [name]))
+        if n.get("slotsShared"):
+            # One pool of slots for every set listed on the node (README,
+            # "Always-on node"): any of their runners holds it.
+            for s in n.get("slots", {}):
+                members |= set(pools.get(s, [s]))
         used = sum(own.get(m, 0) + given.get((n["name"], m), 0) for m in members)
         return node_slots(cfg, n, name) - used
 
@@ -744,15 +804,17 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                 per_node[e[0]["name"]][name] += fit
         return fit
 
-    def share(members, totals):
+    def share(members, totals, among=None):
         """Serve each set up to its total, one slot at a time; return what
-        could not be served."""
+        could not be served. among: the node entries to serve from (default
+        every awake one)."""
+        among = entries if among is None else among
         want = {m: int(totals.get(m, 0)) - (caps[m] - int(by_name[m].get("base", 0))) for m in members}
         want = {m: n for m, n in want.items() if n > 0}
         short = {}
         while want:
             m = min(want, key=lambda x: (caps[x], -float((turn or {}).get(x, 0)), rank[x]))
-            if not any(offer(e, m, 1) for e in entries):
+            if not any(offer(e, m, 1) for e in among):
                 short[m] = want.pop(m)  # nowhere left for this set; the others may still fit
                 continue
             want[m] -= 1
@@ -809,6 +871,13 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
                     per_node[e[0]["name"]][m] -= cut
                     excess -= cut
 
+    def needs(name):
+        """The set's wanted total is above what it has been given so far
+        (want: compute_caps' sharing argument, per set)."""
+        if not want or name not in want:
+            return False
+        return int(want[name]) > caps[name] - int(by_name[name].get("base", 0))
+
     served = set()
     for s in cfg["sets"]:
         name = s["name"]
@@ -818,9 +887,27 @@ def compute_caps(cfg, node_states, set_requests=None, unplaced=None, per_node=No
             short = share(pools[key], want or {})
             if short:
                 fair_cap(pools[key], short)
-            share(pools[key], recent or {})
+            # The hold (recent) waits for current demand on shared nodes
+            # (Codex on a1d16ba): served there only after every set's
+            # current need, below.
+            share(pools[key], recent or {}, [e for e in entries if not e[0].get("slotsShared")])
         for e in entries:
+            # A shared node's slot goes first to a set that still needs one
+            # (Codex on 4c84909: an idle ci took it on paper by waker.conf
+            # order, and a third x64 job waited beside the empty VM).
+            if e[0].get("slotsShared") and want and not needs(name):
+                continue
             offer(e, name, slots_left(e, name))
+    # Then the pools' holds on shared nodes, then whatever is left in
+    # waker.conf order, as before.
+    shared_entries = [e for e in entries if e[0].get("slotsShared")]
+    if shared_entries and recent:
+        for key in served:
+            share(pools[key], recent, shared_entries)
+    for s in cfg["sets"]:
+        for e in entries:
+            if e[0].get("slotsShared"):
+                offer(e, s["name"], slots_left(e, s["name"]))
     return caps
 
 
@@ -2038,12 +2125,15 @@ class Waker:
         and found stale is not uncertain, and lowers at once. force: lower
         now (the sleep procedure, before a cordon). recount False: a second
         apply in the same pass, which must not count as the next pass."""
+        per_node, per_node_own = {}, {}
         wanted = compute_caps(self.cfg, states or snap["states"], self.cap_requests(snap), snap.get("unplaced"),
-                              **self.share_args(snap))
+                              per_node=per_node, per_node_own=per_node_own, **self.share_args(snap))
         room = bound_caps(wanted, snap["live"], snap["ceilings"])
         target = floor_caps(self.cfg, room, snap["live"], snap["ceilings"], states or snap["states"])
         if states is None:
             snap["room"] = room
+            snap["room_per_node"] = per_node
+            snap["room_per_node_own"] = per_node_own
         changed = {}
 
         def raising(s):
@@ -2260,6 +2350,9 @@ class Waker:
                                    alts=self.alts)
             unmet = unmet_by_set(demand, spare, snap["runners"], snap["unstarted"])
         unmet = share_overlap(unmet, demand, self.alts, spare, snap["runners"], snap["unstarted"])
+        unmet = shared_slot_relief(self.cfg, unmet, demand, spare, snap["live"], snap["runners"],
+                                   snap["unstarted"], snap.get("room_per_node"), snap["states"],
+                                   per_node_own=snap.get("room_per_node_own"))
         for name, n in floor_claims(self.cfg, snap["runners"], snap["unplaced"], snap.get("room", {})).items():
             unmet[name] = unmet.get(name, 0) + n
         for name in snap.get("blind", ()):

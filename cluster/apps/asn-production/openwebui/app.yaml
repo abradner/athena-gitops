@@ -128,7 +128,8 @@ spec:
       targetPort: 9998
 ---
 # eml-loader: Open WebUI's external document loader. Passes every upload to Tika and puts back the
-# email headers Open WebUI's own Tika loader drops. Stdlib Python from a ConfigMap (loader.yaml).
+# email headers Open WebUI's own Tika loader drops. Stdlib Python, loader/loader.py, mounted from
+# the ConfigMap kustomization.yaml generates from it; tests: loader/test.sh (docker, real Tika).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

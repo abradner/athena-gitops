@@ -27,10 +27,11 @@ spec:
       - CreateNamespace=true
       - ServerSideApply=true
 ---
-# The issuers and their Cloudflare DNS-01 tokens are read straight from the
-# primary's files rather than copied: nothing about them differs per zone.
-# The Application itself is excluded so this cluster never adopts the
-# primary's `cert-manager` Application (project `core` does not exist here).
+# The ClusterIssuers are read straight from the primary's file: nothing about
+# them differs per zone. Their DNS-01 tokens do: each zone has its own, so a
+# zone's credential can be scoped and revoked without touching the other. This
+# zone's tokens come in through core/cloudflare-tokens.yaml under the SAME
+# Secret names, so the shared issuers work unchanged.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -43,7 +44,7 @@ spec:
     targetRevision: main
     path: cluster/core/cert-manager
     directory:
-      exclude: 'cert-manager-app.yaml'
+      include: 'letsencrypt-issuers.yaml'
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager

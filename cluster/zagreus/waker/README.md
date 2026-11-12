@@ -57,8 +57,9 @@ unlimited (`resourcebuilder.go`, `math.MaxInt32`).
 A set may carry `"floor": n` in `waker.conf`: the least `maxRunners` the
 waker writes for it, offered while its nodes sleep. `zagreus-docker-amd64`
 has one (1), since 6 Nov 2026 `zagreus-simplytics-ci` has one (1):
-"Simplytics' floor", below, and since 9 Nov 2026 `zagreus-ci` has six:
-"zagreus-ci's floor", below.
+"Simplytics' floor", below, since 9 Nov 2026 `zagreus-ci` has six:
+"zagreus-ci's floor", below, and since 10 Nov `zagreus-ci-x64` has two:
+"x64's floor", below.
 
 **Why.** A job that queues while its set is at 0 can be held by GitHub
 after the waker wakes a node and raises the cap: the raise restarts the
@@ -182,9 +183,33 @@ one job and its Pending pod, older than any spritz pod created after it,
 takes the next free slot
 (`test_always_on.FloorWithAlwaysOn.test_the_floor_wins_over_the_pools_fair_share_squeeze`).
 
+### x64's floor (10 Nov 2026)
+
+**2, pinned to 01 and 02**, the set's only slot nodes. The cap is 2 asleep
+and awake, so a spritz CI run's two x64 jobs are handed over at once and
+wait, Pending, for the wake that `floor_claims` triggers. The cap never
+steps, so no listener restarts.
+
+**Why.** The second always-on proof burst (10 Nov, 17:43Z):
+- zagreus-ci's floor took its wave with no cap change.
+- x64 had no floor. Its cap went 0 -> 1 after the wake and 1 -> 2 a minute later: two listener restarts.
+- The second x64 job waited 549 s, 305 s of it for GitHub's re-offer.
+
+**Why pinned.** 03 has no x64 slot. Unpinned, the floor stands down whenever
+03 is awake (`floor_caps`) and the cap follows 01 and 02's room, which is
+the builder's 4 Nov flapping ("Pinned, so it never stands down", above).
+The runner template now *requires* `kubernetes.io/hostname In [01, 02]`
+rather than preferring it. `PoolMerge.test_a_pinned_sets_template_names_exactly_its_slot_nodes`
+checks that the template and `waker.conf` agree.
+
+**What it costs.** The same as zagreus-ci's floor. x64 carries the classic
+labels (`self-hosted, linux, X64, spritz-ci`), so while 01 and 02 sleep it
+claims up to two classic-label X64 jobs, which wait for a wake instead of
+running at once on a classic runner.
+
 ## Always-on node
 
-A node with `"alwaysOn": true` in `waker.conf` (zag-vm-01 since 9 Nov 2026:
+A node with `"alwaysOn": true` in `waker.conf` (zag-amd64vm-01 since 9 Nov 2026:
 a ballooning Debian VM on a Proxmox host, joined to zagreus as a worker;
 built from asn-infra `zagreus/vm-runner`). The waker:
 
@@ -199,10 +224,28 @@ zagreus-ci's floor (above) hands the rest over at once to wait for 01 and
 02. With it down (NotReady) its slots count for nothing and the waker
 behaves as before; the floor still holds the cap.
 
+**One slot, either set (`"slotsShared": true`, 11 Nov 2026).** The VM has
+room for one heavy pod. It lists a slot for zagreus-ci and one for
+zagreus-ci-x64, and `slotsShared` makes them one pool: a runner of either set
+holds it, so `compute_caps` never offers both, even with no room figures
+(slots alone). With both sets at their floors (6 and 2) the pod that
+schedules first takes the VM, and the other set's claims wait for 01 and 02.
+The capacity test counts a shared node's slots as one pod.
+`test_always_on.SharedVmSlot` covers it.
+
+On paper `compute_caps` hands an idle shared slot to the first set in
+waker.conf order (zagreus-ci). `shared_slot_relief` stops that from
+waking a node for the other set: if the holder's other room already
+covers its demand, and the other set has unmet demand and a claim it can
+still make, that demand is not counted as unmet. One x64 job then takes the
+idle VM with no wake, and one job of each set still wakes one node. The slot
+metrics' `configured` reads 1 for each set on the VM, though only one runs
+at a time.
+
 It carries the taint `zagreus.asn.casa/always-on:NoSchedule`, so only
 runner pods land there. The key is in `toleratedTaintKeys`, and every set
-drawing on its slots (zagreus-ci, and Simplytics through the shared pool)
-tolerates it; `test_always_on.LiveFiles` checks the two agree. The bundle
+drawing on its slots (zagreus-ci, zagreus-ci-x64, and Simplytics through
+the shared pool) tolerates it; `test_always_on.LiveFiles` checks the two agree. The bundle
 fill DaemonSet tolerates it too, so its pods get the same gem tree.
 
 ## Caps from slots (built, not enabled)

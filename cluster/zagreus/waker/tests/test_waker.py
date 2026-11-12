@@ -58,11 +58,14 @@ SPRITZ_SETS = ("zagreus-docker-amd64", "zagreus-ci", "zagreus-ci-x64")
 
 
 def frozen(cfg):
-    """The frozen world predates zagreus-ci's floor and the always-on node's
-    taint (9 Nov 2026): both have their own tests (test_always_on.py), and
-    the older scenarios keep the world they were written for."""
+    """The frozen world predates zagreus-ci's floor, the always-on node's
+    taint (9 Nov 2026) and x64's pinned floor (10 Nov): they have their own
+    tests (test_always_on.py), and the older scenarios keep the world they
+    were written for."""
     cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
-    cfg["sets"] = [{k: v for k, v in s.items() if not (s["name"] == "zagreus-ci" and k == "floor")}
+    cfg["sets"] = [{k: v for k, v in s.items()
+                    if not (s["name"] == "zagreus-ci" and k == "floor")
+                    and not (s["name"] == "zagreus-ci-x64" and k in ("floor", "pinnedToSlots"))}
                    for s in cfg["sets"]]
     cfg["toleratedTaintKeys"] = []
     return cfg
@@ -640,10 +643,10 @@ class Caps(unittest.TestCase):
         """The arithmetic in waker.conf, checked: each node's slots, plus
         what else may land there, fit its allocatable memory and CPU
         (1 Nov 2026, after the RAM shuffle)."""
-        # zag-vm-01: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
+        # zag-amd64vm-01: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
         # and kubelet's system-reserved (asn-infra zagreus/vm-runner).
-        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-vm-01": 7.1}
-        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-vm-01": 3.8}
+        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-amd64vm-01": 7.1}
+        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-amd64vm-01": 3.8}
         pod_gib = {"zagreus-ci": 6, "zagreus-ci-x64": 6, "zagreus-docker-amd64": 3 + 0.75}
         pod_cpu = {"zagreus-ci": 1.5, "zagreus-ci-x64": 1.5, "zagreus-docker-amd64": 1 + 0.25}
         # two light pods, bundle fill, coredns and slack, then the cache pruner
@@ -659,9 +662,11 @@ class Caps(unittest.TestCase):
         self.assertEqual(set(alloc_gib), {n["name"] for n in nodes})
         for n in nodes:
             o_gib, o_cpu = (always_on_gib, always_on_cpu) if n.get("alwaysOn") else (others_gib, others_cpu)
-            used = sum(pod_gib[s] * k for s, k in n["slots"].items()) + o_gib
+            # A node whose slots are shared runs one of them at a time.
+            agg = max if n.get("slotsShared") else sum
+            used = agg(pod_gib[s] * k for s, k in n["slots"].items()) + o_gib
             self.assertLessEqual(used, alloc_gib[n["name"]], n["name"])
-            cpu = sum(pod_cpu[s] * k for s, k in n["slots"].items()) + o_cpu
+            cpu = agg(pod_cpu[s] * k for s, k in n["slots"].items()) + o_cpu
             self.assertLessEqual(cpu, alloc_cpu[n["name"]], n["name"])
 
 
@@ -2555,7 +2560,7 @@ class Floor(unittest.TestCase):
 
     def test_live_config_floors_the_builder_and_simplytics(self):
         floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
-        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 6, "zagreus-ci-x64": 0,
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 6, "zagreus-ci-x64": 2,
                                   "zagreus-simplytics-ci": 1})
 
     def test_a_negative_floor_is_refused(self):
@@ -2782,10 +2787,28 @@ class PoolMerge(unittest.TestCase):
         return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes
                 if v == "PATCH" and p.endswith("/autoscalingrunnersets/" + name)]
 
-    def test_live_config_takes_caps_from_slots_and_pins_only_the_builder(self):
+    def test_live_config_takes_caps_from_slots_and_pins_the_builder_and_x64(self):
         cfg = live_config()
         self.assertTrue(cfg["roomCaps"])  # slots off for now: see README, "Caps from slots"
-        self.assertEqual([s["name"] for s in cfg["sets"] if s.get("pinnedToSlots")], [self.SET])
+        self.assertEqual([s["name"] for s in cfg["sets"] if s.get("pinnedToSlots")],
+                         [self.SET, "zagreus-ci-x64"])
+
+    @staticmethod
+    def pinned_nodes(text):
+        """The nodes a runner pod template is pinned to: a nodeSelector's
+        kubernetes.io/hostname lines (one node), or a required node affinity
+        term with kubernetes.io/hostname In [...] (several). A hostname that
+        is only preferred does not pin."""
+        single = re.findall(r"^\s+kubernetes\.io/hostname: (\S+)$", text, re.M)
+        required = text.split("requiredDuringSchedulingIgnoredDuringExecution:", 1)
+        many = []
+        if len(required) == 2:
+            block = re.split(r"preferredDuringSchedulingIgnoredDuringExecution:|\n\s+initContainers:|\n\s+containers:",
+                             required[1], maxsplit=1)[0]
+            m = re.search(r"- key: kubernetes\.io/hostname\s+operator: In\s+values: \[([^\]]*)\]", block)
+            if m:
+                many = [x.strip() for x in m.group(1).split(",")]
+        return single + many
 
     def test_a_pinned_sets_template_names_exactly_its_slot_nodes(self):
         # "pinnedToSlots" is a promise about the pod template; hold it to it.
@@ -2795,9 +2818,13 @@ class PoolMerge(unittest.TestCase):
                 continue
             with open(os.path.join(LiveConfig.RUNNERS, LiveConfig.CEILING_FILES[s["name"]])) as f:
                 text = f.read()
-            pinned = re.findall(r"^\s+kubernetes\.io/hostname: (\S+)$", text, re.M)
             slots = [n["name"] for n in cfg["nodes"] if n["slots"].get(s["name"], 0) > 0]
-            self.assertEqual(pinned, slots, s["name"])
+            self.assertEqual(self.pinned_nodes(text), slots, s["name"])
+
+    def test_a_preferred_hostname_alone_does_not_count_as_a_pin(self):
+        # Positive control for pinned_nodes: ci.yaml only prefers 01 and 02.
+        with open(os.path.join(LiveConfig.RUNNERS, "spritz/ci.yaml")) as f:
+            self.assertEqual(self.pinned_nodes(f.read()), [])
 
     def test_the_pinned_floor_holds_beside_an_awake_slotless_node(self):
         cfg = production_config()
