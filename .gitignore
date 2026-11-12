@@ -33,3 +33,8 @@ bootstrap/talos/*-generated.yaml
 
 # zagreus (the CI build cluster): same rule as athena.zsh above.
 bootstrap/zagreus/zagreus.zsh
+
+# Python bytecode: a local test run writes it beside the sources, and a
+# stray `git add -A` committed six .pyc files to a PR once (12 Nov 2026).
+__pycache__/
+*.pyc
