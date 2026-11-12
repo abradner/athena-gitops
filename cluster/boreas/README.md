@@ -23,7 +23,17 @@ declared.
 | `boreas-spritz-production-spritz` | `cluster/apps/spritz-production/spritz` | `solid-queue.yaml`, `temporal-worker.yaml`, `transcoder.yaml` |
 | `boreas-spritz-production-marketing` | `cluster/apps/spritz-production/marketing` | |
 | `boreas-asn-production-mcg` | `cluster/apps/asn-production/mcg` | |
+| `boreas-asn-production-chuvar` | `cluster/apps/asn-production/chuvar` | |
+| `boreas-asn-production-counta` | `cluster/apps/asn-production/counta` | `purge-cronjob.yaml` |
+| `boreas-asn-production-crm` | `cluster/apps/asn-production/crm` | `temporal.yaml` |
 | `boreas-*-shared` | the namespaces' image-pull secrets | |
+
+**Every image here must carry amd64.** This zone is Intel; the primary is
+arm64. A single-arch image still publishes a manifest *list*, one entry long,
+that looks healthy and fails only at pull time here. Before adding an app,
+check: `docker manifest inspect <image> | jq -r '.manifests[].platform.architecture'`.
+Checked 2026-11-10 for every image above: spritz, spritz-marketing and mcg
+already carried both; chuvar, counta and crm gained amd64 that day.
 
 Not here, on purpose:
 
@@ -31,11 +41,6 @@ Not here, on purpose:
   (§4d). `boreas-workloads` can write only to the two production namespaces, so
   that rule is enforced by the project rather than by convention. During a
   failover, staging hostnames reach this zone and get a 404. That's correct.
-- **chuvar, counta and crm, for now.** Their images are published for arm64
-  only, and this zone is amd64. Each comes back here (counta without
-  `purge-cronjob.yaml`, crm without its Temporal worker and schedules hook)
-  once its publish workflow adds amd64. Checked image by image on 2026-11-10:
-  spritz, spritz-marketing and mcg carry both.
 - **kaff.** Its hostname is under `asn.casa`, which the tunnel refuses by
   design, so a copy here would serve nothing. It also runs Solid Queue inside
   Puma, so a second copy would process jobs from this zone.
@@ -57,7 +62,9 @@ that nobody records.
 
 What that costs while this zone is serving and the primary isn't promoted:
 
-- Actions that start a Temporal workflow fail here.
+- Actions that start a Temporal workflow fail here. For crm that means a
+  contact-form notification is late, not lost: the submission is stored
+  first, and the primary's sweeper delivers it.
 - The web tiers run `db:prepare` on start, against the primary. Rails holds an
   advisory lock for migrations, so whichever zone starts first applies them
   and the other finds nothing pending.
@@ -72,8 +79,9 @@ supplies it. Because it comes last, its keys win.
 **It holds one key today, `RAILS_MAX_THREADS`.** Both keys §4b expects wait on something
 that doesn't exist yet: this zone's own object-storage node, and a Temporal
 frontend reachable from outside the primary cluster. The file says which key
-lands when. The asn-production apps carry no such reference yet. mcg needs
-none.
+lands when. The asn-production apps carry no such reference yet. mcg,
+chuvar and counta need none. crm's would be its Temporal address, which
+waits on the same reachable frontend as spritz's.
 
 ## Other per-zone files
 

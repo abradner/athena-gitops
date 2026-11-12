@@ -45,7 +45,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/counta:sha-037c9bd1de1ca98341700a746cadad0d96a0292e
+          image: ghcr.io/abradner/counta:sha-61e239adb0761e6f62bd16e9f9af75111587ff70
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT

@@ -53,6 +53,28 @@ spec:
         mode: Terminate
         certificateRefs:
           - name: rabalex-wedding-tls
+    - name: https-counta-click
+      port: 443
+      protocol: HTTPS
+      hostname: "counta.click"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: counta-click-tls
+    - name: https-inbox-simplytics-ai
+      port: 443
+      protocol: HTTPS
+      hostname: "inbox.simplytics.ai"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: inbox-simplytics-ai-tls
     - name: https-spritz-events
       port: 443
       protocol: HTTPS
@@ -64,6 +86,17 @@ spec:
         mode: Terminate
         certificateRefs:
           - name: spritz-events-tls
+    - name: https-chuvar-ai
+      port: 443
+      protocol: HTTPS
+      hostname: "chuvar.ai"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: chuvar-ai-tls
     - name: https-tunnel
       port: 8443
       protocol: HTTPS
