@@ -14,8 +14,10 @@ step below lands as its own PR, and this file is updated as they land.
 | human runs: `RUNNER_CI*` variables, falling back to class labels (`spritz-ci`, `X64`, `playwright-full`) | `zagreus-ci` (it carries the class labels too), `zagreus-ci-x64`, and the two Mac runners (`ARM64`, `spritz-ci`, `playwright-full`), whichever is free first |
 
 - `zagreus-ci` and `zagreus-ci-x64` run the same pod on the same amd64 nodes.
-  `ci-x64.yaml` says it is kept only until spritz stops naming it.
-- The classic LXC runners (CTs 137, 138, 139) are stopped (12 Nov 2026).
+  `ci.yaml` calls the x64 set "the older x64-only set, kept until spritz stops
+  naming it". Each has its own slots on the nodes (`../waker/waker.conf`), so
+  together they run more heavy pods than either alone.
+- The classic LXC runners are stopped (12 Nov 2026).
 - A free Mac takes a human job at once, ahead of zagreus: preferred, not
   overflow. The Macs are laptops and come and go.
 
@@ -32,25 +34,30 @@ Two kinds, and nothing else:
 
 | Set or runner | Labels |
 |---|---|
-| `zagreus-ci` | `self-hosted, linux, heavy, X64` |
+| `zagreus-ci` (and `zagreus-ci-x64` until step 3) | `self-hosted, linux, heavy, X64` |
 | `zagreus-ci-light` | `self-hosted, linux, light` (it already runs on both architectures) |
 | a Mac overflow runner | `self-hosted, linux, heavy, ARM64` |
 
-`spritz-ci`, `spritz-light` and `playwright-full` go. `heavy` implies the full
-browser set, which every heavy runner has.
+`spritz-ci`, `spritz-light` and `playwright-full` go. `heavy` takes over
+`playwright-full`'s meaning (every browser engine installed): `zagreus-ci`
+and the Mac runners carry `playwright-full` today, so every heavy runner has
+it already.
 
 ### Jobs
 
-| Job | `runs-on` |
-|---|---|
-| rspec, rspec_dst, vitest, lint, static_analysis, analytics_contract, chromatic, marketing_e2e | `[self-hosted, heavy]`: any architecture |
-| e2e, e2e_moments, e2e_print, e2e_full_matrix | `[self-hosted, heavy, X64]`: the Chromatic archives must never rasterise on arm64 |
-| changes, agents_md, e2e_full_matrix_verify | `[self-hosted, light]` |
+| Job | Human runs | Bot PRs |
+|---|---|---|
+| rspec, rspec_dst, vitest, lint, static_analysis, analytics_contract, chromatic, marketing_e2e, e2e_full_matrix | `[self-hosted, heavy]`: any architecture | `zagreus-ci` |
+| e2e, e2e_moments, e2e_print | `[self-hosted, heavy, X64]`: they capture the Chromatic archives, which must never rasterise on arm64 | `zagreus-ci` |
+| changes, agents_md, e2e_full_matrix_verify | `[self-hosted, light]` | `zagreus-ci-light` |
+
+e2e_full_matrix (Firefox and WebKit, on main and by dispatch only) asks for
+any architecture, as its `playwright-full` label does today.
 
 **Bot PRs keep naming the set** (`zagreus-ci`, `zagreus-ci-light`). That
 split stays on purpose: a bot PR runs third-party code (new packages' install
-scripts), and a set's name is something only zagreus carries, so a bot job can
-never reach a Mac, however its labels read. The `RUNNER_CI*` variables and the
+scripts), and a set's name is something only zagreus carries, so a bot job
+never asks for labels a Mac could satisfy. The `RUNNER_CI*` variables and the
 classic fallbacks go; each job keeps one expression: set name for bots, labels
 for everyone else.
 
@@ -72,21 +79,31 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
 
 - The Mac runs no standing runner. A small agent polls spritz's queued jobs.
 - When a job asks for labels a Mac satisfies (`[self-hosted, heavy]`, never
-  `X64`, never a set name), is **not from a bot PR**, and has waited
-  **25 s**, the agent asks GitHub for a just-in-time runner config
-  (`POST /repos/abradner/spritz/actions/runners/generate-jitconfig`, labels
+  `X64`, never a set name), is **not from a bot**, and has waited **25 s**,
+  the agent asks GitHub for a just-in-time runner config
+  (`POST /repos/abradner/spritz/actions/runners/generate-jitconfig`, with a
+  `name`, `runner_group_id` 1 (the default group) and the labels
   `self-hosted, linux, heavy, ARM64`) and starts the existing runner image
   with it (`ACTIONS_RUNNER_INPUT_JITCONFIG`: the image's ARC mode, already
   built). The runner takes one job and is gone.
+- **Not from a bot** means both identities, as spritz's own `e2e_full_matrix`
+  guard checks them (`deploy/ci-runner/README.md`): the run's actor and, for
+  a pull request, its author must not end in `[bot]`. The actor alone is not
+  enough: on a `labeled` event the actor is whoever clicked. This guard is a
+  second line; the first is that bot jobs name a set (above).
 - 25 s is under the waker's 60 s grace before it wakes a metal node, so a Mac
   covers a burst instead of a wake. ARC registers within seconds, so zagreus
   always gets first refusal.
 - A closed laptop or stopped agent leaves nothing behind: no offline runner,
-  no waker change. If ARC and the Mac race for one job, the loser's runner
-  gets no work and is removed after a timeout.
-- The agent uses the credential the Mac runner uses today (a fine-grained
-  token with Administration on the repo, which `generate-jitconfig` needs),
-  read once at start and never passed to the runner container.
+  no waker change.
+- **A runner that gets no job is stopped by the agent, not left to wait.** If
+  ARC takes the job first, the Mac's JIT runner would otherwise sit idle and
+  take the *next* heavy job ahead of zagreus, which is "first", not
+  overflow. So the agent stops its container if no job has started within
+  60 s and deletes the runner through the API.
+- The agent uses the credential the Mac runner uses today (a token with
+  admin rights on the repository, which `generate-jitconfig` requires), read
+  once at start and never passed to the runner container.
 
 **The floor limits what a Mac ever sees.** `zagreus-ci` keeps claiming up to
 six jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor"),
@@ -97,35 +114,37 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 ## Steps (one PR each)
 
-1. **athena-gitops: add the class labels** to `zagreus-ci` and
-   `zagreus-ci-light`, keeping the old ones. Nothing routes differently yet.
+1. **athena-gitops: add the class labels** to `zagreus-ci`, `zagreus-ci-x64`
+   (`heavy`) and `zagreus-ci-light`, keeping the old ones. Nothing routes differently yet.
    `../waker/tests/test_classes.py` reads the sets' labels and checks the
    routing table above with the waker's own matcher. **Rollout:** ARC writes
    labels only when it creates a scale set, so after the merge each of the two
-   AutoscalingRunnerSets is deleted and Argo recreates it. That kills a
+   AutoscalingRunnerSets is deleted and Argo recreates it (three: the x64 set
+   gains `heavy` too, below). That kills a
    running job, so it is done with the set idle, on the operator's go, and
    checked by reading the labels back from GitHub
    (`gh api repos/abradner/spritz/actions/runners` lists ARC's runners only
    while they run, so the check is a job asking for `heavy` being picked up).
 2. **spritz: switch `runs-on`** to the table above. Bots by set name, humans
-   by labels. `zagreus-ci-x64` carries no `heavy`, so from here every heavy
-   job, `X64` or not, goes to `zagreus-ci`; the x64 set idles until step 3
-   removes it. `zagreus-ci` has 8 heavy slots to the x64 set's 3, so nothing
-   is lost.
+   by labels. Both amd64 heavy sets carry `heavy` and `X64`, so either takes
+   any human heavy job and no heavy capacity is lost before step 3.
 3. **athena-gitops: fold `zagreus-ci-x64` into `zagreus-ci`**, drop the old
    labels, remove `slotsShared` and the x64 floor from the waker, move the
-   x64 set's node pins and `maxRunners` into `ci.yaml`. The waker tests'
+   x64 set's capacity into `zagreus-ci`: its slots on zag-amd64-01 and -02
+   (one each) and their two `maxRunners`, so `zagreus-ci` goes from 8 to 10
+   and the always-on VM's shared slot becomes one plain `zagreus-ci` slot. The waker tests'
    `SET_LABELS` fixture gives `zagreus-ci` no `X64`, though the live set has
    carried it since 4 Nov 2026; two `DemandOnce` tests rely on that. Fix the
    fixture here, when the x64 set they compare against goes.
 4. **spritz: the Mac overflow agent** (`deploy/ci-runner/`), replacing the
-   standing Mac runners, then deregister runners 26 and 27. The spritz
+   standing Mac runners, then deregister the two standing Mac runners. The spritz
    repository variables `RUNNER_CI*` are deleted after step 2 has run cleanly.
 
 ## Proof, per step
 
-- After 2: a human-run CI pass lands every heavy job on `zagreus-ci`, every
-  e2e job on an amd64 node, and no job on a Mac. A bot PR's run likewise.
+- After 2: a human-run CI pass lands every heavy job on a zagreus amd64 set,
+  and no job on a Mac (until step 4 the Macs carry no `heavy`). A bot PR's run
+  likewise.
 - After 3: the same, with one heavy set; the waker logs no "shared labels
   only" warnings.
 - After 4: with the metal nodes asleep and a Mac agent running, a burst of

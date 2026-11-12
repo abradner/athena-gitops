@@ -1,7 +1,8 @@
 """Runner classes (../../runners/CLASSES.md): the labels the spritz sets carry,
 read from their Application files, route each kind of job where the design
 says, by the waker's own matcher (GitHub's rule: a runner must carry every
-label a job asks for)."""
+label a job asks for). The jobs' labels are typed here from the design's job
+table; spritz's workflow is not read."""
 import os
 import re
 import sys
@@ -35,15 +36,17 @@ class Classes(unittest.TestCase):
         self.assertIn("heavy", SETS["zagreus-ci"])
         self.assertNotIn("light", SETS["zagreus-ci"])
         self.assertIn("X64", SETS["zagreus-ci"])
+        self.assertIn("heavy", SETS["zagreus-ci-x64"])
+        self.assertIn("X64", SETS["zagreus-ci-x64"])
         self.assertIn("light", SETS["zagreus-ci-light"])
         self.assertNotIn("heavy", SETS["zagreus-ci-light"])
 
-    def test_a_heavy_job_of_any_arch_goes_to_zagreus_ci_only(self):
-        self.assertEqual(takers(["self-hosted", "heavy"]), ["zagreus-ci"])
+    def test_a_heavy_job_of_any_arch_goes_to_the_amd64_heavy_sets(self):
+        self.assertEqual(takers(["self-hosted", "heavy"]), ["zagreus-ci", "zagreus-ci-x64"])
 
-    def test_an_x64_heavy_job_goes_to_zagreus_ci_only(self):
-        # The x64 set has no `heavy`: it idles until step 3 folds it in.
-        self.assertEqual(takers(["self-hosted", "heavy", "X64"]), ["zagreus-ci"])
+    def test_an_x64_heavy_job_goes_to_the_amd64_heavy_sets(self):
+        # Both carry heavy + X64 until step 3 folds the x64 set in.
+        self.assertEqual(takers(["self-hosted", "heavy", "X64"]), ["zagreus-ci", "zagreus-ci-x64"])
 
     def test_a_light_job_goes_to_the_light_set_only(self):
         self.assertEqual(takers(["self-hosted", "light"]), ["zagreus-ci-light"])
