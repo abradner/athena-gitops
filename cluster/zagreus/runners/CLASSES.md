@@ -107,8 +107,11 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   spritz's `runs-on` expression checks the PR author only, so a bot's
   change merged by a human runs as a human job, asking for labels. The
   commit check stops the agent starting a Mac runner for it, but a Mac
-  runner already idle in its window could take it. Closing that needs the
-  `runs-on` expression to check commit authors too (spritz, step 2).
+  runner already idle in its window could take it. Closing that needs
+  spritz to treat such a push as a bot run (step 2). A `runs-on` expression
+  cannot substring-match a list of commit authors, so this is likely a
+  first job (`changes` already runs first) that computes it as an output
+  for the others' `runs-on`.
 - **Not claimed by a zagreus set** matters because of the floor (below): a
   job ARC has acquired still shows as queued on GitHub while its pod waits
   for a wake. Whether a runner outside the set can take such a job at all is
