@@ -7,8 +7,7 @@
 # the cert-manager namespace, where ClusterIssuers resolve solver secrets).
 #
 # simplytics.ai (inbox.simplytics.ai, crm), spritz.events (the marketing
-# site), chuvar.ai and spoor.observer (the Spoor portal) are in a *different*
-# Cloudflare account, so they share
+# site) and chuvar.ai are in a *different* Cloudflare account, so they share
 # a second solver, selected by dnsZones, with its own token — cert-manager
 # picks the solver by most-specific zone match. Add further zones from that
 # account to the same selector; a zone from a third account needs a third
@@ -41,9 +40,9 @@ spec:
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token
-      # The zones listed below are in a different Cloudflare account,
+      # simplytics.ai and spritz.events are in a different Cloudflare account,
       # so they need their own token. cert-manager picks the most specific
-      # matching solver: this one claims the zones listed below (and their
+      # matching solver: this one claims those two zones (and their
       # subdomains — staging.spritz.events matches the spritz.events entry),
       # the unselected solver above stays the catch-all for the
       # personal-account zones.
@@ -52,7 +51,6 @@ spec:
             - "simplytics.ai"
             - "spritz.events"
             - "chuvar.ai"
-            - "spoor.observer"
         dns01:
           cloudflare:
             apiTokenSecretRef:
@@ -78,9 +76,9 @@ spec:
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token
-      # The zones listed below are in a different Cloudflare account,
+      # simplytics.ai and spritz.events are in a different Cloudflare account,
       # so they need their own token. cert-manager picks the most specific
-      # matching solver: this one claims the zones listed below (and their
+      # matching solver: this one claims those two zones (and their
       # subdomains — staging.spritz.events matches the spritz.events entry),
       # the unselected solver above stays the catch-all for the
       # personal-account zones.
@@ -89,7 +87,6 @@ spec:
             - "simplytics.ai"
             - "spritz.events"
             - "chuvar.ai"
-            - "spoor.observer"
         dns01:
           cloudflare:
             apiTokenSecretRef:

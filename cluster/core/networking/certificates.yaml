@@ -243,39 +243,3 @@ spec:
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod
----
-# app.spoor.observer — the Spoor portal (production). Simplytics-account zone, so issuance depends on the
-# second DNS-01 solver: same wave-3 reasoning as inbox-simplytics-ai-tls.
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: app-spoor-observer-tls
-  namespace: default
-  annotations:
-    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-    argocd.argoproj.io/sync-wave: "3"
-spec:
-  secretName: app-spoor-observer-tls
-  dnsNames:
-    - "app.spoor.observer"
-  issuerRef:
-    kind: ClusterIssuer
-    name: letsencrypt-prod
----
-# staging.app.spoor.observer — the Spoor portal (staging). Simplytics-account zone, so issuance depends on the
-# second DNS-01 solver: same wave-3 reasoning as inbox-simplytics-ai-tls.
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: staging-app-spoor-observer-tls
-  namespace: default
-  annotations:
-    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-    argocd.argoproj.io/sync-wave: "3"
-spec:
-  secretName: staging-app-spoor-observer-tls
-  dnsNames:
-    - "staging.app.spoor.observer"
-  issuerRef:
-    kind: ClusterIssuer
-    name: letsencrypt-prod
