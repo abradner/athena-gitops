@@ -33,6 +33,13 @@ spec:
           env:
             - name: HTTP_PORT
               value: "8080"
+            # Passkey sign-in (Simplytics/spoor docs/deploy.md). The origin and
+            # relying-party id must equal the public host exactly, or every
+            # WebAuthn ceremony fails; they change only with the hostname.
+            - name: SPOOR_WEBAUTHN_ORIGIN
+              value: "https://app.spoor.observer"
+            - name: SPOOR_WEBAUTHN_RP_ID
+              value: "app.spoor.observer"
             - name: CLICKHOUSE_CA_FILE
               value: /etc/spoor/clickhouse/ca.crt
             # Named keys, not envFrom, for the ClickHouse secret: it also holds
