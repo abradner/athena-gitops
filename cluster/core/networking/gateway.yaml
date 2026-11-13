@@ -175,6 +175,31 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: staging-spritz-events-tls
+  # app.spoor.observer / staging.app.spoor.observer — the Spoor portal
+  # (cluster/apps/spoor-*). Simplytics-account zone: matters to cert-manager,
+  # not to the Gateway.
+  - name: https-spoor-app
+    port: 443
+    protocol: HTTPS
+    hostname: "app.spoor.observer"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: app-spoor-observer-tls
+  - name: https-spoor-app-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.app.spoor.observer"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-app-spoor-observer-tls
   # chuvar.ai — the public site. Simplytics-account zone, same cert-manager
   # caveat as inbox.simplytics.ai above; irrelevant to the Gateway itself.
   - name: https-chuvar-ai
