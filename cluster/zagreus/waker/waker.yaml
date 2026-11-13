@@ -56,7 +56,7 @@ metadata:
 rules:
   - apiGroups: [actions.github.com]
     resources: [autoscalingrunnersets]
-    resourceNames: [zagreus-ci, zagreus-ci-x64, zagreus-simplytics-ci]
+    resourceNames: [zagreus-ci, zagreus-simplytics-ci]
     verbs: [get, patch]
   - apiGroups: [actions.github.com]
     resources: [ephemeralrunners]
@@ -103,7 +103,7 @@ metadata:
 rules:
   - apiGroups: [argoproj.io]
     resources: [applications]
-    resourceNames: [zagreus-spritz-ci, zagreus-spritz-ci-x64, zagreus-spritz-docker-amd64, zagreus-simplytics-ci]
+    resourceNames: [zagreus-spritz-ci, zagreus-spritz-docker-amd64, zagreus-simplytics-ci]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

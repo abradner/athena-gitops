@@ -1,5 +1,5 @@
 # A pre-installed gem tree for spritz CI, built once per Gemfile.lock on each
-# amd64 node and copied read-only into every zagreus-ci and zagreus-ci-x64 pod.
+# amd64 node and copied read-only into every zagreus-ci pod.
 #
 # Why a tree, not a download cache. Measured on zag-amd64-01 in the runner
 # image, `bundle install --jobs 4` of spritz main (2026-10-23):
@@ -50,7 +50,7 @@ data:
     # /source/mise.toml pins, then points /cache/<image>/current at it.
     # <image> is the OS release, the architecture and a hash of the image's
     # installed packages: the native extensions in a tree link against those
-    # libraries. The seed init container in ci.yaml and ci-x64.yaml derives
+    # libraries. The seed init container in ci.yaml derives
     # <image> the same way from its own image, so a runner whose image differs
     # from this one in any package finds no tree and installs as before.
     # <digest> covers the lockfile, the Ruby binary and these scripts.
@@ -263,7 +263,7 @@ spec:
       containers:
         - name: fill
           # The runner image, so the tree is built against the libraries the
-          # jobs load it with. Keep in step with ci.yaml and ci-x64.yaml.
+          # jobs load it with. Keep in step with ci.yaml.
           image: *image
           command: ["/bin/bash", "/scripts/fill.sh"]
           env:

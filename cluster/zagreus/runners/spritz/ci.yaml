@@ -1,7 +1,8 @@
-# spritz CI on the amd64 nodes (`runs-on: zagreus-ci`): rspec, vitest, lint,
-# the browser matrix shards, and since 4 Nov 2026 the x64 class jobs too (e2e,
-# e2e_moments), beside the classic runners. amd64 nodes only. ci-x64.yaml is
-# the older x64-only set, kept until spritz stops naming it.
+# spritz's heavy runner class on the amd64 nodes (../CLASSES.md): every job
+# that asks for `heavy` (rspec, vitest, lint, the browser matrix shards, and
+# the e2e jobs, which add `X64`), and every heavy job of a bot's run, which
+# names this set. amd64 nodes only. The x64-only set (ci-x64.yaml) was folded
+# in here on 13 Nov 2026.
 #
 # Sizing from measured peaks (2026-10-19): e2e 5.5 GiB / 3.6 CPU (Rails,
 # Postgres and Chromium in one container), a full-matrix shard 5.1 GiB, rspec
@@ -24,19 +25,17 @@ spec:
       releaseName: spritz-ci
       valuesObject:
         runnerScaleSetName: zagreus-ci
-        # The class labels this set shares with the classic runners, so a job
-        # asking for them goes to whichever pool can take it first
-        # (README, "Runners"). ARC writes them only when it CREATES the scale
-        # set: after a change here, delete the AutoscalingRunnerSet and let
-        # Argo recreate it, or GitHub keeps the old labels.
-        # X64 too (4 Nov 2026): every node this set runs on is amd64, so it
-        # also takes the x64 class jobs (e2e, e2e_moments) instead of leaving
-        # them to the five x64 slots. Hence amd64 nodes only, below: e2e
-        # captures the Chromatic archives and must never rasterise on arm64.
-        # heavy (12 Nov 2026): the runner class jobs will ask for instead of
-        # spritz-ci/playwright-full (../CLASSES.md). Added beside the old
-        # labels; nothing asks for it until spritz's runs-on changes.
-        scaleSetLabels: [self-hosted, linux, X64, heavy, spritz-ci, playwright-full]
+        # ARC writes labels only when it CREATES the scale set: after a change
+        # here, delete the AutoscalingRunnerSet and let Argo recreate it, or
+        # GitHub keeps the old labels. Amd64 nodes only, below: the e2e jobs
+        # capture the Chromatic archives and must never rasterise on arm64.
+        # Runner classes (../CLASSES.md): `heavy`, and `X64` because every
+        # node this set runs on is amd64, so it takes the jobs that capture
+        # Chromatic archives (they ask for heavy + X64) as well as the
+        # any-architecture heavy jobs. The classic labels (spritz-ci,
+        # playwright-full) went in step 3, 13 Nov 2026: spritz no longer asks
+        # for them, and they let this set claim jobs meant for other pools.
+        scaleSetLabels: [self-hosted, linux, X64, heavy]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
@@ -55,15 +54,15 @@ spec:
         # heavy pods (6.52 of 7.95 CPU; a fourth makes 8.02), zag-amd64-02
         # fits four (6.77; a fifth makes 8.27). Memory binds on the i5:
         # zag-amd64-03 fits two (14.28 of 14.4 GiB). The always-on VM
-        # zag-amd64vm-01 (4 vCPU, 8 GiB, ballooning) fits one, which this set and
-        # ci-x64.yaml share (waker.conf "slotsShared"). Ten heavy pods in all:
-        # this set's ceiling 8, ci-x64.yaml's 3, the VM's slot counted in both.
+        # zag-amd64vm-01 (4 vCPU, 8 GiB) fits one. Ten heavy pods in all: three
+        # on 01, four on 02, two on 03, one on the VM (the old x64 set's slots
+        # on 01 and 02 folded in here, 13 Nov 2026).
         # Re-check whenever a request, a DaemonSet
         # or a node changes. The node waker drives the live value from the
         # awake nodes, and this is its ceiling (README, "Runners";
         # ../../waker/waker.conf holds the per-node slots that sum to it, and
         # its test_configured_slots_fit_the_nodes checks the sums).
-        maxRunners: 8
+        maxRunners: 10
         listenerTemplate:
           spec:
             nodeSelector:

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import waker as w  # noqa: E402
 from test_waker import (T0, TWO_NODES, WAKER_DIR, FakeAMT, FakeGitHub, FakeKube,  # noqa: E402
                         FakeTalos, Clock, live_config, production_config, states)
+from test_sharing import pre_fold_config  # noqa: E402
 
 VM = "zag-amd64vm-01"
 TAINT = "zagreus.asn.casa/always-on"
@@ -196,8 +197,7 @@ class FloorWithAlwaysOn(unittest.TestCase):
         self.cfg = live_config()
         if not any(n.get("alwaysOn") for n in self.cfg["nodes"]):
             self.skipTest("no always-on node configured")
-        self.ceilings = {"zagreus-docker-amd64": 1, "zagreus-ci": 8, "zagreus-ci-x64": 2,
-                         "zagreus-simplytics-ci": 2}
+        self.ceilings = {"zagreus-docker-amd64": 1, "zagreus-ci": 10, "zagreus-simplytics-ci": 2}
         self.floor = next(s["floor"] for s in self.cfg["sets"] if s["name"] == "zagreus-ci")
 
     def caps(self, **st):
@@ -240,19 +240,19 @@ class FloorWithAlwaysOn(unittest.TestCase):
         st = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
         self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-03"])
         _, caps = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}, vm: {}})
-        self.assertEqual(caps["zagreus-ci"], 8)
+        self.assertEqual(caps["zagreus-ci"], 10)
 
     def test_the_floor_wins_over_the_pools_fair_share_squeeze(self):
         # Review of 710b204, kept on purpose: with spritz holding the whole
-        # pool and Simplytics queued, fair share would squeeze zagreus-ci to
-        # 5. The floor lifts it back to 6, because the squeeze is itself a
+        # pool and Simplytics queued, fair share would squeeze zagreus-ci
+        # below its floor. The floor lifts it back, because the squeeze is itself a
         # cap change and a listener restart. Simplytics is not starved: its
         # own floor claims one job, and its Pending pod is older than any
         # spritz pod created after it, so it takes the next free slot
         # (README, "Simplytics' floor").
         vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
         node_states = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
-        room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 10, "zagreus-simplytics-ci": 1},
+        room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 12, "zagreus-simplytics-ci": 1},
                               ceilings=self.ceilings)
         # Positive control: fair share does squeeze spritz below the floor.
         self.assertLess(room["zagreus-ci"], self.floor, room)
@@ -291,7 +291,7 @@ class LiveBurst(unittest.TestCase):
 
     def test_asleep_the_cap_sits_at_the_floor(self):
         r = self.rig()
-        self.assertEqual(self.ci_cap(r), 6)
+        self.assertEqual(self.ci_cap(r), 8)
         self.assertNotIn(r.always_on[0], r.kube.asleep())
 
     def test_one_job_runs_on_the_vm_with_no_wake(self):
@@ -301,20 +301,24 @@ class LiveBurst(unittest.TestCase):
         self.assertEqual(r.woken(), [])
 
     def test_a_first_wave_wakes_01_and_02_and_changes_no_cap(self):
+        # A spritz CI run's first wave since the fold (13 Nov 2026): five
+        # heavy jobs and the three e2e jobs, all on zagreus-ci.
         r = self.rig()
         mark = len(r.kube.writes)
-        for _ in range(6):
+        for _ in range(8):
             r.spritz_job(age=5)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Five beyond the VM's one: 02 covers three, then 01 two.
+        # Seven beyond the VM's one: 02 covers four, then 01 three.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(self.ci_cap(r), 6)
+        self.assertEqual(self.ci_cap(r), 8)
         self.assertEqual(self.ci_cap_writes(r, mark), [])
 
 
 class X64Floor(unittest.TestCase):
-    """10 Nov 2026, the second proof burst: zagreus-ci's floor took the first
+    """Pre-fold (test_sharing.pre_fold_config): x64 was folded into
+    zagreus-ci on 13 Nov 2026, and the waker's pinned-floor logic these test
+    still serves the builder. 10 Nov 2026, the second proof burst: zagreus-ci's floor took the first
     wave with no cap change, but x64 had none. Its cap went 0 -> 1 after the
     wake and 1 -> 2 a minute later, two listener restarts, and the second
     job waited 549 s (305 s of it for GitHub's re-offer). x64 now holds a
@@ -322,7 +326,7 @@ class X64Floor(unittest.TestCase):
 
     def rig(self):
         from test_sharing import LiveRig
-        r = LiveRig(always_on=True)
+        r = LiveRig(always_on=True, pre_fold=True)
         if not r.always_on:
             self.skipTest("no always-on node configured")
         r.put_all_to_sleep()
@@ -356,7 +360,7 @@ class X64Floor(unittest.TestCase):
         # 03 has no x64 slot. Unpinned, the floor would stand down whenever 03
         # is up and the cap would follow 01/02's room (the builder's 4 Nov
         # flapping). Pinned, it holds.
-        cfg = live_config()
+        cfg = pre_fold_config(live_config())
         st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
                        "zag-amd64-02": {"ready": False, "asleep": True},
                        "zag-amd64-03": {}, VM: {}})
@@ -367,7 +371,9 @@ class X64Floor(unittest.TestCase):
 
 
 class SharedVmSlot(unittest.TestCase):
-    """11 Nov 2026 (Alex: one zagreus VM per pve node replaces the classic
+    """Pre-fold where it reads the live world (test_sharing.pre_fold_config):
+    since 13 Nov 2026 the live VM has one plain zagreus-ci slot, and
+    "slotsShared" stays in the waker for any node that needs it. 11 Nov 2026 (Alex: one zagreus VM per pve node replaces the classic
     CTs): x64 jobs may run on the always-on VM too. It has one heavy slot,
     which either set may take, never both: "slotsShared" on the node."""
 
@@ -411,14 +417,14 @@ class SharedVmSlot(unittest.TestCase):
         caps = w.compute_caps(cfg, st)
         self.assertEqual(caps["zagreus-ci"] + caps["zagreus-ci-x64"], 2, caps)
 
-    def test_the_live_vm_shares_its_slot_between_ci_and_x64(self):
-        vm = next(n for n in live_config()["nodes"] if n.get("alwaysOn"))
+    def test_the_pre_fold_vm_shared_its_slot_between_ci_and_x64(self):
+        vm = next(n for n in pre_fold_config(live_config())["nodes"] if n.get("alwaysOn"))
         self.assertTrue(vm.get("slotsShared"))
         self.assertEqual(vm["slots"], {"zagreus-ci": 1, "zagreus-ci-x64": 1})
 
     def live_rig(self):
         from test_sharing import LiveRig
-        r = LiveRig(always_on=True)
+        r = LiveRig(always_on=True, pre_fold=True)
         if not r.always_on:
             self.skipTest("no always-on node configured")
         r.put_all_to_sleep()
@@ -444,7 +450,7 @@ class SharedVmSlot(unittest.TestCase):
         # Codex on 5bc56d1 (P2), at the function level: in the live rig the
         # ci claim's own floor wake masks it. compute_caps places the
         # claimed, unbound ci runner on the VM on paper; that slot is taken.
-        cfg = live_config()
+        cfg = pre_fold_config(live_config())
         vm = next(n["name"] for n in cfg["nodes"] if n.get("alwaysOn"))
         st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
                        "zag-amd64-03": self.ASLEEP, vm: {"free": (3.6, 6.6)}})
@@ -495,7 +501,7 @@ class SharedVmSlot(unittest.TestCase):
         # job stayed queued beside the empty VM. The slot now goes to the
         # set whose demand is unmet.
         from test_sharing import LiveRig, X64
-        r = LiveRig(always_on=True)
+        r = LiveRig(always_on=True, pre_fold=True)
         if not r.always_on:
             self.skipTest("no always-on node configured")
         r.tick()
@@ -514,7 +520,7 @@ class SharedVmSlot(unittest.TestCase):
         # demand was served, and a waiting x64 job sat beside the empty VM
         # until the hold expired.
         from test_sharing import LiveRig, X64
-        r = LiveRig(always_on=True)
+        r = LiveRig(always_on=True, pre_fold=True)
         if not r.always_on:
             self.skipTest("no always-on node configured")
         r.tick()
@@ -533,7 +539,7 @@ class SharedVmSlot(unittest.TestCase):
 
     def test_with_no_demand_the_idle_shared_slot_still_goes_to_ci(self):
         # Unchanged when nobody is waiting: waker.conf order, as before.
-        cfg = live_config()
+        cfg = pre_fold_config(live_config())
         vm = next(n["name"] for n in cfg["nodes"] if n.get("alwaysOn"))
         st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
                        "zag-amd64-03": self.ASLEEP, vm: {}})
@@ -541,7 +547,7 @@ class SharedVmSlot(unittest.TestCase):
         self.assertEqual((caps["zagreus-ci"], caps["zagreus-ci-x64"]), (1, 0), caps)
 
     def test_x64_demand_takes_the_idle_shared_slot_from_an_idle_ci(self):
-        cfg = live_config()
+        cfg = pre_fold_config(live_config())
         vm = next(n["name"] for n in cfg["nodes"] if n.get("alwaysOn"))
         st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
                        "zag-amd64-03": self.ASLEEP, vm: {}})
@@ -549,7 +555,7 @@ class SharedVmSlot(unittest.TestCase):
         self.assertEqual((caps["zagreus-ci"], caps["zagreus-ci-x64"]), (0, 1), caps)
 
     def test_x64_is_in_the_share_figures_because_it_draws_on_a_shared_node(self):
-        need = w.share_need(live_config(), {"zagreus-ci-x64": 2, "zagreus-docker-amd64": 1}, {})
+        need = w.share_need(pre_fold_config(live_config()), {"zagreus-ci-x64": 2, "zagreus-docker-amd64": 1}, {})
         self.assertEqual(need.get("zagreus-ci-x64"), 2)
         self.assertNotIn("zagreus-docker-amd64", need)
 
@@ -564,7 +570,7 @@ class SharedVmSlot(unittest.TestCase):
 
     def test_the_live_proof_wave_with_a_shared_slot_changes_no_cap(self):
         from test_sharing import LiveRig, X64
-        r = LiveRig(always_on=True)
+        r = LiveRig(always_on=True, pre_fold=True)
         if not r.always_on:
             self.skipTest("no always-on node configured")
         r.put_all_to_sleep()

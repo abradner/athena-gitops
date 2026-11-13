@@ -51,8 +51,8 @@ on the live set takes effect within seconds (runs 39883352061 and 39883642252).
 So "classic first, zagreus for the overflow" comes from `maxRunners`: the
 node waker (`waker/README.md`) holds it at 0 while the amd64 nodes sleep and
 raises it to the awake nodes' slots when the classic runners are saturated.
-It drives `zagreus-ci`, `zagreus-ci-x64`, `zagreus-docker-amd64` and
-`zagreus-simplytics-ci`; their Applications ignore `spec.maxRunners`, and
+It drives `zagreus-ci`, `zagreus-docker-amd64` and
+`zagreus-simplytics-ci` (`zagreus-ci-x64` was folded into `zagreus-ci` on 13 Nov 2026); their Applications ignore `spec.maxRunners`, and
 the value written in each is the waker's ceiling. `zagreus-ci` and
 `zagreus-simplytics-ci` share one set of slots, handed to whichever has
 queued jobs (`waker/README.md`, "Sharing"). Until the waker leaves observe mode the static caps below
@@ -66,9 +66,8 @@ code runs, above).
 
 | Scale set | Labels (besides its name) | Classic runners sharing them | Nodes | Scale | For |
 |---|---|---|---|---|---|
-| `zagreus-ci-light` | `self-hosted, linux, spritz-light` | the three x64 LXC runners and the two Mac runners, once they carry `spritz-light` (none do yet) | prefers arm runners, may use arm64 builder nodes, falls back to amd64 | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
-| `zagreus-ci` | `self-hosted, linux, spritz-ci, playwright-full` | the three x64 LXC runners and the two Mac runners carry both today | prefers amd64, falls back to arm64 | 0–7 | general CI, the full browser matrix |
-| `zagreus-ci-x64` | `self-hosted, linux, X64, spritz-ci` | the x64 LXC runners (e2e asks for `X64, spritz-ci`) | amd64 only | 0–2 | e2e (must not rasterise on arm64) |
+| `zagreus-ci-light` | `self-hosted, linux, light` (the `light` runner class, `runners/CLASSES.md`) | none: only this set carries `light` | prefers arm runners, may use arm64 builder nodes, falls back to amd64 | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
+| `zagreus-ci` | `self-hosted, linux, X64, heavy` (the `heavy` runner class, `runners/CLASSES.md`) | none today; the Macs become `heavy, ARM64` overflow in CLASSES.md step 4 | amd64 only, plus the always-on VM | 0–10, floor 8 | every heavy spritz job, the e2e jobs (`heavy, X64`) included, and every heavy job of a bot's run (by name) |
 | `zagreus-docker-arm64` | none: name only (`docker-arm64.yaml` says why) | none; the Mac builders keep `docker-arm64` | arm64 builder (always on) | 0–1 | bot-authored PR build checks; not release legs while they would share its data root |
 | `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
 | `zagreus-simplytics-light` | `self-hosted, linux, simplytics-light` | none | as `zagreus-ci-light` | 1 warm, up to 2 | Simplytics' gating jobs (org-level) |
@@ -105,10 +104,10 @@ Two rules keep the overflow honest:
 - **`maxRunners` never exceeds what the nodes can schedule.** A claimed job is
   bound to its scale set, so a claim beyond capacity waits in a Pending pod
   while a classic runner could have taken it (seen in the probe above: the
-  claimed job sat queued beside an idle classic runner until cancelled). `zagreus-ci` and
-  `zagreus-ci-x64` share the amd64 nodes with the amd64 builder and the light
-  pods; their caps (7 and 2, from 1 Nov 2026 with three amd64 nodes) are the
-  nine 6 GiB pods that schedule with the builder and the light pods placed
+  claimed job sat queued beside an idle classic runner until cancelled). `zagreus-ci`
+  shares the amd64 nodes with the amd64 builder and the light pods; its cap
+  (10 since the fold of 13 Nov 2026: 3 on 01, 4 on 02, 2 on 03, 1 on the
+  always-on VM; before it, 7 and x64's 2 from 1 Nov 2026) is the 6 GiB pods that schedule with the builder and the light pods placed
   too, not the most that fit when nothing else runs (`ci.yaml` has the
   arithmetic).
 

@@ -24,7 +24,7 @@ def set_labels(filename):
     return name, [l.strip() for l in labels.split(",")]
 
 
-SETS = dict(set_labels(f) for f in ("ci.yaml", "ci-light.yaml", "ci-x64.yaml"))
+SETS = dict(set_labels(f) for f in ("ci.yaml", "ci-light.yaml"))
 
 
 def takers(job_labels):
@@ -32,21 +32,20 @@ def takers(job_labels):
 
 
 class Classes(unittest.TestCase):
-    def test_the_sets_carry_their_class(self):
-        self.assertIn("heavy", SETS["zagreus-ci"])
-        self.assertNotIn("light", SETS["zagreus-ci"])
-        self.assertIn("X64", SETS["zagreus-ci"])
-        self.assertIn("heavy", SETS["zagreus-ci-x64"])
-        self.assertIn("X64", SETS["zagreus-ci-x64"])
-        self.assertIn("light", SETS["zagreus-ci-light"])
-        self.assertNotIn("heavy", SETS["zagreus-ci-light"])
+    def test_the_sets_carry_their_class_and_nothing_else(self):
+        # Since step 3 (13 Nov 2026) the classic labels are gone: a set
+        # carries its class, and zagreus-ci its architecture.
+        self.assertEqual(sorted(SETS["zagreus-ci"]), sorted(["self-hosted", "linux", "X64", "heavy"]))
+        self.assertEqual(sorted(SETS["zagreus-ci-light"]), sorted(["self-hosted", "linux", "light"]))
 
-    def test_a_heavy_job_of_any_arch_goes_to_the_amd64_heavy_sets(self):
-        self.assertEqual(takers(["self-hosted", "heavy"]), ["zagreus-ci", "zagreus-ci-x64"])
+    def test_the_x64_set_is_gone(self):
+        self.assertFalse(os.path.exists(os.path.join(RUNNERS, "ci-x64.yaml")))
 
-    def test_an_x64_heavy_job_goes_to_the_amd64_heavy_sets(self):
-        # Both carry heavy + X64 until step 3 folds the x64 set in.
-        self.assertEqual(takers(["self-hosted", "heavy", "X64"]), ["zagreus-ci", "zagreus-ci-x64"])
+    def test_a_heavy_job_of_any_arch_goes_to_zagreus_ci(self):
+        self.assertEqual(takers(["self-hosted", "heavy"]), ["zagreus-ci"])
+
+    def test_an_x64_heavy_job_goes_to_zagreus_ci(self):
+        self.assertEqual(takers(["self-hosted", "heavy", "X64"]), ["zagreus-ci"])
 
     def test_a_light_job_goes_to_the_light_set_only(self):
         self.assertEqual(takers(["self-hosted", "light"]), ["zagreus-ci-light"])
@@ -59,12 +58,12 @@ class Classes(unittest.TestCase):
         for name in SETS:
             self.assertEqual(takers([name]), [name])
 
-    def test_the_old_class_labels_still_match_until_step_3(self):
-        self.assertIn("zagreus-ci", takers(["self-hosted", "linux", "spritz-ci"]))
-        # e2e_full_matrix's label: both amd64 heavy sets carry it (step 1's one
-        # routing change: same pod, same nodes).
-        self.assertEqual(takers(["self-hosted", "linux", "playwright-full"]), ["zagreus-ci", "zagreus-ci-x64"])
-        self.assertEqual(takers(["self-hosted", "linux", "spritz-light"]), ["zagreus-ci-light"])
+    def test_the_classic_labels_match_no_set(self):
+        # A job still asking for them would sit queued: none of spritz's
+        # workflows does since spritz#1651.
+        for labels in (["self-hosted", "linux", "spritz-ci"], ["self-hosted", "linux", "spritz-light"],
+                       ["self-hosted", "linux", "playwright-full"], ["self-hosted", "linux", "X64", "spritz-ci"]):
+            self.assertEqual(takers(labels), [], labels)
 
 
 if __name__ == "__main__":
