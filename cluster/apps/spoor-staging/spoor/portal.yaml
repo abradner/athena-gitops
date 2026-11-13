@@ -37,9 +37,9 @@ spec:
             # relying-party id must equal the public host exactly, or every
             # WebAuthn ceremony fails; they change only with the hostname.
             - name: SPOOR_WEBAUTHN_ORIGIN
-              value: "https://staging.app.spoor.observer"
+              value: "https://app-staging.spoor.observer"
             - name: SPOOR_WEBAUTHN_RP_ID
-              value: "staging.app.spoor.observer"
+              value: "app-staging.spoor.observer"
             - name: CLICKHOUSE_CA_FILE
               value: /etc/spoor/clickhouse/ca.crt
             # Named keys, not envFrom, for the ClickHouse secret: it also holds
