@@ -4,7 +4,7 @@
 # replica count here. At 0 the Deployment is Healthy with nothing to pull, so
 # the app syncs before the first image exists.
 #
-# Public at staging.app.spoor.observer (HTTPRoute below), through the tunnel only. Until the portal has
+# Public at app-staging.spoor.observer (HTTPRoute below), through the tunnel only. Until the portal has
 # replicas the route has no endpoints, and the Gateway answers 503.
 apiVersion: apps/v1
 kind: Deployment
@@ -131,7 +131,7 @@ spec:
       namespace: default
       sectionName: https-tunnel
   hostnames:
-    - "staging.app.spoor.observer"
+    - "app-staging.spoor.observer"
   rules:
     - backendRefs:
         - name: spoor-portal
