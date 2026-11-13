@@ -178,7 +178,7 @@ the classic runners are stopped and the labels are gone (runners/CLASSES.md,
 step 3), so every claim is a job only zagreus could run.
 
 **Beside Simplytics.** With spritz holding the whole pool and Simplytics
-queued, fair share would squeeze zagreus-ci below 6; the floor lifts it
+queued, fair share would squeeze zagreus-ci below 8; the floor lifts it
 back. That is on purpose: the squeeze would itself be a cap change and a
 listener restart. Simplytics is not starved, because its own floor claims
 one job and its Pending pod, older than any spritz pod created after it,
@@ -544,8 +544,8 @@ without manual intervention to constantly rejuggle slots". So
 `zagreus-simplytics-ci` has no slots of its own. It carries
 `"sharesSlotsOf": "zagreus-ci"`, and draws on `zagreus-ci`'s slots on each
 node: the two sets together are never offered more than those slots, or
-than the node's room. `zagreus-ci-x64` and the builder keep their own
-slots and are untouched.
+than the node's room. The builder keeps its own slots and is untouched (as
+`zagreus-ci-x64` did until it was folded into `zagreus-ci`, 13 Nov 2026).
 
 **The rule** (`compute_caps`, each pass):
 
@@ -625,7 +625,8 @@ enough to keep. They apply only while a pool is configured. With
 Simplytics idle and production's numbers (`zagreus-ci`'s ceiling equal to
 its slots, `roomCaps` true) the caps were identical.
 - A pool set's ceiling is applied inside the allocation, so room it cannot
-  use goes to the next set (`zagreus-ci-x64`) instead of being clamped away.
+  use goes to the next set (it was `zagreus-ci-x64` when this was written)
+  instead of being clamped away.
 - In slot mode, a pool set's runners count towards its cap, as in room mode.
 
 **Undo.** Remove the set (and `githubApps`) from `waker.conf`; the pool is
@@ -1030,7 +1031,11 @@ strands a real job:
   was claimed and stuck while a classic runner sat idle.
 - **Green, ARC level:** run 39883352061. `maxRunners: 0`; all five jobs went
   to the classic runner, and no EphemeralRunner was created.
-- **Green, waker level (live, `caps` mode, no power, needs a go):**
+- **Green, waker level (live, `caps` mode, no power, needs a go).** As run
+  while the classic runners existed. Since 13 Nov 2026 the classic labels
+  match no set and the classic runners are stopped, so step 3 below cannot
+  pass as written; aim the matrix at `[self-hosted, heavy]` and expect the
+  jobs to queue unclaimed instead:
   1. Cordon zag-amd64-01 and -02 by hand.
   2. Within one pass (30 s), the waker logs `maxRunners 3 -> 0` (and 1 -> 0
      twice), and `kubectl get autoscalingrunnersets -A` shows 0 for the three

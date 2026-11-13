@@ -172,6 +172,6 @@ its node.
 
 A scale set is proven by a real job: a run whose job shows that scale set's
 runner in the jobs API, not a listener showing `Running`. The scale-set names
-(`zagreus-ci`, `zagreus-ci-x64`, …) are deliberately different from the legacy
+(`zagreus-ci`, `zagreus-ci-light`, …) are deliberately different from the legacy
 runners' labels (`spritz-ci`), so a test job aimed at one cannot land on the
 other.

@@ -124,7 +124,7 @@ footer { margin-top: 64px; color: var(--muted); font-size: 14px; border-top: 1px
   </tbody>
 </table></div>
 <div class="rule-box"><p><strong>The rule:</strong> live <code>maxRunners</code> = what the awake, schedulable nodes can actually run, never above the ceiling written in the set's Argo Application. While the nodes sleep, it is 0.</p></div>
-<p>Argo ignores <code>spec.maxRunners</code> on the three driven sets (<code>zagreus-ci</code>, <code>zagreus-ci-x64</code>, <code>zagreus-docker-amd64</code>), with <code>RespectIgnoreDifferences</code>, so a sync never writes the ceiling back over the waker's value.</p>
+<p>Argo ignores <code>spec.maxRunners</code> on the driven sets (<code>zagreus-ci</code>, <code>zagreus-docker-amd64</code>, <code>zagreus-simplytics-ci</code>; <code>zagreus-ci-x64</code> until it was folded into <code>zagreus-ci</code>, 13 Nov 2026), with <code>RespectIgnoreDifferences</code>, so a sync never writes the ceiling back over the waker's value.</p>
 
 <h2 id="modes">Modes</h2>
 <p>One line in <code>waker.conf</code> chooses how far it may act. A change rolls the pod, because the ConfigMap's name carries a hash.</p>
@@ -193,6 +193,7 @@ flowchart TD
     The builder is listed first because it preempts CI pods.</li>
   <li><strong>The ceiling.</strong> If no ceiling has ever been read, caps only go down.</li>
 </ol>
+<p>The slots as they were on 1 Nov 2026, before the always-on VM and the fold of <code>zagreus-ci-x64</code> into <code>zagreus-ci</code> (13 Nov). Today's are in <code>waker.conf</code> and the README's slot table.</p>
 <div class="frame"><table>
   <thead><tr><th>Node</th><th class="num">Allocatable</th><th class="num">zagreus-docker-amd64</th><th class="num">zagreus-ci</th><th class="num">zagreus-ci-x64</th></tr></thead>
   <tbody>

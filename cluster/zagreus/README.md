@@ -56,9 +56,9 @@ It drives `zagreus-ci`, `zagreus-docker-amd64` and
 the value written in each is the waker's ceiling. `zagreus-ci` and
 `zagreus-simplytics-ci` share one set of slots, handed to whichever has
 queued jobs (`waker/README.md`, "Sharing"). Until the waker leaves observe mode the static caps below
-apply as written, and with the amd64 nodes always on, `zagreus-ci` races the
-classic runners for up to seven jobs at a time rather than waiting for them
-to fill. Each job class matches at most one scale set; a job matching two
+apply as written. Since the classic runners stopped (12 Nov 2026) nothing
+races `zagreus-ci`: it takes up to ten heavy jobs at a time, eight of them
+claimed even while its nodes sleep (its floor). Each job class matches at most one scale set; a job matching two
 would go to either, so a heavy job could land in a light pod. The scale-set
 name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus
 and nothing else (dependency-update PRs use it: zagreus is where third-party
@@ -97,10 +97,9 @@ Two rules keep the overflow honest:
     Turn it off top-down instead (`zagreus-root`, `zagreus-runners`, then the
     set's Application), delete the set, wait for the pod to finish
     terminating, then turn sync back on bottom-up.
-  - Recreate `zagreus-ci` only once spritz's light jobs ask for
-    `spritz-light`. Until then they ask for `spritz-ci` (RUNNER_CI_LIGHT is
-    set to the classic labels), so they would race onto 6 GiB heavy pods and
-    use up the set's slots on every run's critical path.
+  - (Until 13 Nov 2026 this said to recreate `zagreus-ci` only once spritz's
+    light jobs asked for `spritz-light`. Since spritz#1651 they ask for
+    `light`, which only `zagreus-ci-light` carries, so that gate is done.)
 - **`maxRunners` never exceeds what the nodes can schedule.** A claimed job is
   bound to its scale set, so a claim beyond capacity waits in a Pending pod
   while a classic runner could have taken it (seen in the probe above: the

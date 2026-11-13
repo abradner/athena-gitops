@@ -7,7 +7,7 @@ are to take work only when zagreus has not picked it up (today they take it
 first: below). This file is the design; each
 step below lands as its own PR, and this file is updated as they land.
 
-## Today
+## Before (12 Nov 2026, when this was designed)
 
 | Job asks for | Who answers |
 |---|---|
@@ -40,10 +40,9 @@ Two kinds, and nothing else:
 | `zagreus-ci-light` | `self-hosted, linux, light` (it already runs on both architectures) |
 | a Mac overflow runner | `self-hosted, linux, heavy, ARM64` |
 
-`spritz-ci`, `spritz-light` and `playwright-full` go. `heavy` takes over
-`playwright-full`'s meaning (every browser engine installed). `zagreus-ci`
-and the Mac runners carry `playwright-full` today; `zagreus-ci-x64` runs the
-same pod and gains the label in step 1, so every heavy runner has it.
+`spritz-ci`, `spritz-light` and `playwright-full` go (step 3). `heavy` takes
+over `playwright-full`'s meaning (every browser engine installed): every
+heavy runner carried `playwright-full` before, and the pod is unchanged.
 
 ### Jobs
 
@@ -67,8 +66,9 @@ for everyone else.
 
 - `zagreus-ci-x64` is folded into `zagreus-ci` and `ci-x64.yaml` is deleted.
   One heavy queue.
-- The waker loses `slotsShared` (#390) and the x64 set's floor; the always-on
-  VM goes back to one `zagreus-ci` slot. Simplytics keeps sharing
+- The live config loses `slotsShared` (#390) and the x64 set's floor; the
+  always-on VM goes back to one `zagreus-ci` slot. The waker code keeps both
+  features (step 3). Simplytics keeps sharing
   `zagreus-ci`'s slots as now.
 - Set names do not change, so GitHub's registrations do not churn.
 - Out of scope: the docker builder sets (`RUNNER_DOCKER_*`) and the Simplytics
@@ -139,10 +139,10 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   once at start and never passed to the runner container.
 
 **The floor limits what a Mac ever sees.** `zagreus-ci` keeps claiming up to
-six jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor"),
-because a cap raised from 0 can leave GitHub holding the job for half an hour.
-Those six wait for a wake. So a Mac takes only what is beyond the floor plus
-any awake slots: the seventh job of a burst onward. Lowering the floor would
+eight jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor";
+six before step 3), because a cap raised from 0 can leave GitHub holding the
+job for half an hour. Those eight wait for a wake. So a Mac takes only what is
+beyond the floor plus any awake slots: the ninth job of a burst onward. Lowering the floor would
 give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 ## Steps (one PR each)
@@ -183,9 +183,15 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
    `test_sharing.pre_fold_config`), so only the live-config checks changed.
    The `SET_LABELS` fixture belongs to that frozen world and keeps its x64
    set, so it is left as it was. **Rollout:** dropping labels needs both
-   AutoscalingRunnerSets recreated again, idle, on the operator's go;
-   deleting `ci-x64.yaml` prunes its Application and scale set, so the merge
-   waits for that set to be idle too.
+   AutoscalingRunnerSets recreated again, idle, on the operator's go. The
+   x64 scale set is **not** removed by the merge: deleting `ci-x64.yaml`
+   prunes its Application, but the Application has no
+   `resources-finalizer.argocd.argoproj.io`, so Argo leaves the
+   AutoscalingRunnerSet behind, still carrying the old labels and no longer
+   driven by the waker. Delete it by hand after the merge, while idle
+   (`kubectl -n arc-runners delete autoscalingrunnerset zagreus-ci-x64`),
+   and check `kubectl -n arc-runners get autoscalingrunnersets` no longer
+   lists it.
 4. **spritz: the Mac overflow agent** (`deploy/ci-runner/`), replacing the
    standing Mac runners, then deregister the two standing Mac runners. The spritz
    repository variables `RUNNER_CI*` are deleted after step 2 has run cleanly.

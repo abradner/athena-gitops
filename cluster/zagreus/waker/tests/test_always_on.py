@@ -594,6 +594,15 @@ class LiveFiles(unittest.TestCase):
     def always_on_nodes(self):
         return [n["name"] for n in live_config()["nodes"] if n.get("alwaysOn")]
 
+    def test_the_live_vm_is_one_plain_zagreus_ci_slot(self):
+        # Since the fold of zagreus-ci-x64 (13 Nov 2026): no shared slot.
+        vms = [n for n in live_config()["nodes"] if n.get("alwaysOn")]
+        if not vms:
+            self.skipTest("no always-on node configured")
+        for vm in vms:
+            self.assertEqual(vm["slots"], {"zagreus-ci": 1}, vm["name"])
+            self.assertFalse(vm.get("slotsShared", False), vm["name"])
+
     def test_the_waker_tolerates_the_always_on_taint(self):
         if not self.always_on_nodes():
             self.skipTest("no always-on node configured")
