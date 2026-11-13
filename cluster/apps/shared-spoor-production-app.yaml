@@ -1,0 +1,29 @@
+---
+# Per-namespace shared resources for spoor-production (the ghcr pull secret: one owner per
+# namespace, the same split as shared-spritz-*).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shared-spoor-production
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spoor-production/shared
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spoor-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

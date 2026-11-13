@@ -1,0 +1,108 @@
+---
+# Spoor portal (production). PLACEHOLDER: replicas 0 until the Spoor night shift
+# pushes ghcr.io/simplytics/spoor-portal and sets the tag, the env and the
+# replica count here. At 0 the Deployment is Healthy with nothing to pull, so
+# the app syncs before the first image exists.
+#
+# The hostname, the HTTPRoute and the certificate arrive with the DNS/TLS
+# change, not here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spoor-portal
+  namespace: spoor-production
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: spoor-portal
+  template:
+    metadata:
+      labels:
+        app: spoor-portal
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: portal
+          image: ghcr.io/simplytics/spoor-portal:placeholder
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: HTTP_PORT
+              value: "8080"
+            - name: CLICKHOUSE_CA_FILE
+              value: /etc/spoor/clickhouse/ca.crt
+            # Named keys, not envFrom, for the ClickHouse secret: it also holds
+            # ca.crt, which is not a valid variable name (mounted below).
+            - name: CLICKHOUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_HOST
+            - name: CLICKHOUSE_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_PORT
+            - name: CLICKHOUSE_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_DATABASE
+            - name: CLICKHOUSE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_USERNAME
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_PASSWORD
+          envFrom:
+            - secretRef:
+                name: spoor-portal
+          volumeMounts:
+            - name: clickhouse-ca
+              mountPath: /etc/spoor/clickhouse
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          # Pod Security "restricted". If the image needs a writable root or a
+          # specific uid, the Spoor night shift says so here, with the reason.
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: clickhouse-ca
+          secret:
+            secretName: spoor-clickhouse-app
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spoor-portal
+  namespace: spoor-production
+  labels:
+    app: spoor-portal
+spec:
+  selector:
+    app: spoor-portal
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

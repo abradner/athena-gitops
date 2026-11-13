@@ -89,7 +89,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
-  description: First-party apps, grouped per environment (asn-*, spritz-*, simplytics-*), each group-env namespace with its own Temporal instance
+  description: First-party apps, grouped per environment (asn-*, spritz-*, simplytics-*, spoor-*), each group-env namespace with its own Temporal instance
   sourceRepos:
     - 'https://github.com/abradner/athena-gitops.git'
   # pmn-style namespace globs: one namespace per group per environment
@@ -101,6 +101,11 @@ spec:
       namespace: 'spritz-*'
     - server: 'https://kubernetes.default.svc'
       namespace: 'simplytics-*'
+    # Spoor (Simplytics' analytics product): spoor-staging, spoor-production.
+    # Its own namespaces, not simplytics-*: it shares no Temporal or other
+    # group resource with them.
+    - server: 'https://kubernetes.default.svc'
+      namespace: 'spoor-*'
   # Workloads are namespace-scoped; namespaces come from CreateNamespace=true
   # on each Application, whitelisted here for the dry-run's sake.
   clusterResourceWhitelist:

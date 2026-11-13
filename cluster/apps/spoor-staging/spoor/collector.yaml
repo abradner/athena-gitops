@@ -1,0 +1,188 @@
+---
+# Spoor's OpenTelemetry collector (staging). Ingest is in-cluster only: a
+# ClusterIP Service, no route, nothing outside the cluster can post to it.
+# Senders (the sample emitter, later the apps) use
+# http://spoor-collector.spoor-staging:4318 (OTLP/HTTP) or :4317 (gRPC).
+#
+# PLACEHOLDER pipeline: OTLP in, a debug exporter out, so the pod runs and the
+# app is Healthy before Spoor's exporter config exists. The Spoor night shift
+# replaces `config.yaml` with its ClickHouse exporter, which reads
+# spoor-clickhouse-app (already mounted below: env plus the CA file).
+#
+# A Deployment with one replica: no tail sampling and no disk queue here, so
+# nothing pins spans to one pod or one file. contrib, not core: the ClickHouse
+# exporter is a contrib component. Pinned by digest (0.164.0, multi-arch).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spoor-collector
+  namespace: spoor-staging
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:13133
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch: {}
+    exporters:
+      debug:
+        verbosity: basic
+    service:
+      extensions: [health_check]
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: ${env:MY_POD_IP}
+                    port: 8888
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spoor-collector
+  namespace: spoor-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spoor-collector
+  template:
+    metadata:
+      labels:
+        app: spoor-collector
+      annotations:
+        # A config change rolls the pod: bump when editing the ConfigMap.
+        spoor.simplytics.ai/config-rev: "1"
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/etc/otelcol/config.yaml"]
+          env:
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GOMEMLIMIT
+              value: "400MiB"
+            - name: CLICKHOUSE_CA_FILE
+              value: /etc/spoor/clickhouse/ca.crt
+            # Named keys, not envFrom: the secret also holds ca.crt, which is
+            # not a valid variable name (mounted as a file below instead).
+            - name: CLICKHOUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_HOST
+            - name: CLICKHOUSE_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_PORT
+            - name: CLICKHOUSE_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_DATABASE
+            - name: CLICKHOUSE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_USERNAME
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_PASSWORD
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics
+              containerPort: 8888
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            - name: clickhouse-ca
+              mountPath: /etc/spoor/clickhouse
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: config
+          configMap:
+            name: spoor-collector
+        - name: clickhouse-ca
+          secret:
+            secretName: spoor-clickhouse-app
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spoor-collector
+  namespace: spoor-staging
+  labels:
+    app: spoor-collector
+spec:
+  type: ClusterIP
+  selector:
+    app: spoor-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: metrics
+      port: 8888
+      targetPort: 8888
