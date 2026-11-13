@@ -188,10 +188,20 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
    prunes its Application, but the Application has no
    `resources-finalizer.argocd.argoproj.io`, so Argo leaves the
    AutoscalingRunnerSet behind, still carrying the old labels and no longer
-   driven by the waker. Delete it by hand after the merge, while idle
-   (`kubectl -n arc-runners delete autoscalingrunnerset zagreus-ci-x64`),
-   and check `kubectl -n arc-runners get autoscalingrunnersets` no longer
-   lists it.
+   driven by the waker. Its cap freezes where the waker last left it (2,
+   its floor, on 14 Nov 2026), so it could claim heavy jobs that nothing
+   wakes a node for: **delete it right after the sync, not later**, while
+   idle, in this order:
+   1. `kubectl -n arc-runners delete autoscalingrunnerset zagreus-ci-x64`,
+      then wait until `kubectl -n arc-runners get autoscalingrunnersets` no
+      longer lists it. The ARC controller removes its listener (and the
+      listener's own Role and RoleBinding) and its runners; it needs the
+      manager Role below to do that, so that goes second.
+   2. The chart's leftovers, which the pruned Application also leaves
+      (names read live on 14 Nov 2026): ServiceAccount
+      `zagreus-ci-x64-gha-rs-no-permission`, and Role and RoleBinding
+      `zagreus-ci-x64-gha-rs-manager`, all in `arc-runners`. Check with
+      `kubectl -n arc-runners get sa,role,rolebinding | grep x64`.
 4. **spritz: the Mac overflow agent** (`deploy/ci-runner/`), replacing the
    standing Mac runners, then deregister the two standing Mac runners. The spritz
    repository variables `RUNNER_CI*` are deleted after step 2 has run cleanly.
@@ -201,8 +211,12 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 - After 2: a human-run CI pass lands every heavy job on a zagreus amd64 set,
   and no job on a Mac (until step 4 the Macs carry no `heavy`). A bot PR's run
   likewise.
-- After 3: the same, with one heavy set; the waker logs no "shared labels
-  only" warnings.
+- After 3: a spritz run lands every heavy job on `zagreus-ci` (the e2e jobs
+  included), the first wave of a sleeping cluster changes no cap (no
+  `maxRunners` line in the waker's log for it), and
+  `kubectl -n arc-runners get autoscalingrunnersets` lists no
+  `zagreus-ci-x64`. (The "shared labels only" warning this used to name was
+  removed in step 3: every human heavy job matches by labels now.)
 - After 4: with the metal nodes asleep and a Mac agent running, a burst of
   more than seven heavy jobs puts the overflow on the Mac within about 30 s,
   wakes no node for it, and never puts an `X64` job or a bot job there. With

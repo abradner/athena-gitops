@@ -632,6 +632,16 @@ LIVE_ALLOCATABLE = {"zag-amd64-01": {"cpu": "7950m", "memory": "31820076Ki"},
                     "zag-amd64-03": {"cpu": "3950m", "memory": "15193716Ki"}}
 
 
+LIVE_SET_FILES = {CI: "spritz/ci.yaml", BUILDER: "spritz/docker-amd64.yaml", SIM: "simplytics/ci.yaml"}
+
+
+def live_set_labels(name):
+    """A set's scaleSetLabels, read from its Application file."""
+    with open(os.path.join(WAKER_DIR, "..", "runners", LIVE_SET_FILES[name])) as f:
+        line = re.search(r"^\s+scaleSetLabels: \[([^\]]*)\]$", f.read(), re.M).group(1)
+    return [label.strip() for label in line.split(",")]
+
+
 # The deployed world before step 3 of ../../runners/CLASSES.md (13 Nov 2026)
 # folded zagreus-ci-x64 into zagreus-ci: x64 with its own slot on 01 and 02,
 # a pinned floor of 2, and the always-on VM's one slot shared between the
@@ -680,6 +690,13 @@ class LiveRig(SharedRig):
                                 for s in self.cfg["sets"]]
         self.clock = Clock()
         self.kube = FakeKube(self.cfg, self.clock)
+        if not pre_fold:
+            # The labels as the Applications write them, not the frozen
+            # world's fixture (SET_LABELS): a job asking for the runner
+            # classes must match what the live sets carry.
+            for st in self.cfg["sets"]:
+                self.kube.ars[(st["namespace"], st["name"])]["spec"]["runnerScaleSetLabels"] = \
+                    live_set_labels(st["name"])
         self.kube.node_controller_taints = True
         for name, a in LIVE_ALLOCATABLE.items():
             self.kube.nodes[name]["status"]["allocatable"] = dict(a)

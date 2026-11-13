@@ -173,9 +173,12 @@ held-jobs incidents of 28 Oct–3 Nov.
 **What it costs.** While the Talos nodes sleep it claims up to eight jobs,
 and seven of them wait a minute or two for a wake. Until 13 Nov 2026 it
 also carried the classic labels, so some of those claims were jobs a
-classic runner could have run at once (`warn_floor_matches` logged each);
-the classic runners are stopped and the labels are gone (runners/CLASSES.md,
-step 3), so every claim is a job only zagreus could run.
+classic runner could have run at once, and `warn_floor_matches` logged each
+one ("matches zagreus-ci by shared labels only"). The classic runners are
+stopped and the labels are gone (runners/CLASSES.md, step 3), so every
+claim is a job only zagreus could run, and the warning was removed with the
+fold: since spritz#1651 every human heavy job matches by labels, so it
+would have fired on every one.
 
 **Beside Simplytics.** With spritz holding the whole pool and Simplytics
 queued, fair share would squeeze zagreus-ci below 8; the floor lifts it

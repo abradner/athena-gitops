@@ -1698,7 +1698,6 @@ class Waker:
         self.queue_stats = {}  # per set: queued jobs and the oldest's age, orphans included
         self.alts = {}  # (counted set, other matching set) -> jobs, from the last read
         self.orphans = {}  # job id -> when it was set aside (see mark_orphans)
-        self.floor_warned = set()  # job ids warn_floor_matches has logged
         self.spare_since = {}  # per set: when its spare was first seen, unbroken and unraised
         self.lease_last = {}  # node -> (time of the last good read, age it gave)
         self.asleep_labelled = {}  # node -> whether LABEL_ASLEEP was last written on it
@@ -2330,7 +2329,6 @@ class Waker:
         if not self.blind_sets:
             self.last_demand_ok = now
         self.publish_queue_metrics(snap["labels"])
-        self.warn_floor_matches(snap)
         spare = spare_caps(self.cfg, snap["live"], snap.get("room", {}))
         # A pool set whose raise waits for the next pass (a lowered pool,
         # apply_caps) gets that room within a pass: counted as short, it
@@ -2514,25 +2512,6 @@ class Waker:
             self.orphans.update(dict.fromkeys(new, t))
             self.jobs = [j for j in self.jobs if j.get("id") not in new]
         return bool(new)
-
-    def warn_floor_matches(self, snap):
-        """A floored set claims every job it matches, nodes asleep or not. A
-        queued job it matches by shared labels alone could have run on an
-        idle classic runner; once claimed it waits for a wake instead. No
-        spritz job does that today (they name the set): log it, once a job,
-        so a new one shows."""
-        floored = {s["name"] for s in self.cfg["sets"] if int(s.get("floor", 0)) > 0}
-        if not floored:
-            return
-        self.floor_warned &= {j.get("id") for j in self.jobs}  # only jobs still queued
-        for j in self.jobs:
-            name = first_set(self.cfg, j, snap["labels"])
-            if name in floored and j.get("id") not in self.floor_warned and \
-                    not job_match(j["labels"], name, snap["labels"].get(name, []))[1]:
-                self.floor_warned.add(j.get("id"))
-                LOG.warning("job %s (%s) matches %s by shared labels only: with the set's floor it may "
-                            "be claimed while the nodes sleep and wait for a wake", j.get("id"),
-                            ",".join(j["labels"]), name)
 
     def _room_if_awake(self, snap, nodes):
         """Caps the nodes would add once awake, from their room on paper."""

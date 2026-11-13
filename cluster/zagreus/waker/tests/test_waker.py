@@ -2771,16 +2771,15 @@ class Floor(unittest.TestCase):
         self.assertNotIn("zag-amd64-01", r.talos.calls)
         self.assertNotIn("zag-amd64-01", r.kube.asleep())
 
-    def test_a_shared_label_job_the_floor_set_could_claim_is_logged(self):
-        # A floor set claims whatever it matches. docker-amd64 carries class
-        # labels, and no spritz job asks for only those today; one that did
-        # would be claimed while the nodes sleep and wait for a wake rather
-        # than run on an idle classic runner. Say so in the log.
+    def test_a_shared_label_job_is_no_longer_warned_about(self):
+        # warn_floor_matches was removed with the x64 fold (13 Nov 2026,
+        # ../runners/CLASSES.md step 3): every person's heavy job now matches
+        # by labels, and with the classic runners stopped there is no idle
+        # runner a floor claim could have taken it from.
         r = Rig()
         r.job(["self-hosted", "linux", "X64"], age_seconds=1)
-        with self.assertLogs("waker", level="WARNING") as logs:
+        with self.assertNoLogs("waker", level="WARNING"):
             r.tick()
-        self.assertTrue(any("floor" in m and self.SET in m for m in logs.output), logs.output)
 
 
 class PoolMerge(unittest.TestCase):

@@ -315,6 +315,64 @@ class LiveBurst(unittest.TestCase):
         self.assertEqual(self.ci_cap_writes(r, mark), [])
 
 
+class ClassLabelBurst(unittest.TestCase):
+    """The deployed waker.conf with the live sets' labels (read from their
+    Application files), and jobs shaped as spritz's runner classes ask:
+    a person's run, `[self-hosted, heavy]` and `[self-hosted, heavy, X64]`
+    (since spritz#1651). The live-burst tests above send bot-shaped jobs,
+    which name the set; this is the other half."""
+
+    HEAVY = ("self-hosted", "heavy")
+    X64 = ("self-hosted", "heavy", "X64")
+
+    def rig(self):
+        from test_sharing import LiveRig
+        r = LiveRig(always_on=True)
+        if not r.always_on:
+            self.skipTest("no always-on node configured")
+        r.put_all_to_sleep()
+        return r
+
+    def test_the_live_set_carries_the_classes(self):
+        r = self.rig()
+        labels = r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["runnerScaleSetLabels"]
+        self.assertIn("heavy", labels)
+        self.assertIn("X64", labels)
+
+    def test_a_persons_job_waits_out_the_grace_before_it_wakes_a_node(self):
+        # A job that asks for labels, not a set's name, counts as demand
+        # only after saturationGraceSeconds (60): the window the Macs'
+        # overflow (CLASSES.md, step 4) takes work in. A named job has none.
+        r = self.rig()
+        for _ in range(3):
+            r.spritz_job(age=5, labels=self.HEAVY)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), [])
+
+    def test_a_persons_first_wave_wakes_01_and_02_and_changes_no_cap(self):
+        r = self.rig()
+        mark = len(r.kube.writes)
+        age = r.cfg["saturationGraceSeconds"] + 5
+        for _ in range(5):
+            r.spritz_job(age=age, labels=self.HEAVY)
+        for _ in range(3):
+            r.spritz_job(age=age, labels=self.X64)
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        # Seven beyond the VM's one: 02 covers four, then 01 three.
+        self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
+        r.tick(advance=120)
+        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 8)
+        writes = [p for v, p, b in r.kube.writes[mark:] if v == "PATCH" and "/autoscalingrunnersets/" in p]
+        self.assertEqual(writes, [])
+
+    def test_an_arm64_heavy_job_wakes_nothing(self):
+        # No zagreus set carries ARM64: it is the Macs' (CLASSES.md, step 4).
+        r = self.rig()
+        r.spritz_job(age=90, labels=("self-hosted", "heavy", "ARM64"))
+        r.tick(advance=r.cfg["wakeCooldownSeconds"])
+        self.assertEqual(r.woken(), [])
+
+
 class X64Floor(unittest.TestCase):
     """Pre-fold (test_sharing.pre_fold_config): x64 was folded into
     zagreus-ci on 13 Nov 2026, and the waker's pinned-floor logic these test
