@@ -249,7 +249,7 @@ spec:
   #   kaff.asn.casa              -> 200   (does NOT name it — served anyway)
   #   nosuch.example             -> 404
   #
-  # So the second parentRef on the eleven public routes is documentation and
+  # So the second parentRef on the public routes is documentation and
   # future-proofing, NOT a security control: it keeps those routes working if
   # Cilium ever tightens to spec, and it makes route status read Accepted. Do
   # not treat it as a boundary. The only thing keeping internal hostnames off

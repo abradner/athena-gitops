@@ -41,9 +41,9 @@ spec:
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token
-      # simplytics.ai and spritz.events are in a different Cloudflare account,
+      # The zones listed below are in a different Cloudflare account,
       # so they need their own token. cert-manager picks the most specific
-      # matching solver: this one claims those two zones (and their
+      # matching solver: this one claims the zones listed below (and their
       # subdomains — staging.spritz.events matches the spritz.events entry),
       # the unselected solver above stays the catch-all for the
       # personal-account zones.
@@ -78,9 +78,9 @@ spec:
             apiTokenSecretRef:
               name: cloudflare-api-token
               key: api-token
-      # simplytics.ai and spritz.events are in a different Cloudflare account,
+      # The zones listed below are in a different Cloudflare account,
       # so they need their own token. cert-manager picks the most specific
-      # matching solver: this one claims those two zones (and their
+      # matching solver: this one claims the zones listed below (and their
       # subdomains — staging.spritz.events matches the spritz.events entry),
       # the unselected solver above stays the catch-all for the
       # personal-account zones.
