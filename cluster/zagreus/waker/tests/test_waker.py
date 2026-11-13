@@ -328,8 +328,8 @@ class FakeKube:
 
 
 SET_LABELS = {
-    "zagreus-ci": ["self-hosted", "linux", "spritz-ci", "playwright-full"],
-    "zagreus-ci-x64": ["self-hosted", "linux", "X64", "spritz-ci"],
+    "zagreus-ci": ["self-hosted", "linux", "heavy", "spritz-ci", "playwright-full"],
+    "zagreus-ci-x64": ["self-hosted", "linux", "X64", "heavy", "spritz-ci", "playwright-full"],
     "zagreus-docker-amd64": ["self-hosted", "linux", "X64", "docker-amd64"],
     "zagreus-simplytics-ci": ["self-hosted", "linux", "simplytics-ci"],
 }

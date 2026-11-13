@@ -33,7 +33,10 @@ spec:
         # also takes the x64 class jobs (e2e, e2e_moments) instead of leaving
         # them to the five x64 slots. Hence amd64 nodes only, below: e2e
         # captures the Chromatic archives and must never rasterise on arm64.
-        scaleSetLabels: [self-hosted, linux, X64, spritz-ci, playwright-full]
+        # heavy (12 Nov 2026): the runner class jobs will ask for instead of
+        # spritz-ci/playwright-full (../CLASSES.md). Added beside the old
+        # labels; nothing asks for it until spritz's runs-on changes.
+        scaleSetLabels: [self-hosted, linux, X64, heavy, spritz-ci, playwright-full]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:

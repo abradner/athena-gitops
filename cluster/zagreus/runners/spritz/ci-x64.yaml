@@ -24,7 +24,11 @@ spec:
         # (README, "Runners"). ARC writes them only when it CREATES the scale
         # set: after a change here, delete the AutoscalingRunnerSet and let
         # Argo recreate it, or GitHub keeps the old labels.
-        scaleSetLabels: [self-hosted, linux, X64, spritz-ci]
+        # heavy (12 Nov 2026, ../CLASSES.md): so a job asking for the heavy
+        # class can use this set's slots too until step 3 folds it into
+        # zagreus-ci. playwright-full too: the same pod as zagreus-ci, which
+        # carries it. Added beside the old labels.
+        scaleSetLabels: [self-hosted, linux, X64, heavy, spritz-ci, playwright-full]
         githubConfigUrl: https://github.com/abradner/spritz
         githubConfigSecret: arc-github-app
         controllerServiceAccount:
