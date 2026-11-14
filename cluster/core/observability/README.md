@@ -9,7 +9,7 @@ all run outside the cluster, on dedicated LXC containers on the hypervisor tier.
 | `vector` (DaemonSet, every node, control plane included; also a once-a-minute heartbeat per node that the out-of-cluster per-node alert watches) | `http://obs-logs.infra.asn.casa:9428/insert/elasticsearch` |
 | `kube-state-metrics`, `node-exporter` | scraped by vmagent |
 | VictoriaMetrics operator | reconciles the `VMAgent` CR |
-| `otel-collector` (one-replica StatefulSet) | traces: `http://obs-traces.infra.asn.casa:10481/insert/opentelemetry/v1/traces`; product events: `http://obs-traces.infra.asn.casa:9481/insert/opentelemetry/v1/logs` (both insert-only ports; product events are OTLP protobuf only) |
+| `otel-collector` (one-replica Deployment) | traces: `http://obs-traces.infra.asn.casa:10481/insert/opentelemetry/v1/traces`; product events: `http://obs-traces.infra.asn.casa:9481/insert/opentelemetry/v1/logs` (both insert-only ports; product events are OTLP protobuf only) |
 
 All three collectors buffer to disk, so a CT reboot costs nothing.
 
@@ -75,10 +75,11 @@ Alertmanager, running inside the thing it monitored, would have gone silent with
 `vmalert` went out with them specifically so `absent()` rules can fire when athena stops
 reporting; a rule that only evaluates while the cluster is healthy cannot tell you it is not.
 
-The stores' PVCs left the cluster with them. One deliberate exception remains: vmagent
-runs `statefulMode` with a small PVC purely as a remote-write buffer, so a temporary
-obs-metrics outage loses nothing. That buffer is disposable — losing it costs at most
-the buffered window, never history.
+The stores' PVCs left the cluster with them, and nothing here declares one now. vmagent and
+the otel collector each keep a small disk buffer, so a temporary outage of the store they send
+to loses nothing; both buffers are size-limited `emptyDir` volumes, not PVCs, because a
+node-local PVC pinned its pod to one node and stranded it there when the node died. That
+buffer is disposable — losing it costs at most the buffered window, never history.
 
 ## Where things are now
 
