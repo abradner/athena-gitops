@@ -4,16 +4,10 @@
 # publishes the sample registry to the portal and sends synthetic events
 # through the in-cluster collector.
 #
-# SUSPENDED: its credential does not exist yet. An admin issues a
-# registry_publish credential for spoor-sample/production after the first deploy
-# (deploy.md, "First deploy" step 5). Enabling it is one PR that:
-#   1. adds an ExternalSecret `spoor-sample-emitter` from the
-#      `simplytics-production` item, expected fields `sample-emitter-token`
-#      (-> SPOOR_TOKEN) and `sample-emitter-subject-key`
-#      (-> SPOOR_SAMPLE_SUBJECT_KEY, 32+ random bytes as lowercase hex);
-#   2. sets `suspend: false` below.
-# The ExternalSecret is not added now: with its fields missing it would sit in
-# SecretSyncedError and hold the whole app Degraded, hiding real faults.
+# Credentials: the ExternalSecret `spoor-sample-emitter` (external-secrets.yaml)
+# from the `simplytics-production` item's `sample-emitter-token` (-> SPOOR_TOKEN, a
+# registry_publish credential for spoor-sample/production) and
+# `sample-emitter-subject-key` (-> SPOOR_SAMPLE_SUBJECT_KEY).
 #
 # No ClickHouse CA here: it talks only to the public https origin and the
 # collector over in-cluster http.
@@ -24,8 +18,6 @@ metadata:
   namespace: spoor-production
 spec:
   schedule: "*/15 * * * *"
-  # Enabled 14 Nov 2026 with an interim manual Secret `spoor-sample-emitter`
-  # (1Password was locked); step 1 above (fields + ExternalSecret) replaces it.
   suspend: false
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
