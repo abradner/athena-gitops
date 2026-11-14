@@ -1,0 +1,173 @@
+---
+# Migrations before each sync (Simplytics/spoor docs/deploy.md): Postgres
+# first (wave 0), then ClickHouse (wave 1), both in the portal image, both
+# before the portal rolls. PreSync is safe here because the Secrets they read
+# (spoor-portal, spoor-clickhouse-migrator) already exist from earlier syncs;
+# on a fresh namespace the first sync would wait on them (see the Temporal
+# schema Job in spritz-staging for that trade-off).
+#
+# Both runners skip versions they have already recorded, so a re-run is a
+# no-op. A rollback does not reverse a migration (deploy.md, "Rollback").
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spoor-db-migrate
+  namespace: spoor-production
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/simplytics/spoor-portal:sha-d5f7dea8b173ea573ce504a60f777328f53ccc48
+          imagePullPolicy: IfNotPresent
+          command: ["bin/rails", "db:migrate"]
+          # The portal's environment: Rails boots it in full, and production
+          # refuses to boot without any required setting.
+          env:
+            - name: SPOOR_PORTAL_HOSTS
+              value: "app.spoor.observer"
+            - name: SPOOR_WEBAUTHN_ORIGIN
+              value: "https://app.spoor.observer"
+            - name: SPOOR_WEBAUTHN_RP_ID
+              value: "app.spoor.observer"
+            - name: SSL_CERT_FILE
+              value: /etc/spoor/clickhouse/ca.crt
+            - name: CLICKHOUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_HOST
+            - name: SPOOR_CLICKHOUSE_URL
+              value: "https://$(CLICKHOUSE_HOST):8443"
+            - name: SPOOR_CLICKHOUSE_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_DATABASE
+            - name: SPOOR_CLICKHOUSE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_USERNAME
+            - name: SPOOR_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-app
+                  key: CLICKHOUSE_PASSWORD
+          envFrom:
+            - secretRef:
+                name: spoor-portal
+          volumeMounts:
+            - name: clickhouse-ca
+              mountPath: /etc/spoor/clickhouse
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: clickhouse-ca
+          secret:
+            secretName: spoor-clickhouse-app
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+# ClickHouse migrations, as the per-environment migrator user (DDL on this
+# environment's database only). The runner refuses plain http, the `default`
+# user or database, and a blank password.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spoor-clickhouse-migrate
+  namespace: spoor-production
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/simplytics/spoor-portal:sha-d5f7dea8b173ea573ce504a60f777328f53ccc48
+          imagePullPolicy: IfNotPresent
+          command: ["ruby", "/repo/infra/clickhouse/bin/migrate"]
+          env:
+            - name: SSL_CERT_FILE
+              value: /etc/spoor/clickhouse/ca.crt
+            - name: CLICKHOUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-migrator
+                  key: CLICKHOUSE_HOST
+            - name: CLICKHOUSE_URL
+              value: "https://$(CLICKHOUSE_HOST):8443"
+            - name: CLICKHOUSE_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-migrator
+                  key: CLICKHOUSE_DATABASE
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-migrator
+                  key: CLICKHOUSE_USERNAME
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-migrator
+                  key: CLICKHOUSE_PASSWORD
+          volumeMounts:
+            - name: clickhouse-ca
+              mountPath: /etc/spoor/clickhouse
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: clickhouse-ca
+          secret:
+            secretName: spoor-clickhouse-migrator
+            items:
+              - key: ca.crt
+                path: ca.crt
