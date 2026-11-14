@@ -64,7 +64,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ingest
-          image: ghcr.io/simplytics/spoor-ingest:sha-e86c0d7f9254959366295f2a2a3dcff8a060bdcb
+          image: ghcr.io/simplytics/spoor-ingest:sha-c52ecc405f89948a97fb5fd63cf992e8fc512f91
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

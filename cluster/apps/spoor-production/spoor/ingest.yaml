@@ -77,10 +77,6 @@ spec:
             # image refuses to boot without it.
             - name: SPOOR_TRUSTED_PROXIES
               value: "10.244.0.0/16"
-            # Replaces OpenSSL's system roots for the whole process: safe only
-            # while ClickHouse is ingest's sole outbound TLS peer. Before ingest
-            # calls anything else over TLS, move to a per-connection CA (as the
-            # portal did, Simplytics/spoor #71).
             - name: SSL_CERT_FILE
               value: /etc/spoor/clickhouse/ca.crt
             # CLICKHOUSE_HOST must come before the URL that interpolates it.

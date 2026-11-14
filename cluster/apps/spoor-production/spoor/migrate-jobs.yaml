@@ -52,8 +52,7 @@ spec:
             # without it; older images ignore it.
             - name: SPOOR_TRUSTED_PROXIES
               value: "10.244.0.0/16"
-            # Rails boots here, so the same rule as the portal: the CA per connection.
-            - name: CLICKHOUSE_CA_FILE
+            - name: SSL_CERT_FILE
               value: /etc/spoor/clickhouse/ca.crt
             - name: CLICKHOUSE_HOST
               valueFrom:
@@ -134,8 +133,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["ruby", "/repo/infra/clickhouse/bin/migrate"]
           env:
-            # The ClickHouse CA for the script's own connections (Simplytics/spoor #71).
-            - name: CLICKHOUSE_CA_FILE
+            - name: SSL_CERT_FILE
               value: /etc/spoor/clickhouse/ca.crt
             - name: CLICKHOUSE_HOST
               valueFrom:
