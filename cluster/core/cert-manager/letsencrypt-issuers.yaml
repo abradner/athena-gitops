@@ -50,6 +50,7 @@ spec:
           dnsZones:
             - "simplytics.ai"
             - "spritz.events"
+            - "spritz.rsvp"
             - "chuvar.ai"
         dns01:
           cloudflare:
@@ -86,6 +87,7 @@ spec:
           dnsZones:
             - "simplytics.ai"
             - "spritz.events"
+            - "spritz.rsvp"
             - "chuvar.ai"
         dns01:
           cloudflare:
