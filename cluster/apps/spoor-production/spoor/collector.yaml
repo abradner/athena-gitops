@@ -10,8 +10,8 @@
 # writes them to ClickHouse over the native TLS port.
 #
 # ClickHouse: host, port and database from 1Password (spoor-clickhouse-collector),
-# never from this repo. The collector writes with its own user (INSERT on the
-# transit table only). SSL_CERT_FILE makes Go verify the
+# never from this repo. The collector writes with its own user (INSERT on
+# spoor_<env>.* only; it can never read events back). SSL_CERT_FILE makes Go verify the
 # server against the ClickHouse CA (the config has no CA-file option); it
 # replaces the system roots, and ClickHouse is the collector's only TLS peer.
 #

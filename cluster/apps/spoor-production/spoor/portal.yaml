@@ -8,7 +8,7 @@
 #
 # ClickHouse: the host comes from 1Password (spoor-clickhouse-portal), never from
 # this repo; the URL is built from it with Kubernetes env interpolation. The
-# portal reads with its own user (SELECT only, read-only profile).
+# portal reads with its own user (SELECT on spoor_<env>.* only; no writes).
 # SSL_CERT_FILE points OpenSSL (Net::HTTP) at the ClickHouse CA: the app has no
 # CA-file option of its own. It replaces the system roots for this process,
 # which is fine while ClickHouse is the portal's only outbound TLS peer.
