@@ -5,6 +5,12 @@ metadata:
   namespace: default
 spec:
   gatewayClassName: cilium
+  # Pinned from the first apply, so a rebuilt cluster gets the same address
+  # whatever else asks for one first. Must match
+  # cluster/core/networking/gateway.yaml, which adopts this Gateway.
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/ips: "10.10.80.240"
   listeners:
   - name: http
     port: 80

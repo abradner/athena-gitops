@@ -18,6 +18,14 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
 spec:
   gatewayClassName: cilium
+  # Pinned (LB-IPAM reads this annotation on the generated Service), so a
+  # rebuild cannot hand this address to another LoadBalancer while the proxy
+  # in front still points at it. Keep in step with the bootstrap copy
+  # (bootstrap/kubernetes/argocd-gateway.yaml). Why an address may appear here
+  # at all: AGENTS.md, "The public/private split".
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/ips: "10.10.80.240"
   listeners:
   - name: http
     port: 80

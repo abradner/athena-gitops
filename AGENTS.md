@@ -474,3 +474,19 @@ general rule.** Argo-specific traps have their own section above.
 and anything else that describes the shape of the private network belong in the private
 `asn-infra` repository, not here. When documenting a lesson whose specifics are topological,
 write the transferable rule here and keep the inventory there.
+
+**One scoped exception: LoadBalancer address pins.** A Service or Gateway may pin its address
+(`lbipam.cilium.io/ips`) when the address is inside the LB-IPAM pool this repo already publishes
+(`bootstrap/kubernetes/gateway-homelab-pool.yaml`). Amended 2026-11-14 (the internal Gateway
+change), by the operator's decision. Why:
+
+- A pin is the only GitOps-native way to keep these addresses stable across a rebuild. Without
+  one, LB-IPAM hands out the first free address in creation order, and the proxy in front of the
+  cluster, which forwards to fixed addresses, silently starts sending one Gateway's traffic to
+  another.
+- The pool's range was already public. What a pin adds is which address belongs to which
+  Service or Gateway, inside that range.
+
+It covers only addresses inside that pool, written as a pin on the object that owns them. It is
+not a licence for anything else: host and node addresses, other subnets, which host serves
+what, and the proxy's own configuration all stay private.
