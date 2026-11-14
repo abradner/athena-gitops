@@ -24,7 +24,9 @@ metadata:
   namespace: spoor-production
 spec:
   schedule: "*/15 * * * *"
-  suspend: true
+  # Enabled 14 Nov 2026 with an interim manual Secret `spoor-sample-emitter`
+  # (1Password was locked); step 1 above (fields + ExternalSecret) replaces it.
+  suspend: false
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 1
