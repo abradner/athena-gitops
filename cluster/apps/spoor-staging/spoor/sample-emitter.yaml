@@ -2,15 +2,17 @@
 # Spoor's sample emitter (staging): demo traffic for the dashboard, per
 # Simplytics/spoor services/sample-emitter/README.md. Every 15 minutes it
 # publishes the sample registry to the portal and sends synthetic events
-# through the in-cluster collector.
+# through Spoor's public ingest (ingest-staging.spoor.observer), as a host would.
 #
 # Credentials: the ExternalSecret `spoor-sample-emitter` (external-secrets.yaml)
 # from the `simplytics-staging` item's `sample-emitter-token` (-> SPOOR_TOKEN, a
-# registry_publish credential for spoor-sample/staging) and
+# registry_publish credential for spoor-sample/staging),
+# `sample-emitter-ingest-token` (-> SPOOR_INGEST_TOKEN, an ingest credential for
+# spoor-sample/staging; never the same as SPOOR_TOKEN) and
 # `sample-emitter-subject-key` (-> SPOOR_SAMPLE_SUBJECT_KEY).
 #
-# No ClickHouse CA here: it talks only to the public https origin and the
-# collector over in-cluster http.
+# No ClickHouse CA here: it talks only to the portal's and ingest's public https
+# origins.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -41,20 +43,22 @@ spec:
               type: RuntimeDefault
           containers:
             - name: emit
-              image: ghcr.io/simplytics/spoor-sample-emitter:sha-2b3dc339b0b43fe065b8b376bbcfbec064fad74a
+              image: ghcr.io/simplytics/spoor-sample-emitter:sha-600e042640aa0f223f720d8cee9668271f89d539
               imagePullPolicy: IfNotPresent
               env:
                 # https: the token goes to the portal on every run, and the
                 # emitter refuses plain http to any host but loopback.
                 - name: SPOOR_PORTAL_URL
                   value: "https://app-staging.spoor.observer"
-                - name: SPOOR_OTLP_URL
-                  value: "http://spoor-collector.spoor-staging.svc:4318/v1/logs"
+                # https too: the ingest token goes there on every batch.
+                - name: SPOOR_INGEST_URL
+                  value: "https://ingest-staging.spoor.observer/v1/events"
                 - name: SPOOR_ENVIRONMENT
                   value: "staging"
                 - name: SPOOR_PROJECT
                   value: "spoor-sample"
-              # SPOOR_TOKEN and SPOOR_SAMPLE_SUBJECT_KEY (see the header).
+              # SPOOR_TOKEN, SPOOR_INGEST_TOKEN and SPOOR_SAMPLE_SUBJECT_KEY (see the
+              # header).
               envFrom:
                 - secretRef:
                     name: spoor-sample-emitter
