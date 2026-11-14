@@ -9,9 +9,9 @@
 # that repo, never edit it here. It keeps only scope `spoor` log records and
 # writes them to ClickHouse over the native TLS port.
 #
-# ClickHouse: host, port and database from 1Password (spoor-clickhouse-app),
-# never from this repo. The collector uses the app user for now; an
-# insert-only collector user is a follow-up. SSL_CERT_FILE makes Go verify the
+# ClickHouse: host, port and database from 1Password (spoor-clickhouse-collector),
+# never from this repo. The collector writes with its own user (INSERT on the
+# transit table only). SSL_CERT_FILE makes Go verify the
 # server against the ClickHouse CA (the config has no CA-file option); it
 # replaces the system roots, and ClickHouse is the collector's only TLS peer.
 #
@@ -148,28 +148,28 @@ spec:
             - name: CLICKHOUSE_HOST
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-collector
                   key: CLICKHOUSE_HOST
             # The native TLS port (9440).
             - name: CLICKHOUSE_NATIVE_PORT
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-collector
                   key: CLICKHOUSE_PORT
             - name: CLICKHOUSE_DATABASE
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-collector
                   key: CLICKHOUSE_DATABASE
             - name: CLICKHOUSE_USER
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-collector
                   key: CLICKHOUSE_USERNAME
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-collector
                   key: CLICKHOUSE_PASSWORD
           ports:
             - name: otlp-grpc
@@ -213,7 +213,7 @@ spec:
             name: spoor-collector
         - name: clickhouse-ca
           secret:
-            secretName: spoor-clickhouse-app
+            secretName: spoor-clickhouse-collector
             items:
               - key: ca.crt
                 path: ca.crt

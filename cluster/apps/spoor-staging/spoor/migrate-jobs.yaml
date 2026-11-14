@@ -57,24 +57,24 @@ spec:
             - name: CLICKHOUSE_HOST
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-portal
                   key: CLICKHOUSE_HOST
             - name: SPOOR_CLICKHOUSE_URL
               value: "https://$(CLICKHOUSE_HOST):8443"
             - name: SPOOR_CLICKHOUSE_DATABASE
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-portal
                   key: CLICKHOUSE_DATABASE
             - name: SPOOR_CLICKHOUSE_USER
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-portal
                   key: CLICKHOUSE_USERNAME
             - name: SPOOR_CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-app
+                  name: spoor-clickhouse-portal
                   key: CLICKHOUSE_PASSWORD
           envFrom:
             - secretRef:
@@ -96,7 +96,7 @@ spec:
       volumes:
         - name: clickhouse-ca
           secret:
-            secretName: spoor-clickhouse-app
+            secretName: spoor-clickhouse-portal
             items:
               - key: ca.crt
                 path: ca.crt
