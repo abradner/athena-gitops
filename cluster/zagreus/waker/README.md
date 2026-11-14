@@ -558,7 +558,9 @@ than the node's room. The builder keeps its own slots and is untouched (as
 > sets in `waker.conf` order, spritz first.
 
 - **Neither starves.** A set with jobs waiting and nothing held is served
-  before a set already holding slots, however long the other's backlog.
+  before a set already holding slots, however long the other's backlog,
+  and at once, dwell or not. A set already holding a slot and waiting for
+  another may wait out the dwell ("The dwell", below).
 - **A busy set is held to its fair share while the other waits.** ARC
   hands a slot freed by a finished job to the same set's next queued job
   within seconds, long before the waker's next pass, so "the next free
@@ -571,7 +573,8 @@ than the node's room. The builder keeps its own slots and is untouched (as
   job's slot is free at the next pass and goes to the waiting set.
 - **Running jobs are never stopped.** ARC never stops a busy runner because
   its set's cap went down; a capped set only stops claiming.
-- **A moving slot is lowered one pass and raised the next.** The set
+- **A moving slot is lowered one pass and raised the next** (or, under
+  the dwell below, once both sets' last changes are 120 s old). The set
   giving it up is patched first, and the set getting it waits for the
   next pass (30 s): the lowered set's listener keeps offering its old cap
   until ARC has restarted it (about 8 s), and may claim a job meanwhile,
@@ -616,11 +619,61 @@ first apply flipped both caps (Simplytics 2 -> 1 -> 2, spritz 5 -> 4 -> 5,
 13:23-13:25), a restart on both each time. A runner appearing now only
 moves a slot from queued to held.
 
+**The dwell (`shareDwellSeconds`, 120; 14 Nov 2026).** Once a pool set's
+cap changes, a change that comes from sharing alone (the fair share, the
+hold) waits until 120 s have passed. Under contention on 14 Nov the hold
+yielded the moment a spritz job queued and came back the moment it was
+claimed, so Simplytics' cap went down and back up every 34-72 s: ten
+writes, so ten listener rebuilds, in 17 minutes (00:34-00:51Z).
+
+These still act at once, as before:
+- the sleep procedure's forced lower;
+- a node of the pool changing state (waking, sleeping, NotReady,
+  cordoned): room, not sharing. Judged by node state, not by room on
+  paper, which moves with every runner pod; a node that could not be read
+  ("unknown") is no evidence either way;
+- a set with queued jobs, runners read, and none running or claimed
+  ("neither starves"); a set whose scale set is unreadable is not judged
+  starving;
+- a set whose queue is unread giving its share back;
+- a live cap outside its floor or ceiling;
+- a lower in a pool where another set has been raised since this set's
+  own last write: that slot is already offered to the other set (the
+  waker applies twice a pass, so the raise can come first).
+
+A held lower still holds the pool's raises, so a slot is never offered to
+both, except a raise up to a floor, which goes to the floor and no
+further. And one set is raised per pool per pass: a second raise in the
+pass's other apply made the first give its slot straight back (8 -> 9 ->
+8 in one pass). A held change logs once: "held by the share dwell until
+HH:MM:SS".
+
+`test_dwell.py` replays the 14 Nov opening and the shape that
+ping-ponged. Without the dwell: 15 Simplytics writes with 13 back-and-forth
+pairs (A -> B -> A within 120 s), and 19 zagreus-ci writes with 17. With it:
+2 and 5 writes, no pairs, and no set written twice in a pass. Each
+exception and rule, removed, fails a test.
+
+**What the dwell costs.** A set that holds a runner and has a backlog is
+not "starving", so a slot moving to it by the fair share waits up to 120 s
+behind the other set's held lower. The same for a slot moving back. A set
+holding nothing is still served at once.
+
 **What it costs.** Every slot that moves between the sets is a cap change
-on both, so a listener restart on both, and it reaches the set getting it
-a pass after it leaves the other. With the hold, that is about twice
-per burst of Simplytics jobs, not twice per job. A spritz job queued just
-as a slot moves can wait for GitHub to offer it again, as at a wake.
+on both, so a listener rebuild on both, and it reaches the set getting it
+a pass after it leaves the other (up to 120 s under the dwell). Measured on 14 Nov 2026 (ARC 0.15.0,
+the controller's and the new listener's logs): a rebuild takes about 6 s
+from the cap write to a listener taking messages again (00:51:16 write,
+pod at :19, "Starting listener" at :22.5), with the AutoscalingListener
+deleted and recreated 1-3 s apart every time. A job already assigned
+survives it: the new session's first statistics carried
+`totalAssignedJobs=1`, and that Simplytics job started 3 s after the
+rebuild. Simplytics jobs whose wait spanned a rebuild waited 82-168 s, and
+those that spanned none 0-58 s, but the cap was 1-2 against 3 queued jobs,
+so most of that is contention, not the rebuild; the 6 s gap is what a
+rebuild itself is shown to cost. The longer holds seen at a wake (6-40 s
+usually, 125 s and 303 s on 8 Nov, "zagreus-ci's floor") followed cap
+raises at a wake and are not reproduced here.
 
 **Edges where a pool set differs from a set alone**, found by comparing
 20,000 random cases of the old and new `compute_caps`, and judged rare
