@@ -47,7 +47,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: emit
-              image: ghcr.io/simplytics/spoor-sample-emitter:sha-d5f7dea8b173ea573ce504a60f777328f53ccc48
+              image: ghcr.io/simplytics/spoor-sample-emitter:sha-2b3dc339b0b43fe065b8b376bbcfbec064fad74a
               imagePullPolicy: IfNotPresent
               env:
                 # https: the token goes to the portal on every run, and the
