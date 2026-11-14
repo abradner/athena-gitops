@@ -4,16 +4,10 @@
 # Senders (the sample emitter, later the apps) use
 # http://spoor-collector.spoor-production:4318 (OTLP/HTTP) or :4317 (gRPC).
 #
-# `config.yaml` is Simplytics/spoor infra/collector/otel-collector.yaml
-# VERBATIM at d5f7dea8b173ea573ce504a60f777328f53ccc48: replace it whole from
-# that repo, never edit it here. It keeps only scope `spoor` log records and
-# writes them to ClickHouse over the native TLS port.
-#
-# ClickHouse: host, port and database from 1Password (spoor-clickhouse-app),
-# never from this repo. The collector uses the app user for now; an
-# insert-only collector user is a follow-up. SSL_CERT_FILE makes Go verify the
-# server against the ClickHouse CA (the config has no CA-file option); it
-# replaces the system roots, and ClickHouse is the collector's only TLS peer.
+# PLACEHOLDER pipeline: OTLP in, a debug exporter out, so the pod runs and the
+# app is Healthy before Spoor's exporter config exists. The Spoor night shift
+# replaces `config.yaml` with its ClickHouse exporter, which reads
+# spoor-clickhouse-app (already mounted below: env plus the CA file).
 #
 # A Deployment with one replica: no tail sampling and no disk queue here, so
 # nothing pins spans to one pod or one file. contrib, not core: the ClickHouse
@@ -25,89 +19,44 @@ metadata:
   namespace: spoor-production
 data:
   config.yaml: |
-    # The OpenTelemetry collector for Spoor's slice 1 path (contract/README.md,
-    # "The envelope as OTLP"): hosts send product events as OTLP logs; a pipeline
-    # of Spoor's own keeps only records whose scope is `spoor` and writes them to
-    # ClickHouse's Null transit table, where the views type them into spoor_events.
-    #
-    # Spoor events never share a general logs pipeline: an app's own logs landing
-    # in a Null table would vanish silently. Anything that is not scope `spoor` is
-    # dropped here.
-    #
-    # Where ClickHouse is comes only from the environment, so this one file serves
-    # local compose (infra/local/compose.yaml sets the values) and a deployment
-    # alike; ClickHouse runs in its own container outside the cluster (D10).
-    #   CLICKHOUSE_HOST         ClickHouse host (native protocol)
-    #   CLICKHOUSE_NATIVE_PORT  the port ClickHouse listens on (9000, or 9440
-    #                           with TLS); not the compose host port
-    #   CLICKHOUSE_SECURE       true for TLS, false otherwise
-    #   CLICKHOUSE_DATABASE     spoor
-    #   CLICKHOUSE_USER         the collector's user (INSERT on the transit table
-    #                           only)
-    #   CLICKHOUSE_PASSWORD     its password (empty for local compose)
-    # The collector expands an unset variable to "", and clickhouse-go would then
-    # dial localhost and sign in as ClickHouse's `default` user (and database).
-    # So the host, user and database fall back to sentinels that cannot work: a
-    # missing host fails to resolve, a missing user is refused by any server, and
-    # a missing database names none that exists. The D10 container
-    # should disable `default` regardless.
-    # Health, for the deployment to watch:
-    #   - readiness: the health_check extension answers 200 on :13133 once the
-    #     pipeline is up. It does not prove ClickHouse is reachable.
-    #   - ClickHouse unreachable: the collector's own metrics on :8888
-    #     (Prometheus). infra/clickhouse/README.md has the alert rules.
     extensions:
       health_check:
-        endpoint: 0.0.0.0:13133
-
+        endpoint: ${env:MY_POD_IP}:13133
     receivers:
       otlp:
         protocols:
           grpc:
-            endpoint: 0.0.0.0:4317
+            endpoint: ${env:MY_POD_IP}:4317
           http:
-            endpoint: 0.0.0.0:4318
-
+            endpoint: ${env:MY_POD_IP}:4318
     processors:
-      filter/spoor_only:
-        error_mode: propagate
-        logs:
-          log_record:
-            - instrumentation_scope.name != "spoor"
-      batch:
-        timeout: 1s
-
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch: {}
     exporters:
-      clickhouse/spoor:
-        endpoint: tcp://${env:CLICKHOUSE_HOST:-clickhouse-host-unset}:${env:CLICKHOUSE_NATIVE_PORT}?dial_timeout=10s&secure=${env:CLICKHOUSE_SECURE}
-        database: ${env:CLICKHOUSE_DATABASE:-clickhouse_database_unset}
-        username: ${env:CLICKHOUSE_USER:-clickhouse_user_unset}
-        password: ${env:CLICKHOUSE_PASSWORD}
-        logs_table_name: spoor_otel_logs
-        create_schema: false
-        async_insert: false
-        timeout: 10s
-        retry_on_failure:
-          enabled: true
-
+      debug:
+        verbosity: basic
     service:
       extensions: [health_check]
-      pipelines:
-        logs/spoor:
-          receivers: [otlp]
-          processors: [filter/spoor_only, batch]
-          exporters: [clickhouse/spoor]
       telemetry:
-        logs:
-          level: info
         metrics:
-          level: normal
           readers:
             - pull:
                 exporter:
                   prometheus:
-                    host: 0.0.0.0
+                    host: ${env:MY_POD_IP}
                     port: 8888
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -125,24 +74,22 @@ spec:
         app: spoor-collector
       annotations:
         # A config change rolls the pod: bump when editing the ConfigMap.
-        spoor.simplytics.ai/config-rev: "2"
+        spoor.simplytics.ai/config-rev: "1"
     spec:
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: collector
           image: otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b
           imagePullPolicy: IfNotPresent
           args: ["--config=/etc/otelcol/config.yaml"]
           env:
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: GOMEMLIMIT
               value: "400MiB"
-            - name: SSL_CERT_FILE
+            - name: CLICKHOUSE_CA_FILE
               value: /etc/spoor/clickhouse/ca.crt
-            - name: CLICKHOUSE_SECURE
-              value: "true"
             # Named keys, not envFrom: the secret also holds ca.crt, which is
             # not a valid variable name (mounted as a file below instead).
             - name: CLICKHOUSE_HOST
@@ -150,8 +97,7 @@ spec:
                 secretKeyRef:
                   name: spoor-clickhouse-app
                   key: CLICKHOUSE_HOST
-            # The native TLS port (9440).
-            - name: CLICKHOUSE_NATIVE_PORT
+            - name: CLICKHOUSE_PORT
               valueFrom:
                 secretKeyRef:
                   name: spoor-clickhouse-app
@@ -161,7 +107,7 @@ spec:
                 secretKeyRef:
                   name: spoor-clickhouse-app
                   key: CLICKHOUSE_DATABASE
-            - name: CLICKHOUSE_USER
+            - name: CLICKHOUSE_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: spoor-clickhouse-app
@@ -178,8 +124,6 @@ spec:
               containerPort: 4318
             - name: metrics
               containerPort: 8888
-          # health_check answers 200 once the pipeline is up; it does not prove
-          # ClickHouse is reachable (the exporter metrics on :8888 do).
           readinessProbe:
             httpGet:
               path: /
@@ -203,10 +147,13 @@ spec:
             limits:
               memory: 512Mi
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
       volumes:
         - name: config
           configMap:
