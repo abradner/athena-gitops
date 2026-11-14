@@ -1,0 +1,16 @@
+---
+# vmagent scrape for the collector's own metrics (accepted, refused, exported,
+# queue). The VMAgent CR runs with selectAllByDefault, so this is picked up
+# from this namespace. The portal's scrape arrives with its image.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: spoor-collector
+  namespace: spoor-production
+spec:
+  selector:
+    matchLabels:
+      app: spoor-collector
+  endpoints:
+    - port: metrics
+      path: /metrics

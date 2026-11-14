@@ -1,0 +1,34 @@
+---
+# Spoor (staging): Simplytics' analytics product. Slice 1 is the portal plus an
+# OpenTelemetry collector writing events to ClickHouse. ClickHouse runs OUTSIDE
+# this cluster on the hypervisor tier (Placement Doctrine rule 1); this app
+# holds only the stateless parts. The portal's PostgreSQL is the shared external
+# server, like every other app's. The Spoor repo (Simplytics/spoor) owns the
+# image tag, the collector config and the migration Job; this repo owns the
+# shape.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: spoor-staging
+  namespace: argocd
+spec:
+  project: workloads
+  source:
+    repoURL: 'https://github.com/abradner/athena-gitops.git'
+    targetRevision: main
+    path: cluster/apps/spoor-staging/spoor
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: spoor-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

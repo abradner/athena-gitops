@@ -17,7 +17,7 @@ spec:
       # exclude the subtrees here to avoid double-tracking.
       # /** not /*: the group-env dirs nest one level deeper (asn-production/
       # kaff/app.yaml) and a single * doesn't cross path separators.
-      exclude: '{hello-world,asn-production,asn-staging,spritz-production,spritz-staging}/**'
+      exclude: '{hello-world,asn-production,asn-staging,spoor-production,spoor-staging,spritz-production,spritz-staging}/**'
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: default
