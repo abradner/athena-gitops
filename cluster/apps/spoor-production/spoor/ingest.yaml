@@ -12,8 +12,8 @@
 # Postgres: the portal's database, read through its own role
 # (spoor_production_ingest: SELECT on the credential, tenancy and registry tables,
 # UPDATE of credentials.last_used_at only; Simplytics/spoor
-# apps/ingest/db/ingest_role.sql). ClickHouse: the collector's user and secret
-# (spoor-clickhouse-collector, external-secrets.yaml: INSERT only, no SELECT). Host, database and the CA come
+# apps/ingest/db/ingest_role.sql). ClickHouse: its own user and secret
+# (spoor-clickhouse-ingest, external-secrets.yaml: INSERT on spoor_otel_logs only). Host, database and the CA come
 # from 1Password, never from this repo.
 apiVersion: apps/v1
 kind: Deployment
@@ -83,24 +83,24 @@ spec:
             - name: CLICKHOUSE_HOST
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-collector
+                  name: spoor-clickhouse-ingest
                   key: CLICKHOUSE_HOST
             - name: SPOOR_CLICKHOUSE_URL
               value: "https://$(CLICKHOUSE_HOST):8443"
             - name: SPOOR_CLICKHOUSE_DATABASE
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-collector
+                  name: spoor-clickhouse-ingest
                   key: CLICKHOUSE_DATABASE
             - name: CLICKHOUSE_INSERT_USER
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-collector
+                  name: spoor-clickhouse-ingest
                   key: CLICKHOUSE_USERNAME
             - name: CLICKHOUSE_INSERT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: spoor-clickhouse-collector
+                  name: spoor-clickhouse-ingest
                   key: CLICKHOUSE_PASSWORD
           # DATABASE_URL and SECRET_KEY_BASE.
           envFrom:
@@ -144,7 +144,7 @@ spec:
       volumes:
         - name: clickhouse-ca
           secret:
-            secretName: spoor-clickhouse-collector
+            secretName: spoor-clickhouse-ingest
             items:
               - key: ca.crt
                 path: ca.crt
