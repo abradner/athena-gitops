@@ -21,7 +21,18 @@ metadata:
   name: spoor-ingest
   namespace: spoor-production
 spec:
-  replicas: 1
+  # Two pods, so a rollout or a node drain never leaves the route with no
+  # endpoint: maxUnavailable 0 starts the new pod before an old one stops,
+  # the PodDisruptionBudget below keeps one through a drain, and the preStop
+  # sleep lets the gateway drop a stopping pod before Puma closes its socket.
+  # Rate limits are in-process (MemoryStore), so each pod counts on its own:
+  # the effective limits per client address and per credential (EventsController: 1200 and 600 a minute) are up to 2x the configured ones.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: spoor-ingest
@@ -30,6 +41,14 @@ spec:
       labels:
         app: spoor-ingest
     spec:
+      # Soft: a pod beside its twin beats a pod left Pending while a node is down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: spoor-ingest
       imagePullSecrets:
         - name: ghcr-pull
       securityContext:
@@ -84,6 +103,13 @@ spec:
                 name: spoor-ingest
           # /ready checks Postgres and ClickHouse; /up only the process, so a
           # store outage takes the pod out of the Service without restarts.
+          # Endpoint removal reaches the gateway asynchronously; without the
+          # wait, requests still routed to a stopping pod get 503. Native sleep
+          # action (no binary needed in the image); within the 30 s grace period.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           readinessProbe:
             httpGet:
               path: /ready
@@ -117,6 +143,20 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+---
+# Keeps one spoor-ingest pod through voluntary disruptions (node drains); an
+# unhealthy pod may still be evicted, so a broken rollout never blocks a drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: spoor-ingest
+  namespace: spoor-production
+spec:
+  minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: spoor-ingest
 ---
 apiVersion: v1
 kind: Service
