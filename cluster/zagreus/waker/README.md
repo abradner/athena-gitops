@@ -616,11 +616,39 @@ first apply flipped both caps (Simplytics 2 -> 1 -> 2, spritz 5 -> 4 -> 5,
 13:23-13:25), a restart on both each time. A runner appearing now only
 moves a slot from queued to held.
 
+**The dwell (`shareDwellSeconds`, 120; 14 Nov 2026).** Once a pool set's
+cap changes, a change that comes from sharing alone (the fair share, the
+hold) waits until 120 s have passed. Under contention on 14 Nov the hold
+yielded the moment a spritz job queued and came back the moment it was
+claimed, so Simplytics' cap went down and back up every 34-72 s: ten
+writes, so ten listener rebuilds, in 17 minutes (00:34-00:51Z). These
+still act at once, as before: a node of the pool changing state (waking,
+sleeping, NotReady, cordoned: room, not sharing); a set with queued jobs
+and nothing held ("neither starves"); a set whose queue is unread giving
+its share back; a live cap outside its floor or ceiling; the sleep
+procedure's forced lower. A held lower still holds the pool's raises (the
+slot is never offered to both), except a raise up to a floor, which claims
+beyond the room on purpose. A held change logs once: "held by the share
+dwell until HH:MM:SS". `test_dwell.py` replays the shape: without the
+dwell 16 Simplytics writes and 13 back-and-forth pairs (A -> B -> A
+within 120 s), with it 3 writes and none. Each exception, removed, fails
+a test.
+
 **What it costs.** Every slot that moves between the sets is a cap change
-on both, so a listener restart on both, and it reaches the set getting it
-a pass after it leaves the other. With the hold, that is about twice
-per burst of Simplytics jobs, not twice per job. A spritz job queued just
-as a slot moves can wait for GitHub to offer it again, as at a wake.
+on both, so a listener rebuild on both, and it reaches the set getting it
+a pass after it leaves the other. Measured on 14 Nov 2026 (ARC 0.15.0,
+the controller's and the new listener's logs): a rebuild takes about 6 s
+from the cap write to a listener taking messages again (00:51:16 write,
+pod at :19, "Starting listener" at :22.5), with the AutoscalingListener
+deleted and recreated 1-3 s apart every time. A job already assigned
+survives it: the new session's first statistics carried
+`totalAssignedJobs=1`, and that Simplytics job started 3 s after the
+rebuild. Simplytics jobs whose wait spanned a rebuild waited 82-168 s, and
+those that spanned none 0-58 s, but the cap was 1-2 against 3 queued jobs,
+so most of that is contention, not the rebuild; the 6 s gap is what a
+rebuild itself is shown to cost. The longer holds seen at a wake (6-40 s
+usually, 125 s and 303 s on 8 Nov, "zagreus-ci's floor") followed cap
+raises at a wake and are not reproduced here.
 
 **Edges where a pool set differs from a set alone**, found by comparing
 20,000 random cases of the old and new `compute_caps`, and judged rare

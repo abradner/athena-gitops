@@ -167,6 +167,15 @@ DEFAULTS = {
     # then finds the slot already offered instead of restarting both sets'
     # listeners (README, "Sharing").
     "shareHoldSeconds": 600,
+    # Once a pool set's cap changes, it is left alone for this long when the
+    # only reason to change it again is sharing (the fair share, the hold).
+    # Every cap change rebuilds the set's listener (README, "Why
+    # maxRunners"), and under contention the hold yielded and returned
+    # within a pass, so one set's cap went down and back up every 34-72 s
+    # (14 Nov 2026, README "Sharing", "The dwell"). Room changing, a set
+    # with queued jobs and nothing held, and floors and ceilings still act
+    # at once.
+    "shareDwellSeconds": 120,
 }
 
 
@@ -1709,6 +1718,9 @@ class Waker:
         self.blind_sets = set()  # sets whose queue could not be read on the last pass
         self.pass_held = set()  # shared pools lowered this pass: their raises wait for the next
         self.raised_at = {}  # pool set -> when its cap was last raised
+        self.cap_changed_at = {}  # pool set -> when its cap was last written
+        self.pool_nodes_at_change = {}  # pool -> its nodes' states at that pool's last write
+        self.dwell_logged = {}  # pool set -> the held cap last logged, so each hold logs once
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep. Never
@@ -2149,16 +2161,30 @@ class Waker:
         # for the rest of the pass, across every apply in it (Codex on #345:
         # the second, share-moving apply raised what the first had lowered).
         held_back = self.pass_held
+        dwelling = self.dwell_holds(snap, target, states or snap["states"], pool_of, force)
+        for key in {pool_of[n] for n in dwelling}:
+            held_back.add(key)
         for s in sorted(self.cfg["sets"], key=raising):
             name = s["name"]
             want = target.get(name)
             if want is None or name not in snap["live"] or snap["live"][name] == want:
                 self.lower_streak.pop(name, None)
+                self.dwell_logged.pop(name, None)
                 continue
             live = snap["live"][name]
+            if name in dwelling:
+                if self.dwell_logged.get(name) != want:
+                    self.dwell_logged[name] = want
+                    LOG.info("%s maxRunners %s -> %s wanted; held by the share dwell until %s", name, live, want,
+                             dt.datetime.fromtimestamp(dwelling[name], dt.timezone.utc).strftime("%H:%M:%S"))
+                continue
             if snap.get("degraded") and live is not None and want > live:
                 continue
-            if live is not None and want > live and pool_of.get(name) in held_back:
+            # A raise up to the set's floor is not held: a floor claims
+            # beyond the room on purpose ("Floor"), so being offered a slot
+            # the pool's held lower still offers too is its normal case.
+            to_floor = live is not None and live < int(s.get("floor", 0))
+            if live is not None and want > live and pool_of.get(name) in held_back and not to_floor:
                 LOG.info("%s maxRunners %s -> %s wanted; held until its pool's lower goes through",
                          name, live, want)
                 continue
@@ -2182,12 +2208,69 @@ class Waker:
                 self.kube.merge_patch(ARS.format(ns=s["namespace"], name=name),
                                       {"spec": {"maxRunners": want}})
                 snap["live"][name] = want
+                self.dwell_logged.pop(name, None)
+                if name in pool_of:
+                    self.cap_changed_at[name] = self.clock()
+                    self.pool_nodes_at_change[pool_of[name]] = self.pool_nodes(states or snap["states"],
+                                                                               pool_of[name], pool_of)
                 if name in pool_of and (live is None or want > live):
                     self.raised_at[name] = self.clock()
         for name, (old, new) in changed.items():
             LOG.info("%s maxRunners %s -> %s%s", name, old, new,
                      "" if self.may_patch_caps else " (observe: not applied)")
         return changed
+
+    def pool_nodes(self, states, key, pool_of):
+        """The state (node_state_name) of every node with slots for a pool.
+        Runner pods coming and going change the room on paper every pass;
+        a node waking, sleeping, going NotReady or being cordoned changes
+        this."""
+        members = [m for m, k in pool_of.items() if k == key]
+        return tuple(sorted((n["name"], node_state_name(states.get(n["name"])))
+                            for n in self.cfg["nodes"]
+                            if any(node_slots(self.cfg, n, m) > 0 for m in members)))
+
+    def dwell_holds(self, snap, target, states, pool_of, force):
+        """The pool sets whose cap change this pass waits out the share
+        dwell, with the time it ends. A change waits only when it comes
+        from sharing alone; at once, as before, when:
+          - force (the sleep procedure's lower, before a cordon);
+          - a node of the pool has changed state since the pool's last
+            write (woke, slept, went NotReady, was cordoned): that is room,
+            not sharing;
+          - a set in the pool has queued jobs and holds nothing (the
+            "neither starves" rule): the whole pool moves now;
+          - a set in the pool has its queue unread ("A set whose queue is
+            unread gives its share back"): its share goes now;
+          - the live cap is outside its floor or ceiling."""
+        dwell = self.cfg["shareDwellSeconds"]
+        if force or dwell <= 0 or not pool_of:
+            return {}
+        now = self.clock()
+        live = snap["live"]
+        runners = snap.get("runners", {})
+        unstarted = snap.get("unstarted", {})
+        floors = {s["name"]: int(s.get("floor", 0)) for s in self.cfg["sets"]}
+        held = {}
+        for key in set(pool_of.values()):
+            members = [m for m, k in pool_of.items() if k == key]
+            if self.pool_nodes(states, key, pool_of) != self.pool_nodes_at_change.get(key):
+                continue
+            if any(self.share.get(m, 0) > 0 and runners.get(m, 0) == 0 and unstarted.get(m, 0) == 0
+                   for m in members):
+                continue
+            if any(m in self.blind_sets for m in members):
+                continue
+            for m in members:
+                want, cap = target.get(m), live.get(m)
+                since = self.cap_changed_at.get(m)
+                if want is None or cap is None or want == cap or since is None or now - since >= dwell:
+                    continue
+                ceiling = (snap.get("ceilings") or {}).get(m)
+                if cap < floors.get(m, 0) or (ceiling is not None and cap > ceiling):
+                    continue
+                held[m] = since + dwell
+        return held
 
     # ----- cordon
 
