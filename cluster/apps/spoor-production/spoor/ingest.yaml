@@ -46,6 +46,11 @@ spec:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
+          # Count only this revision's pods: without it the scheduler ignores
+          # terminating old pods, so both new pods can land on one node and
+          # nothing rebalances them (GA in 1.36).
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               app: spoor-ingest
@@ -144,8 +149,12 @@ spec:
               - key: ca.crt
                 path: ca.crt
 ---
-# Keeps one spoor-ingest pod through voluntary disruptions (node drains); an
-# unhealthy pod may still be evicted, so a broken rollout never blocks a drain.
+# Keeps one spoor-ingest pod through voluntary disruptions (node drains, evictions).
+# unhealthyPodEvictionPolicy AlwaysAllow lets a pod that is Running but not Ready
+# be evicted even when the budget allows no disruption, so a crash-looping pod
+# never pins a drain on its own. A drain can still block: a healthy pod on the
+# drained node with the other pod unhealthy elsewhere (0 disruptions allowed),
+# or both pods on the drained node with no room to reschedule.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
