@@ -294,6 +294,16 @@ class Exceptions(unittest.TestCase):
         self.assertTrue(held and int(held[0].split()[4].rstrip(";")) > int(held[0].split()[2]), logs)
         self.assertEqual(rp.writes(SIM, mark), [2])
 
+    def test_a_raise_the_floor_lifted_is_never_held(self):
+        # Why a held raise may leave the pool's raises free: a raise held by
+        # the dwell always targets the set's share. One whose target the
+        # floor lifted starts below the floor, and is not held.
+        waker, st, pool_of, snap, target = self.held_setup()
+        floor = next(s["floor"] for s in waker.cfg["sets"] if s["name"] == CI)
+        snap["live"][CI] = floor - 1
+        target[CI] = floor
+        self.assertNotIn(CI, waker.dwell_holds(snap, target, st, pool_of, False))
+
     def test_a_forced_lower_is_not_held(self):
         # The sleep procedure lowers with force before a cordon: never held.
         from test_waker import states

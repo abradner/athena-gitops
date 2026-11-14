@@ -645,7 +645,9 @@ A held lower still holds the pool's raises, so a slot is never offered to
 both, except a raise up to a floor, which goes to the floor and no
 further. A held raise holds nothing else: its set stays at the lower cap,
 so a sibling's raise (a set turning starving in the pass's second apply,
-say) is offered nothing twice and goes at once (follow-up to athena-gitops#404). And one set is raised per pool per pass: a second raise in the
+say) is offered nothing twice and goes at once. That holds because a held
+raise always targets the set's share: a target the floor lifted starts
+below the floor, which the dwell never holds. And one set is raised per pool per pass: a second raise in the
 pass's other apply made the first give its slot straight back (8 -> 9 ->
 8 in one pass). A held change logs once: "held by the share dwell until
 HH:MM:SS".

@@ -2166,7 +2166,10 @@ class Waker:
         # A held lower holds the pool's raises (the slot it still offers
         # must not be offered to a sibling too). A held raise does not: its
         # set stays at the lower cap, so a sibling's raise, a starving set's
-        # above all, is offered nothing twice.
+        # above all, is offered nothing twice. That needs the held set's
+        # target to be its share, which it is: floor_caps lifts a target
+        # only to the floor, and a raise to a lifted target starts below the
+        # floor, which dwell_holds never holds (a cap outside its floor).
         for key in {pool_of[n] for n in dwelling
                     if target.get(n) is not None and snap["live"].get(n) is not None
                     and target[n] < snap["live"][n]}:
