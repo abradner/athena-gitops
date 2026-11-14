@@ -110,10 +110,19 @@ spec:
                 secretKeyRef:
                   name: spoor-clickhouse-portal
                   key: CLICKHOUSE_PASSWORD
-          # DATABASE_URL and SECRET_KEY_BASE.
+            # The portal's own product events through Spoor's Ruby SDK to public
+            # ingest, as project spoor-portal (docs/deploy.md, Portal). All four or
+            # none; a present-but-empty one refuses boot, on purpose.
+            - name: SPOOR_DOGFOOD_ENDPOINT
+              value: "https://ingest-staging.spoor.observer/v1/events"
+            - name: SPOOR_DOGFOOD_ENVIRONMENT
+              value: "staging"
+          # DATABASE_URL and SECRET_KEY_BASE; the dogfood token and subject key.
           envFrom:
             - secretRef:
                 name: spoor-portal
+            - secretRef:
+                name: spoor-portal-dogfood
           # /up is exempt from host authorisation and needs no Host header.
           # Endpoint removal reaches the gateway asynchronously; without the
           # wait, requests still routed to a stopping pod get 503. Native sleep
