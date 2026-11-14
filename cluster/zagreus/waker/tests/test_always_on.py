@@ -188,59 +188,66 @@ class Procedures(unittest.TestCase):
 
 class FloorWithAlwaysOn(unittest.TestCase):
     """The pilot's point (9 Nov 2026): zagreus-ci's floor equals the always-on
-    slot plus the room of 01+02, so a burst that fits there changes no cap,
-    and so restarts no listener, across the wake."""
+    slots plus the room of 01+02, so a burst that fits there changes no cap,
+    and so restarts no listener, across the wake. Two VMs since 14 Nov 2026
+    (zag-amd64vm-02): every always-on node is Ready in these worlds."""
 
     ASLEEP = {"ready": False, "asleep": True}
 
     def setUp(self):
         self.cfg = live_config()
-        if not any(n.get("alwaysOn") for n in self.cfg["nodes"]):
+        self.vms = [n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn")]
+        if not self.vms:
             self.skipTest("no always-on node configured")
-        self.ceilings = {"zagreus-docker-amd64": 1, "zagreus-ci": 10, "zagreus-simplytics-ci": 2}
+        self.ceilings = {"zagreus-docker-amd64": 1, "zagreus-ci": 11, "zagreus-simplytics-ci": 2}
         self.floor = next(s["floor"] for s in self.cfg["sets"] if s["name"] == "zagreus-ci")
+        self.vm_slots = sum(w.node_slots(self.cfg, n, "zagreus-ci")
+                            for n in self.cfg["nodes"] if n.get("alwaysOn"))
+
+    def world(self, vm_state=None, **talos):
+        """The Talos nodes as given, every always-on node in vm_state."""
+        return dict(talos, **{vm: dict(vm_state or {}) for vm in self.vms})
 
     def caps(self, **st):
         node_states = states(**st)
         room = w.compute_caps(self.cfg, node_states)
         return room, w.floor_caps(self.cfg, room, self.ceilings, self.ceilings, node_states)
 
-    def test_the_floor_is_the_always_on_slot_plus_the_room_of_01_and_02(self):
-        vm = next(n for n in self.cfg["nodes"] if n.get("alwaysOn"))
+    def test_the_floor_is_the_always_on_slots_plus_the_room_of_01_and_02(self):
         talos = {n["name"]: n for n in self.cfg["nodes"]}
-        want = sum(w.node_slots(self.cfg, n, "zagreus-ci")
-                   for n in (vm, talos["zag-amd64-01"], talos["zag-amd64-02"]))
+        want = self.vm_slots + sum(w.node_slots(self.cfg, talos[n], "zagreus-ci")
+                                   for n in ("zag-amd64-01", "zag-amd64-02"))
+        self.assertEqual(self.vm_slots, len(self.vms))  # one slot each
         self.assertEqual(self.floor, want)
 
     def test_the_cap_does_not_change_from_asleep_to_01_and_02_awake(self):
-        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
-        _, asleep = self.caps(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
-                                 "zag-amd64-03": self.ASLEEP, vm: {}})
-        _, first = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": self.ASLEEP,
-                                "zag-amd64-03": self.ASLEEP, vm: {}})
-        _, both = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": {},
-                               "zag-amd64-03": self.ASLEEP, vm: {}})
+        _, asleep = self.caps(**self.world(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                                              "zag-amd64-03": self.ASLEEP}))
+        _, first = self.caps(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": self.ASLEEP,
+                                             "zag-amd64-03": self.ASLEEP}))
+        _, both = self.caps(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {},
+                                            "zag-amd64-03": self.ASLEEP}))
         self.assertEqual(asleep["zagreus-ci"], self.floor)
         self.assertEqual(first["zagreus-ci"], self.floor)
         self.assertEqual(both["zagreus-ci"], self.floor)
 
-    def test_claims_beyond_the_always_on_slot_wake_01_and_02_together(self):
-        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
-        st = states(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
-                       "zag-amd64-03": self.ASLEEP, vm: {}})
+    def test_claims_beyond_the_always_on_slots_wake_01_and_02_together(self):
+        st = states(**self.world(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                                    "zag-amd64-03": self.ASLEEP}))
         room = w.compute_caps(self.cfg, st)
-        # A full first wave at the floor: one runner on the VM, the rest
+        self.assertEqual(room["zagreus-ci"], self.vm_slots)
+        # A full first wave at the floor: one runner on each VM, the rest
         # claimed with no node.
-        claims = w.floor_claims(self.cfg, {"zagreus-ci": self.floor}, {"zagreus-ci": self.floor - 1}, room)
-        self.assertEqual(claims, {"zagreus-ci": self.floor - 1})
+        beyond = self.floor - self.vm_slots
+        claims = w.floor_claims(self.cfg, {"zagreus-ci": self.floor}, {"zagreus-ci": beyond}, room)
+        self.assertEqual(claims, {"zagreus-ci": beyond})
         self.assertEqual(sorted(w.choose_wakes(self.cfg, claims, st, {}, T0)), ["zag-amd64-01", "zag-amd64-02"])
 
     def test_demand_beyond_the_floor_wakes_03_and_lifts_the_cap_to_the_ceiling(self):
-        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
-        st = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
+        st = states(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP}))
         self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-03"])
-        _, caps = self.caps(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}, vm: {}})
-        self.assertEqual(caps["zagreus-ci"], 10)
+        _, caps = self.caps(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}}))
+        self.assertEqual(caps["zagreus-ci"], 11)
 
     def test_the_floor_wins_over_the_pools_fair_share_squeeze(self):
         # Review of 710b204, kept on purpose: with spritz holding the whole
@@ -250,8 +257,7 @@ class FloorWithAlwaysOn(unittest.TestCase):
         # own floor claims one job, and its Pending pod is older than any
         # spritz pod created after it, so it takes the next free slot
         # (README, "Simplytics' floor").
-        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
-        node_states = states(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP, vm: {}})
+        node_states = states(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP}))
         room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 12, "zagreus-simplytics-ci": 1},
                               ceilings=self.ceilings)
         # Positive control: fair share does squeeze spritz below the floor.
@@ -261,10 +267,9 @@ class FloorWithAlwaysOn(unittest.TestCase):
         self.assertEqual(caps["zagreus-ci"], self.floor)
         self.assertGreaterEqual(caps["zagreus-simplytics-ci"], 1)
 
-    def test_with_the_vm_down_the_floor_still_holds_and_the_talos_nodes_take_it(self):
-        vm = next(n["name"] for n in self.cfg["nodes"] if n.get("alwaysOn"))
-        room, caps = self.caps(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
-                                  "zag-amd64-03": self.ASLEEP, vm: {"ready": False}})
+    def test_with_the_vms_down_the_floor_still_holds_and_the_talos_nodes_take_it(self):
+        room, caps = self.caps(**self.world({"ready": False}, **{
+            "zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP, "zag-amd64-03": self.ASLEEP}))
         self.assertEqual(room["zagreus-ci"], 0)
         self.assertEqual(caps["zagreus-ci"], self.floor)
 
@@ -291,8 +296,9 @@ class LiveBurst(unittest.TestCase):
 
     def test_asleep_the_cap_sits_at_the_floor(self):
         r = self.rig()
-        self.assertEqual(self.ci_cap(r), 8)
-        self.assertNotIn(r.always_on[0], r.kube.asleep())
+        self.assertEqual(self.ci_cap(r), 9)
+        for vm in r.always_on:
+            self.assertNotIn(vm, r.kube.asleep())
 
     def test_one_job_runs_on_the_vm_with_no_wake(self):
         r = self.rig()
@@ -308,10 +314,10 @@ class LiveBurst(unittest.TestCase):
         for _ in range(8):
             r.spritz_job(age=5)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Seven beyond the VM's one: 02 covers four, then 01 three.
+        # Six beyond the two VMs' one each: 02 covers four, then 01 two.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(self.ci_cap(r), 8)
+        self.assertEqual(self.ci_cap(r), 9)
         self.assertEqual(self.ci_cap_writes(r, mark), [])
 
 
@@ -358,10 +364,10 @@ class ClassLabelBurst(unittest.TestCase):
         for _ in range(3):
             r.spritz_job(age=age, labels=self.X64)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Seven beyond the VM's one: 02 covers four, then 01 three.
+        # Six beyond the two VMs' one each: 02 covers four, then 01 two.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 8)
+        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 9)
         writes = [p for v, p, b in r.kube.writes[mark:] if v == "PATCH" and "/autoscalingrunnersets/" in p]
         self.assertEqual(writes, [])
 

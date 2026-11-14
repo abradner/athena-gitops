@@ -654,10 +654,10 @@ class Caps(unittest.TestCase):
         """The arithmetic in waker.conf, checked: each node's slots, plus
         what else may land there, fit its allocatable memory and CPU
         (1 Nov 2026, after the RAM shuffle)."""
-        # zag-amd64vm-01: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
-        # and kubelet's system-reserved (asn-infra zagreus/vm-runner).
-        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-amd64vm-01": 7.1}
-        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-amd64vm-01": 3.8}
+        # zag-amd64vm-01/02: 4 vCPU and an 8 GiB balloon ceiling, less the kernel
+        # and kubelet's system-reserved (asn-infra zagreus/vm-runner). vm-02 read 7307104Ki on 14 Nov 2026.
+        alloc_gib = {"zag-amd64-01": 30.34, "zag-amd64-02": 30.22, "zag-amd64-03": 14.44, "zag-amd64vm-01": 7.1, "zag-amd64vm-02": 6.97}
+        alloc_cpu = {"zag-amd64-01": 7.95, "zag-amd64-02": 7.95, "zag-amd64-03": 3.95, "zag-amd64vm-01": 3.8, "zag-amd64vm-02": 3.8}
         pod_gib = {"zagreus-ci": 6, "zagreus-ci-x64": 6, "zagreus-docker-amd64": 3 + 0.75}
         pod_cpu = {"zagreus-ci": 1.5, "zagreus-ci-x64": 1.5, "zagreus-docker-amd64": 1 + 0.25}
         # two light pods, bundle fill, coredns and slack, then the cache pruner
@@ -2569,9 +2569,11 @@ class Floor(unittest.TestCase):
 
     def test_live_config_floors_the_builder_and_simplytics(self):
         floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
-        # zagreus-ci's 8 is the old zagreus-ci (6) and x64 (2) floors in one,
-        # since the fold of 13 Nov 2026 (README, "zagreus-ci's floor").
-        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 8, "zagreus-simplytics-ci": 1})
+        # zagreus-ci's floor is the always-on VMs' slots plus the room of 01
+        # and 02: 8 after the fold of 13 Nov 2026 (the old zagreus-ci 6 and
+        # x64 2), 9 since zag-amd64vm-02 joined on 14 Nov (README,
+        # "zagreus-ci's floor").
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 9, "zagreus-simplytics-ci": 1})
 
     def test_a_negative_floor_is_refused(self):
         cfg = production_config()

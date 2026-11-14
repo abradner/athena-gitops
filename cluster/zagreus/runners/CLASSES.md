@@ -139,10 +139,12 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   once at start and never passed to the runner container.
 
 **The floor limits what a Mac ever sees.** `zagreus-ci` keeps claiming up to
-eight jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor";
-six before step 3), because a cap raised from 0 can leave GitHub holding the
-job for half an hour. Those eight wait for a wake. So a Mac takes only what is
-beyond the floor plus any awake slots: the ninth job of a burst onward. Lowering the floor would
+nine jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor";
+six before step 3, eight until 14 Nov 2026: zag-amd64vm-02 added), because a
+cap raised from 0 can leave GitHub holding the job for half an hour. Two run
+at once on the always-on VMs; the other seven wait for a wake. So a Mac takes
+only what is beyond the floor plus any awake slots: the tenth job of a burst
+onward. Lowering the floor would
 give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 ## Steps (one PR each)
@@ -176,7 +178,8 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
    shared slot one plain `zagreus-ci` slot. As built: `zagreus-ci` is
    `self-hosted, linux, X64, heavy` with `maxRunners` 10 (the per-node slots
    in `../waker/waker.conf`) and floor 8 (the old 6 and 2 in one: a first wave
-   of five heavy jobs and three e2e jobs changes no cap); `zagreus-ci-light`
+   of five heavy jobs and three e2e jobs changes no cap; 11 and 9 since
+   14 Nov 2026: zag-amd64vm-02 added); `zagreus-ci-light`
    is `self-hosted, linux, light`. The waker keeps `slotsShared` and pinned
    floors as features: its tests for them, and the scenario tests, run on a
    frozen or pre-fold world (`test_waker.frozen`,

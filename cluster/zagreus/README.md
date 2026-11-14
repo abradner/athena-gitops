@@ -57,8 +57,8 @@ the value written in each is the waker's ceiling. `zagreus-ci` and
 `zagreus-simplytics-ci` share one set of slots, handed to whichever has
 queued jobs (`waker/README.md`, "Sharing"). Until the waker leaves observe mode the static caps below
 apply as written. Since the classic runners stopped (12 Nov 2026) nothing
-races `zagreus-ci`: it takes up to ten heavy jobs at a time, eight of them
-claimed even while its nodes sleep (its floor). Each job class matches at most one scale set; a job matching two
+races `zagreus-ci`: it takes up to eleven heavy jobs at a time, nine of them
+claimed even while its nodes sleep (its floor; 14 Nov 2026: zag-amd64vm-02 added). Each job class matches at most one scale set; a job matching two
 would go to either, so a heavy job could land in a light pod. The scale-set
 name stays a label of its own, so `runs-on: zagreus-ci` still means zagreus
 and nothing else (dependency-update PRs use it: zagreus is where third-party
@@ -67,7 +67,7 @@ code runs, above).
 | Scale set | Labels (besides its name) | Classic runners sharing them | Nodes | Scale | For |
 |---|---|---|---|---|---|
 | `zagreus-ci-light` | `self-hosted, linux, light` (the `light` runner class, `runners/CLASSES.md`) | none: only this set carries `light` | prefers arm runners, may use arm64 builder nodes, falls back to amd64 | 1 warm, up to 2 while on the builder | path filters, doc checks, verify jobs |
-| `zagreus-ci` | `self-hosted, linux, X64, heavy` (the `heavy` runner class, `runners/CLASSES.md`) | none today; the Macs become `heavy, ARM64` overflow in CLASSES.md step 4 | amd64 only, plus the always-on VM | 0–10, floor 8 | every heavy spritz job, the e2e jobs (`heavy, X64`) included, and every heavy job of a bot's run (by name) |
+| `zagreus-ci` | `self-hosted, linux, X64, heavy` (the `heavy` runner class, `runners/CLASSES.md`) | none today; the Macs become `heavy, ARM64` overflow in CLASSES.md step 4 | amd64 only, plus the two always-on VMs | 0–11, floor 9 (14 Nov 2026: zag-amd64vm-02 added) | every heavy spritz job, the e2e jobs (`heavy, X64`) included, and every heavy job of a bot's run (by name) |
 | `zagreus-docker-arm64` | none: name only (`docker-arm64.yaml` says why) | none; the Mac builders keep `docker-arm64` | arm64 builder (always on) | 0–1 | bot-authored PR build checks; not release legs while they would share its data root |
 | `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
 | `zagreus-simplytics-light` | `self-hosted, linux, simplytics-light` | none | as `zagreus-ci-light` | 1 warm, up to 2 | Simplytics' gating jobs (org-level) |
