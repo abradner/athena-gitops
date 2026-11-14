@@ -222,8 +222,10 @@ spec:
   # rule in cluster/core/cloudflared/config.yaml is the second layer; keep it.
   # Never attach an internal-only route here, whatever sectionName it names.
   #
-  # This port is not reachable from the internet (checked), only from the LAN
-  # and the mesh, where those hostnames are already reachable via HAProxy.
+  # This port is not reachable from the internet (checked 2026-09-04): the
+  # proxy in front forwards only 443 and 80 here. Inside the network it is
+  # reachable wherever the Gateway's address is, and since 2026-11-14 it
+  # serves no internal host there, only the public ones.
   #
   # It has to live on its own port. Two listeners on 443 where one has no
   # hostname would collide on SNI with every named listener there.
