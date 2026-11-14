@@ -189,8 +189,8 @@ class Procedures(unittest.TestCase):
 class FloorWithAlwaysOn(unittest.TestCase):
     """The pilot's point (9 Nov 2026): zagreus-ci's floor equals the always-on
     slots plus the room of 01+02, so a burst that fits there changes no cap,
-    and so restarts no listener, across the wake. Two VMs since 14 Nov 2026
-    (zag-amd64vm-02): every always-on node is Ready in these worlds."""
+    and so restarts no listener, across the wake. Three VMs since 14 Nov 2026
+    (zag-amd64vm-02 and -03): every always-on node is Ready in these worlds."""
 
     ASLEEP = {"ready": False, "asleep": True}
 
@@ -247,7 +247,7 @@ class FloorWithAlwaysOn(unittest.TestCase):
         st = states(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP}))
         self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-03"])
         _, caps = self.caps(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}}))
-        self.assertEqual(caps["zagreus-ci"], 11)
+        self.assertEqual(caps["zagreus-ci"], 12)
 
     def test_the_floor_wins_over_the_pools_fair_share_squeeze(self):
         # Review of 710b204, kept on purpose: with spritz holding the whole
@@ -296,7 +296,7 @@ class LiveBurst(unittest.TestCase):
 
     def test_asleep_the_cap_sits_at_the_floor(self):
         r = self.rig()
-        self.assertEqual(self.ci_cap(r), 9)
+        self.assertEqual(self.ci_cap(r), 10)
         for vm in r.always_on:
             self.assertNotIn(vm, r.kube.asleep())
 
@@ -314,10 +314,10 @@ class LiveBurst(unittest.TestCase):
         for _ in range(8):
             r.spritz_job(age=5)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Six beyond the two VMs' one each: 02 covers four, then 01 two.
+        # Five beyond the three VMs' one each: 02 covers four, then 01 one.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(self.ci_cap(r), 9)
+        self.assertEqual(self.ci_cap(r), 10)
         self.assertEqual(self.ci_cap_writes(r, mark), [])
 
 
@@ -364,10 +364,10 @@ class ClassLabelBurst(unittest.TestCase):
         for _ in range(3):
             r.spritz_job(age=age, labels=self.X64)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Six beyond the two VMs' one each: 02 covers four, then 01 two.
+        # Five beyond the three VMs' one each: 02 covers four, then 01 one.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 9)
+        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 10)
         writes = [p for v, p, b in r.kube.writes[mark:] if v == "PATCH" and "/autoscalingrunnersets/" in p]
         self.assertEqual(writes, [])
 
