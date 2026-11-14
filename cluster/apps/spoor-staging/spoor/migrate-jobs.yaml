@@ -45,6 +45,13 @@ spec:
               value: "https://app-staging.spoor.observer"
             - name: SPOOR_WEBAUTHN_RP_ID
               value: "app-staging.spoor.observer"
+            # Proxies allowed to name the client in X-Forwarded-For (Simplytics/spoor
+            # docs/deploy.md): the pod range, i.e. cloudflared and the Cilium
+            # gateway's per-node addresses. Keep it to the pod range; the reason is
+            # recorded in the Spoor repo. Images from Spoor #48 on refuse to boot
+            # without it; older images ignore it.
+            - name: SPOOR_TRUSTED_PROXIES
+              value: "10.244.0.0/16"
             - name: SSL_CERT_FILE
               value: /etc/spoor/clickhouse/ca.crt
             - name: CLICKHOUSE_HOST
