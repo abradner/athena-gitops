@@ -1,13 +1,13 @@
 # Runner classes: one way to ask for a runner (design, 12 Nov 2026)
 
-**Status: approved 12 Nov 2026; step 1 in progress.** Asked for by the operator on 12 Nov 2026, once
+**Status: approved 12 Nov 2026. Steps 1 and 2 are live (13 Nov 2026); this file's step 3 is the change that folds the x64 set; step 4 is not built.** Asked for by the operator on 12 Nov 2026, once
 the classic LXC runners were stopped: every runner can run any job, light and
 heavy stay apart, and each job says which architectures it accepts. The Macs
 are to take work only when zagreus has not picked it up (today they take it
 first: below). This file is the design; each
 step below lands as its own PR, and this file is updated as they land.
 
-## Today
+## Before (12 Nov 2026, when this was designed)
 
 | Job asks for | Who answers |
 |---|---|
@@ -40,10 +40,9 @@ Two kinds, and nothing else:
 | `zagreus-ci-light` | `self-hosted, linux, light` (it already runs on both architectures) |
 | a Mac overflow runner | `self-hosted, linux, heavy, ARM64` |
 
-`spritz-ci`, `spritz-light` and `playwright-full` go. `heavy` takes over
-`playwright-full`'s meaning (every browser engine installed). `zagreus-ci`
-and the Mac runners carry `playwright-full` today; `zagreus-ci-x64` runs the
-same pod and gains the label in step 1, so every heavy runner has it.
+`spritz-ci`, `spritz-light` and `playwright-full` go (step 3). `heavy` takes
+over `playwright-full`'s meaning (every browser engine installed): every
+heavy runner carried `playwright-full` before, and the pod is unchanged.
 
 ### Jobs
 
@@ -67,8 +66,9 @@ for everyone else.
 
 - `zagreus-ci-x64` is folded into `zagreus-ci` and `ci-x64.yaml` is deleted.
   One heavy queue.
-- The waker loses `slotsShared` (#390) and the x64 set's floor; the always-on
-  VM goes back to one `zagreus-ci` slot. Simplytics keeps sharing
+- The live config loses `slotsShared` (#390) and the x64 set's floor; the
+  always-on VM goes back to one `zagreus-ci` slot. The waker code keeps both
+  features (step 3). Simplytics keeps sharing
   `zagreus-ci`'s slots as now.
 - Set names do not change, so GitHub's registrations do not churn.
 - Out of scope: the docker builder sets (`RUNNER_DOCKER_*`) and the Simplytics
@@ -89,29 +89,25 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   `self-hosted, linux, heavy, ARM64`) and starts the existing runner image
   with it (`ACTIONS_RUNNER_INPUT_JITCONFIG`: the image's ARC mode, already
   built). The runner takes one job and is gone.
-- **Not from a bot** means no identity behind the run ends in `[bot]`: the
-  run's actor, the pull request's author (for a PR), and the author of
-  **every commit** in the push (the compare API over the push's range), not
-  only the head commit. The actor alone is not enough (on a `labeled` event
-  it is whoever clicked), and the commit authors catch a bot's change merged
-  by a human, whose push run has no PR and a human actor. Rebase merging
-  keeps each commit's author; squash merging makes the *PR's* author the
-  commit author, so a bot commit pushed to a human's PR and squashed passes
-  the commit check, and only the PR-author check at PR time saw it. Merge
-  commits are disabled in spritz (checked 12 Nov 2026); enabling them would
-  let a human-authored merge commit through.
+- **Not from a bot** uses the rule spritz's step 2 implements
+  (`script/ci_bot_decision.sh`), and the agent applies the same script.
+  **The line is merging.** A person merging a bot's pull request is the
+  review; after that the code is main's, and every later run builds on it.
+  So it looks for *unmerged* bot code: the run's actor, a pull request's
+  author, any commit a pull request brings in, and any commit a ref off
+  main carries that main lacks (a branch dispatch, or a pull request into
+  another branch). A run on main is judged by its actor alone. One
+  assumption is unenforced: no bot pushes to main directly (branch
+  protection is not available on spritz's plan). *Corrected 13 Nov 2026:*
+  this said a push whose commits include a bot's counts as a bot run. Taken
+  to its end, that makes every run a bot's, since main always holds merged
+  bot code and every pull request builds on it; spritz#1651's review found
+  it.
 - **This check gates only the start of a runner.** A JIT runner then takes
   whatever matching job GitHub hands it within its idle window (below), with
-  no further check. For those later jobs the first line, bot jobs naming a
-  set (above), is the only guard. That first line has a gap of its own:
-  spritz's `runs-on` expression checks the PR author only, so a bot's
-  change merged by a human runs as a human job, asking for labels. The
-  commit check stops the agent starting a Mac runner for it, but a Mac
-  runner already idle in its window could take it. Closing that needs
-  spritz to treat such a push as a bot run (step 2). A `runs-on` expression
-  cannot substring-match a list of commit authors, so this is likely a
-  first job (`changes` already runs first) that computes it as an output
-  for the others' `runs-on`.
+  no further check. For those later jobs the first line, bot runs naming a
+  set (spritz's heavy jobs name `zagreus-ci` when `changes` says
+  `bot`), is the only guard.
 - **Not claimed by a zagreus set** matters because of the floor (below): a
   job ARC has acquired still shows as queued on GitHub while its pod waits
   for a wake. Whether a runner outside the set can take such a job at all is
@@ -143,10 +139,10 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   once at start and never passed to the runner container.
 
 **The floor limits what a Mac ever sees.** `zagreus-ci` keeps claiming up to
-six jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor"),
-because a cap raised from 0 can leave GitHub holding the job for half an hour.
-Those six wait for a wake. So a Mac takes only what is beyond the floor plus
-any awake slots: the seventh job of a burst onward. Lowering the floor would
+eight jobs while its nodes sleep (`../waker/README.md`, "zagreus-ci's floor";
+six before step 3), because a cap raised from 0 can leave GitHub holding the
+job for half an hour. Those eight wait for a wake. So a Mac takes only what is
+beyond the floor plus any awake slots: the ninth job of a burst onward. Lowering the floor would
 give the Macs more, but brings back the hold. **This design keeps the floor.**
 
 ## Steps (one PR each)
@@ -166,17 +162,46 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
    checked by reading the labels back from GitHub
    (`gh api repos/abradner/spritz/actions/runners` lists ARC's runners only
    while they run, so the check is a job asking for `heavy` being picked up).
-2. **spritz: switch `runs-on`** to the table above. Bots by set name, humans
-   by labels, and a push whose commits include a bot's counts as a bot. Both amd64 heavy sets carry `heavy` and `X64`, so either takes
-   any human heavy job and no heavy capacity is lost before step 3.
+2. **spritz: switch `runs-on`** to the table above. Bot runs by set name,
+   everyone else by labels, decided by `changes` (the rule above). Both
+   amd64 heavy sets carry `heavy` and `X64`, so either takes any human heavy
+   job and no heavy capacity is lost before step 3. **Done:** spritz#1651,
+   merged 13 Nov 2026; its own CI and the first main run routed every job
+   by class. Light jobs ask for `light` even in a bot's run (`changes`
+   computes `bot`, so it cannot read it, and only zagreus carries `light`).
 3. **athena-gitops: fold `zagreus-ci-x64` into `zagreus-ci`**, drop the old
    labels, remove `slotsShared` and the x64 floor from the waker, move the
    x64 set's capacity into `zagreus-ci` (its per-node slots in
    `../waker/waker.conf` and its `maxRunners`), and make the always-on VM's
-   shared slot one plain `zagreus-ci` slot. The waker tests'
-   `SET_LABELS` fixture gives `zagreus-ci` no `X64`, though the live set has
-   carried it since 4 Nov 2026; two `DemandOnce` tests rely on that. Fix the
-   fixture here, when the x64 set they compare against goes.
+   shared slot one plain `zagreus-ci` slot. As built: `zagreus-ci` is
+   `self-hosted, linux, X64, heavy` with `maxRunners` 10 (the per-node slots
+   in `../waker/waker.conf`) and floor 8 (the old 6 and 2 in one: a first wave
+   of five heavy jobs and three e2e jobs changes no cap); `zagreus-ci-light`
+   is `self-hosted, linux, light`. The waker keeps `slotsShared` and pinned
+   floors as features: its tests for them, and the scenario tests, run on a
+   frozen or pre-fold world (`test_waker.frozen`,
+   `test_sharing.pre_fold_config`), so only the live-config checks changed.
+   The `SET_LABELS` fixture belongs to that frozen world and keeps its x64
+   set, so it is left as it was. **Rollout:** dropping labels needs both
+   AutoscalingRunnerSets recreated again, idle, on the operator's go. The
+   x64 scale set is **not** removed by the merge: deleting `ci-x64.yaml`
+   prunes its Application, but the Application has no
+   `resources-finalizer.argocd.argoproj.io`, so Argo leaves the
+   AutoscalingRunnerSet behind, still carrying the old labels and no longer
+   driven by the waker. Its cap freezes where the waker last left it (2,
+   its floor, on 14 Nov 2026), so it could claim heavy jobs that nothing
+   wakes a node for: **delete it right after the sync, not later**, while
+   idle, in this order:
+   1. `kubectl -n arc-runners delete autoscalingrunnerset zagreus-ci-x64`,
+      then wait until `kubectl -n arc-runners get autoscalingrunnersets` no
+      longer lists it. The ARC controller removes its listener (and the
+      listener's own Role and RoleBinding) and its runners; it needs the
+      manager Role below to do that, so that goes second.
+   2. The chart's leftovers, which the pruned Application also leaves
+      (names read live on 14 Nov 2026): ServiceAccount
+      `zagreus-ci-x64-gha-rs-no-permission`, and Role and RoleBinding
+      `zagreus-ci-x64-gha-rs-manager`, all in `arc-runners`. Check with
+      `kubectl -n arc-runners get sa,role,rolebinding | grep x64`.
 4. **spritz: the Mac overflow agent** (`deploy/ci-runner/`), replacing the
    standing Mac runners, then deregister the two standing Mac runners. The spritz
    repository variables `RUNNER_CI*` are deleted after step 2 has run cleanly.
@@ -186,8 +211,12 @@ give the Macs more, but brings back the hold. **This design keeps the floor.**
 - After 2: a human-run CI pass lands every heavy job on a zagreus amd64 set,
   and no job on a Mac (until step 4 the Macs carry no `heavy`). A bot PR's run
   likewise.
-- After 3: the same, with one heavy set; the waker logs no "shared labels
-  only" warnings.
+- After 3: a spritz run lands every heavy job on `zagreus-ci` (the e2e jobs
+  included), the first wave of a sleeping cluster changes no cap (no
+  `maxRunners` line in the waker's log for it), and
+  `kubectl -n arc-runners get autoscalingrunnersets` lists no
+  `zagreus-ci-x64`. (The "shared labels only" warning this used to name was
+  removed in step 3: every human heavy job matches by labels now.)
 - After 4: with the metal nodes asleep and a Mac agent running, a burst of
   more than seven heavy jobs puts the overflow on the Mac within about 30 s,
   wakes no node for it, and never puts an `X64` job or a bot job there. With

@@ -57,9 +57,9 @@ unlimited (`resourcebuilder.go`, `math.MaxInt32`).
 A set may carry `"floor": n` in `waker.conf`: the least `maxRunners` the
 waker writes for it, offered while its nodes sleep. `zagreus-docker-amd64`
 has one (1), since 6 Nov 2026 `zagreus-simplytics-ci` has one (1):
-"Simplytics' floor", below, since 9 Nov 2026 `zagreus-ci` has six:
-"zagreus-ci's floor", below, and since 10 Nov `zagreus-ci-x64` has two:
-"x64's floor", below.
+"Simplytics' floor", below, and `zagreus-ci` has eight since 13 Nov 2026
+(six from 9 Nov): "zagreus-ci's floor", below. `zagreus-ci-x64` had two
+from 10 Nov until it was folded into `zagreus-ci`: "x64's floor", below.
 
 **Why.** A job that queues while its set is at 0 can be held by GitHub
 after the waker wakes a node and raises the cap: the raise restarts the
@@ -154,36 +154,46 @@ not take a slot from it, `Shared.test_the_floor_does_not_take_an_idle_slot_from_
 Unpinned: its pods may land on any amd64 node, and every amd64 node has
 pool slots, so the floor never stands down while a node is awake.
 
-### zagreus-ci's floor (9 Nov 2026, with the always-on node)
+### zagreus-ci's floor (9 Nov 2026, with the always-on node; 8 since 13 Nov)
 
-**6**: the always-on node's one slot plus the five of 01 and 02. The cap
-reads 6 asleep, with 01 alone and with 01 and 02 awake, so a first wave
-that fits there (a spritz CI run is five heavy `ci` jobs plus two x64)
-changes no cap and restarts no listener. It changes only when 03 joins
-(6 -> 8) and when it leaves. `test_always_on.LiveBurst` runs the deployed
-config through it.
+**8**: the always-on node's one slot plus the seven of 01 and 02. The cap
+reads 8 asleep, with 01 alone and with 01 and 02 awake, so a first wave
+that fits there (a spritz CI run is five heavy jobs plus the three e2e
+jobs, all on this set since the x64 set was folded in) changes no cap and
+restarts no listener. It changes only when 03 joins (8 -> 10) and when it
+leaves. `test_always_on.LiveBurst` runs the deployed config through it. It
+was 6 from 9 Nov, beside x64's own floor of 2: the fold made the two one
+(runners/CLASSES.md, step 3).
 
 **Why.** Each cap raise at a wake re-creates the listener, and the new
 listener sees no jobs until GitHub offers them again: 6–40 s usually, 125 s
 and 303 s on 8 Nov (2 of 7 measured raises), and up to an hour in the
 held-jobs incidents of 28 Oct–3 Nov.
 
-**What it costs.** zagreus-ci still carries the classic labels
-(`self-hosted, linux, spritz-ci, …`). While the Talos nodes sleep it claims
-up to six jobs that ask only for those labels, and five of them wait a
-minute or two for a wake instead of running at once on a classic runner.
-`warn_floor_matches` logs each one. Whether to drop the classic labels
-(an Argo recreate of the set) is still open.
+**What it costs.** While the Talos nodes sleep it claims up to eight jobs,
+and seven of them wait a minute or two for a wake. Until 13 Nov 2026 it
+also carried the classic labels, so some of those claims were jobs a
+classic runner could have run at once, and `warn_floor_matches` logged each
+one ("matches zagreus-ci by shared labels only"). The classic runners are
+stopped and the labels are gone (runners/CLASSES.md, step 3), so every
+claim is a job only zagreus could run, and the warning was removed with the
+fold: since spritz#1651 every human heavy job matches by labels, so it
+would have fired on every one.
 
 **Beside Simplytics.** With spritz holding the whole pool and Simplytics
-queued, fair share would squeeze zagreus-ci below 6; the floor lifts it
+queued, fair share would squeeze zagreus-ci below 8; the floor lifts it
 back. That is on purpose: the squeeze would itself be a cap change and a
 listener restart. Simplytics is not starved, because its own floor claims
 one job and its Pending pod, older than any spritz pod created after it,
 takes the next free slot
 (`test_always_on.FloorWithAlwaysOn.test_the_floor_wins_over_the_pools_fair_share_squeeze`).
 
-### x64's floor (10 Nov 2026)
+### x64's floor (10 Nov 2026; gone with the set, 13 Nov)
+
+History: `zagreus-ci-x64` was folded into `zagreus-ci` on 13 Nov 2026, and
+its floor into zagreus-ci's (above). The waker's pinned-floor logic still
+serves `zagreus-docker-amd64`, and its regression tests run on the
+pre-fold world (`test_sharing.pre_fold_config`).
 
 **2, pinned to 01 and 02**, the set's only slot nodes. The cap is 2 asleep
 and awake, so a spritz CI run's two x64 jobs are handed over at once and
@@ -224,7 +234,11 @@ zagreus-ci's floor (above) hands the rest over at once to wait for 01 and
 02. With it down (NotReady) its slots count for nothing and the waker
 behaves as before; the floor still holds the cap.
 
-**One slot, either set (`"slotsShared": true`, 11 Nov 2026).** The VM has
+**One slot, either set (`"slotsShared": true`, 11 Nov 2026; unused since 13
+Nov).** Since the x64 set was folded into zagreus-ci, the VM lists one plain
+zagreus-ci slot and no node sets `slotsShared`. The waker still supports it,
+for any node that needs it again, and its tests run on the pre-fold world
+(`test_sharing.pre_fold_config`). As it worked from 11 to 13 Nov: the VM has
 room for one heavy pod. It lists a slot for zagreus-ci and one for
 zagreus-ci-x64, and `slotsShared` makes them one pool: a runner of either set
 holds it, so `compute_caps` never offers both, even with no room figures
@@ -244,7 +258,7 @@ at a time.
 
 It carries the taint `zagreus.asn.casa/always-on:NoSchedule`, so only
 runner pods land there. The key is in `toleratedTaintKeys`, and every set
-drawing on its slots (zagreus-ci, zagreus-ci-x64, and Simplytics through
+drawing on its slots (zagreus-ci, and Simplytics through
 the shared pool) tolerates it; `test_always_on.LiveFiles` checks the two agree. The bundle
 fill DaemonSet tolerates it too, so its pods get the same gem tree.
 
@@ -298,7 +312,7 @@ in `waker.conf` and the credential it is read with:
 
 | Set | Queue | Credential |
 |---|---|---|
-| `zagreus-docker-amd64`, `zagreus-ci`, `zagreus-ci-x64` | `"repo": "abradner/spritz"` | `GITHUB_TOKEN` (the default) |
+| `zagreus-docker-amd64`, `zagreus-ci` | `"repo": "abradner/spritz"` | `GITHUB_TOKEN` (the default) |
 | `zagreus-simplytics-ci` | `"org": "Simplytics"`: every private repository the App's installation lists, archived ones left out (public repositories never use zagreus) | `"github": "simplytics"`, the `simplytics-zagreus-arc` App's installation token |
 
 Each queue is read once a pass. The waker reads every queued job in its
@@ -533,8 +547,8 @@ without manual intervention to constantly rejuggle slots". So
 `zagreus-simplytics-ci` has no slots of its own. It carries
 `"sharesSlotsOf": "zagreus-ci"`, and draws on `zagreus-ci`'s slots on each
 node: the two sets together are never offered more than those slots, or
-than the node's room. `zagreus-ci-x64` and the builder keep their own
-slots and are untouched.
+than the node's room. The builder keeps its own slots and is untouched (as
+`zagreus-ci-x64` did until it was folded into `zagreus-ci`, 13 Nov 2026).
 
 **The rule** (`compute_caps`, each pass):
 
@@ -614,7 +628,8 @@ enough to keep. They apply only while a pool is configured. With
 Simplytics idle and production's numbers (`zagreus-ci`'s ceiling equal to
 its slots, `roomCaps` true) the caps were identical.
 - A pool set's ceiling is applied inside the allocation, so room it cannot
-  use goes to the next set (`zagreus-ci-x64`) instead of being clamped away.
+  use goes to the next set (it was `zagreus-ci-x64` when this was written)
+  instead of being clamped away.
 - In slot mode, a pool set's runners count towards its cap, as in room mode.
 
 **Undo.** Remove the set (and `githubApps`) from `waker.conf`; the pool is
@@ -629,18 +644,17 @@ is the reverse.
 `zagreus-simplytics-ci` has none of its own: it shares `zagreus-ci`'s
 ("Sharing"):
 
-| Node | Memory (allocatable) | `zagreus-ci` | `zagreus-ci-x64` | `zagreus-docker-amd64` |
-|---|---|---|---|---|
-| zag-amd64-01 | 30.3 GiB, 7.95 CPU | 2 | 1 | 1 |
-| zag-amd64-02 | 30.2 GiB, 7.95 CPU | 3 | 1 | 0 |
-| zag-amd64-03 | 14.4 GiB, 3.95 CPU | 2 | 0 | 0 |
-| **all three** | | **7** | **2** | **1** (= the ceilings) |
+| Node | Memory (allocatable) | `zagreus-ci` | `zagreus-docker-amd64` |
+|---|---|---|---|
+| zag-amd64-01 | 30.3 GiB, 7.95 CPU | 3 | 1 |
+| zag-amd64-02 | 30.2 GiB, 7.95 CPU | 4 | 0 |
+| zag-amd64-03 | 14.4 GiB, 3.95 CPU | 2 | 0 |
+| zag-amd64vm-01 (always on) | 7.3 GiB, 3.8 CPU | 1 | 0 |
+| **all four** | | **10** | **1** (= the ceilings) |
 
-Since 4 Nov 2026 `zagreus-ci` carries `X64` too (every node it runs on is
-amd64), so its 7 slots take the x64 class jobs (e2e, e2e_moments) as well as
-the general ones, and GitHub hands each job to whichever matching runner is
-free. `zagreus-ci-x64` stays, with its 2 slots, while spritz still names it
-for bot PRs.
+Since 13 Nov 2026 `zagreus-ci` holds every heavy slot: the x64 set's one on
+01 and one on 02 were folded in (runners/CLASSES.md, step 3), and the VM's
+slot, shared with x64 from 11 Nov, is a plain zagreus-ci slot again.
 
 A node's slots must fit on it even when everything else that can land there
 does. That means two light pods (768 MiB, 250m each), the bundle fill,
@@ -851,8 +865,7 @@ it, sets the waker had at 0 stay at 0, and jobs that name a set
 3. Put each set back to its ceiling by hand:
 
    ```
-   kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci --type merge -p '{"spec":{"maxRunners":3}}'
-   kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci-x64 --type merge -p '{"spec":{"maxRunners":1}}'
+   kubectl -n arc-runners patch autoscalingrunnerset zagreus-ci --type merge -p '{"spec":{"maxRunners":10}}'
    kubectl -n arc-builders patch autoscalingrunnerset zagreus-docker-amd64 --type merge -p '{"spec":{"maxRunners":1}}'
    kubectl -n arc-runners patch autoscalingrunnerset zagreus-simplytics-ci --type merge -p '{"spec":{"maxRunners":0}}'
    ```
@@ -1021,7 +1034,11 @@ strands a real job:
   was claimed and stuck while a classic runner sat idle.
 - **Green, ARC level:** run 39883352061. `maxRunners: 0`; all five jobs went
   to the classic runner, and no EphemeralRunner was created.
-- **Green, waker level (live, `caps` mode, no power, needs a go):**
+- **Green, waker level (live, `caps` mode, no power, needs a go).** As run
+  while the classic runners existed. Since 13 Nov 2026 the classic labels
+  match no set and the classic runners are stopped, so step 3 below cannot
+  pass as written; aim the matrix at `[self-hosted, heavy]` and expect the
+  jobs to queue unclaimed instead:
   1. Cordon zag-amd64-01 and -02 by hand.
   2. Within one pass (30 s), the waker logs `maxRunners 3 -> 0` (and 1 -> 0
      twice), and `kubectl get autoscalingrunnersets -A` shows 0 for the three

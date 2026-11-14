@@ -57,11 +57,22 @@ TWO_NODES = [
 SPRITZ_SETS = ("zagreus-docker-amd64", "zagreus-ci", "zagreus-ci-x64")
 
 
+# The x64 set as it was before step 3 of ../../runners/CLASSES.md folded it
+# into zagreus-ci (13 Nov 2026). The frozen world keeps it: two spritz sets
+# drawing on one node is the overlap the waker's demand and sharing logic
+# handles, whatever the live config holds.
+FROZEN_X64_SET = {"name": "zagreus-ci-x64", "namespace": "arc-runners", "application": "zagreus-spritz-ci-x64",
+                  "repo": "abradner/spritz", "base": 0}
+
+
 def frozen(cfg):
     """The frozen world predates zagreus-ci's floor, the always-on node's
-    taint (9 Nov 2026) and x64's pinned floor (10 Nov): they have their own
-    tests (test_always_on.py), and the older scenarios keep the world they
-    were written for."""
+    taint (9 Nov 2026), x64's pinned floor (10 Nov) and the fold of x64 into
+    zagreus-ci (13 Nov): they have their own tests (test_always_on.py), and
+    the older scenarios keep the world they were written for."""
+    if not any(s["name"] == "zagreus-ci-x64" for s in cfg["sets"]):
+        at = next(i for i, s in enumerate(cfg["sets"]) if s["name"] == "zagreus-ci") + 1
+        cfg["sets"] = cfg["sets"][:at] + [dict(FROZEN_X64_SET)] + cfg["sets"][at:]
     cfg["nodes"] = [dict(n, slots=dict(n["slots"])) for n in TWO_NODES]
     cfg["sets"] = [{k: v for k, v in s.items()
                     if not (s["name"] == "zagreus-ci" and k == "floor")
@@ -738,17 +749,15 @@ class ThreeNodes(unittest.TestCase):
         caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
         # Simplytics, with no queue, gets none of the shared slots: spritz
         # keeps exactly what it had before sharing.
-        # Seven of zagreus-ci's eight: the eighth is the always-on node's.
-        self.assertEqual(caps, {"zagreus-docker-amd64": 1, "zagreus-ci": 7, "zagreus-ci-x64": 2,
-                                "zagreus-simplytics-ci": 0})
+        # Nine of zagreus-ci's ten: the tenth is the always-on node's.
+        self.assertEqual(caps, {"zagreus-docker-amd64": 1, "zagreus-ci": 9, "zagreus-simplytics-ci": 0})
 
     def test_the_i5_alone_offers_its_two_heavy_slots(self):
         st = states(**{"zag-amd64-01": {"ready": False, "asleep": True},
                        "zag-amd64-02": {"ready": False, "asleep": True},
                        "zag-amd64-03": {"free": self.FREE["zag-amd64-03"]}})
         caps = w.compute_caps(self.cfg, st, set_requests=self.REQ)
-        self.assertEqual(caps, {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-ci-x64": 0,
-                                "zagreus-simplytics-ci": 0})
+        self.assertEqual(caps, {"zagreus-docker-amd64": 0, "zagreus-ci": 2, "zagreus-simplytics-ci": 0})
 
     def test_sleep_takes_the_last_node_first(self):
         st = states(**{n: {} for n in self.names})
@@ -2560,8 +2569,9 @@ class Floor(unittest.TestCase):
 
     def test_live_config_floors_the_builder_and_simplytics(self):
         floors = {s["name"]: s.get("floor", 0) for s in live_config()["sets"]}
-        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 6, "zagreus-ci-x64": 2,
-                                  "zagreus-simplytics-ci": 1})
+        # zagreus-ci's 8 is the old zagreus-ci (6) and x64 (2) floors in one,
+        # since the fold of 13 Nov 2026 (README, "zagreus-ci's floor").
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 8, "zagreus-simplytics-ci": 1})
 
     def test_a_negative_floor_is_refused(self):
         cfg = production_config()
@@ -2761,16 +2771,15 @@ class Floor(unittest.TestCase):
         self.assertNotIn("zag-amd64-01", r.talos.calls)
         self.assertNotIn("zag-amd64-01", r.kube.asleep())
 
-    def test_a_shared_label_job_the_floor_set_could_claim_is_logged(self):
-        # A floor set claims whatever it matches. docker-amd64 carries class
-        # labels, and no spritz job asks for only those today; one that did
-        # would be claimed while the nodes sleep and wait for a wake rather
-        # than run on an idle classic runner. Say so in the log.
+    def test_a_shared_label_job_is_no_longer_warned_about(self):
+        # warn_floor_matches was removed with the x64 fold (13 Nov 2026,
+        # ../runners/CLASSES.md step 3): every person's heavy job now matches
+        # by labels, and with the classic runners stopped there is no idle
+        # runner a floor claim could have taken it from.
         r = Rig()
         r.job(["self-hosted", "linux", "X64"], age_seconds=1)
-        with self.assertLogs("waker", level="WARNING") as logs:
+        with self.assertNoLogs("waker", level="WARNING"):
             r.tick()
-        self.assertTrue(any("floor" in m and self.SET in m for m in logs.output), logs.output)
 
 
 class PoolMerge(unittest.TestCase):
@@ -2787,11 +2796,10 @@ class PoolMerge(unittest.TestCase):
         return [b["spec"]["maxRunners"] for v, p, b in r.kube.writes
                 if v == "PATCH" and p.endswith("/autoscalingrunnersets/" + name)]
 
-    def test_live_config_takes_caps_from_slots_and_pins_the_builder_and_x64(self):
+    def test_live_config_takes_caps_from_slots_and_pins_the_builder(self):
         cfg = live_config()
         self.assertTrue(cfg["roomCaps"])  # slots off for now: see README, "Caps from slots"
-        self.assertEqual([s["name"] for s in cfg["sets"] if s.get("pinnedToSlots")],
-                         [self.SET, "zagreus-ci-x64"])
+        self.assertEqual([s["name"] for s in cfg["sets"] if s.get("pinnedToSlots")], [self.SET])
 
     @staticmethod
     def pinned_nodes(text):

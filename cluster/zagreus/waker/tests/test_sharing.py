@@ -64,7 +64,7 @@ class Config(unittest.TestCase):
         self.assertNotIn("repo", sim)
         self.assertEqual(w.shared_pools(cfg), {CI: [CI, SIM]})
         # Spritz's other sets share nothing.
-        for name in (X64, BUILDER):
+        for name in (BUILDER,):
             self.assertEqual(w.slot_key(next(s for s in cfg["sets"] if s["name"] == name)), name)
 
     def test_a_set_names_exactly_one_queue(self):
@@ -632,12 +632,51 @@ LIVE_ALLOCATABLE = {"zag-amd64-01": {"cpu": "7950m", "memory": "31820076Ki"},
                     "zag-amd64-03": {"cpu": "3950m", "memory": "15193716Ki"}}
 
 
+LIVE_SET_FILES = {CI: "spritz/ci.yaml", BUILDER: "spritz/docker-amd64.yaml", SIM: "simplytics/ci.yaml"}
+
+
+def live_set_labels(name):
+    """A set's scaleSetLabels, read from its Application file."""
+    with open(os.path.join(WAKER_DIR, "..", "runners", LIVE_SET_FILES[name])) as f:
+        line = re.search(r"^\s+scaleSetLabels: \[([^\]]*)\]$", f.read(), re.M).group(1)
+    return [label.strip() for label in line.split(",")]
+
+
+# The deployed world before step 3 of ../../runners/CLASSES.md (13 Nov 2026)
+# folded zagreus-ci-x64 into zagreus-ci: x64 with its own slot on 01 and 02,
+# a pinned floor of 2, and the always-on VM's one slot shared between the
+# two ("slotsShared"). The waker still supports all of it; the regression
+# tests for the shared slot and its relief run here.
+PRE_FOLD_CEILINGS = {CI: 8, X64: 3}
+
+
+def pre_fold_config(cfg):
+    sets = []
+    for st in cfg["sets"]:
+        if st["name"] == CI:
+            sets.append(dict(st, floor=6))
+            sets.append({"name": X64, "namespace": "arc-runners", "application": "zagreus-spritz-ci-x64",
+                         "repo": "abradner/spritz", "base": 0, "floor": 2, "pinnedToSlots": True})
+        elif st["name"] != X64:
+            sets.append(st)
+    slots = {"zag-amd64-01": {CI: 2, X64: 1, BUILDER: 1}, "zag-amd64-02": {CI: 3, X64: 1}}
+    nodes = []
+    for n in cfg["nodes"]:
+        n = dict(n, slots=dict(slots.get(n["name"], n["slots"])))
+        if n.get("alwaysOn"):
+            n.update(slotsShared=True, slots={CI: 1, X64: 1})
+        nodes.append(n)
+    return dict(cfg, sets=sets, nodes=nodes)
+
+
 class LiveRig(SharedRig):
     """The deployed waker.conf (three nodes, live allocatable), with the
     taints the node controller and Cilium put on a sleeping node."""
 
-    def __init__(self, mode="full", always_on=False):
+    def __init__(self, mode="full", always_on=False, pre_fold=False):
         self.cfg = live_config()
+        if pre_fold:
+            self.cfg = pre_fold_config(self.cfg)
         self.cfg.update(mode=mode)
         if not always_on:
             # The Talos nodes alone, as before the always-on pilot (9 Nov
@@ -651,6 +690,13 @@ class LiveRig(SharedRig):
                                 for s in self.cfg["sets"]]
         self.clock = Clock()
         self.kube = FakeKube(self.cfg, self.clock)
+        if not pre_fold:
+            # The labels as the Applications write them, not the frozen
+            # world's fixture (SET_LABELS): a job asking for the runner
+            # classes must match what the live sets carry.
+            for st in self.cfg["sets"]:
+                self.kube.ars[(st["namespace"], st["name"])]["spec"]["runnerScaleSetLabels"] = \
+                    live_set_labels(st["name"])
         self.kube.node_controller_taints = True
         for name, a in LIVE_ALLOCATABLE.items():
             self.kube.nodes[name]["status"]["allocatable"] = dict(a)
@@ -662,11 +708,13 @@ class LiveRig(SharedRig):
             self.kube.taint(name, "zagreus.asn.casa/always-on")
         # The ceilings as the Applications write them.
         runners = os.path.join(WAKER_DIR, "..", "runners")
-        files = {CI: "spritz/ci.yaml", X64: "spritz/ci-x64.yaml", BUILDER: "spritz/docker-amd64.yaml",
-                 SIM: "simplytics/ci.yaml"}
+        files = {CI: "spritz/ci.yaml", BUILDER: "spritz/docker-amd64.yaml", SIM: "simplytics/ci.yaml"}
         for st in self.cfg["sets"]:
-            with open(os.path.join(runners, files[st["name"]])) as f:
-                ceiling = int(re.search(r"^\s+maxRunners: (\d+)$", f.read(), re.M).group(1))
+            if pre_fold and st["name"] in PRE_FOLD_CEILINGS:
+                ceiling = PRE_FOLD_CEILINGS[st["name"]]
+            else:
+                with open(os.path.join(runners, files[st["name"]])) as f:
+                    ceiling = int(re.search(r"^\s+maxRunners: (\d+)$", f.read(), re.M).group(1))
             self.kube.apps[st["application"]]["spec"]["source"]["helm"]["valuesObject"]["maxRunners"] = ceiling
         self.spritz = FakeGitHub()
         self.simplytics = FakeGitHub()
@@ -731,11 +779,12 @@ class WakeByDemand(unittest.TestCase):
     def test_a_burst_wakes_the_fewest_nodes_that_cover_it(self):
         r = LiveRig()
         r.put_all_to_sleep()
-        for _ in range(4):
+        for _ in range(6):
             r.spritz_job(age=5)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # 02 first (it covers three, more than any other), then one
-        # two-slot node: 01 before 03 on a tie.
+        # 02 first (it covers four, more than any other), then one node for
+        # the other two: 01 (three slots) before 03 (two) on a tie, since
+        # both cover them.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
 
     def test_three_jobs_wake_the_one_node_that_covers_them(self):
@@ -744,7 +793,9 @@ class WakeByDemand(unittest.TestCase):
         for _ in range(3):
             r.spritz_job(age=5)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        self.assertEqual(r.woken(), ["zag-amd64-02"])
+        # Since the fold (13 Nov 2026) 01 has three zagreus-ci slots and 02
+        # four: either covers three, and 01 comes first in waker.conf.
+        self.assertEqual(r.woken(), ["zag-amd64-01"])
 
     def test_a_burst_beyond_every_node_wakes_them_all(self):
         r = LiveRig()
