@@ -22,9 +22,14 @@
 #   with any SNI other than the hostnames below fails the handshake, and the
 #   tunnel never reaches this Gateway.
 #
-# The address is not pinned: LB-IPAM assigns one from homelab-pool, as it
-# does for homelab-gateway. Whatever fronts it is configured with the
-# assigned address out of band.
+# The address is pinned (infrastructure annotation, read by LB-IPAM), so a
+# rebuild or a re-created Service cannot hand it to another LoadBalancer and
+# leave whatever fronts this Gateway pointing at the wrong thing. It is an
+# address from homelab-pool (bootstrap/kubernetes/gateway-homelab-pool.yaml).
+#
+# Own GatewayClass so the generated Service can carry its own settings
+# (CiliumGatewayClassConfig below): no NodePorts, so this Gateway answers only
+# on its LoadBalancer address, not on every node's address as well.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -35,7 +40,10 @@ metadata:
     # Secrets that cert-manager issues in an earlier wave.
     argocd.argoproj.io/sync-wave: "4"
 spec:
-  gatewayClassName: cilium
+  gatewayClassName: cilium-internal
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/ips: "10.10.80.242"
   listeners:
   - name: https-athena
     port: 443
@@ -70,3 +78,33 @@ spec:
       mode: Terminate
       certificateRefs:
         - name: staging-kaff-asn-casa-tls
+---
+# The class athena-internal uses: Cilium's controller, with the generated
+# Service's NodePorts turned off. homelab-gateway stays on the default
+# `cilium` class.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cilium-internal
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  controllerName: io.cilium/gateway-controller
+  description: Cilium, generated Service without NodePorts (internal Gateway)
+  parametersRef:
+    group: cilium.io
+    kind: CiliumGatewayClassConfig
+    name: internal
+    namespace: default
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumGatewayClassConfig
+metadata:
+  name: internal
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  service:
+    type: LoadBalancer
+    allocateLoadBalancerNodePorts: false

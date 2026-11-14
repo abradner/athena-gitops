@@ -1,3 +1,6 @@
+# Like the Argo CD route in argocd-gateway.yaml: athena-internal comes from
+# cluster-core and is HTTPS-only, so during bootstrap this route is unattached.
+# Use `kubectl -n kube-system port-forward svc/hubble-ui 8081:80` until then.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

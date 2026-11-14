@@ -113,13 +113,16 @@ spec:
 ---
 # A LoadBalancer rather than an HTTPRoute: the Pi panels hold plain ws:// URLs
 # to :8080 in their config, so a stable LAN name on this address keeps any
-# future move to a hostname change. The pool assigns the address; the private
-# repo records which one it got and the DNS name pointing at it.
+# future move to a hostname change. The address is pinned so a rebuild or a
+# re-created Service keeps it (LAN clients are configured with it); it is
+# the one homelab-pool first gave this Service.
 apiVersion: v1
 kind: Service
 metadata:
   name: atmosphere-server
   namespace: asn-production
+  annotations:
+    lbipam.cilium.io/ips: "10.10.80.241"
 spec:
   type: LoadBalancer
   selector:
