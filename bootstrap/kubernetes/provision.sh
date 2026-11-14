@@ -45,7 +45,9 @@ helm upgrade --install argocd argo/argo-cd \
   --namespace argocd --create-namespace \
   -f argocd-values.yaml
 
-# Add it to the gateway
+# Add it to the gateway. The Argo CD and Hubble routes name athena-internal,
+# which cluster-core creates later (HTTPS-only, after cert-manager): until then
+# use port-forward, see the comment in argocd-gateway.yaml.
 kubectl apply -f argocd-gateway.yaml
 kubectl apply -f hubble-gateway.yaml
 

@@ -4,9 +4,10 @@
 # the only route attached to :80 and every plaintext request gets a 301.
 #
 # DR note: until cert-manager has issued the Gateway certificates, the
-# HTTPS listeners aren't programmed and redirected requests will fail —
-# the Argo CD UI is briefly reachable only via the bootstrap-applied
-# HTTP-only gateway state. It self-heals once the first certs issue.
+# HTTPS listeners aren't programmed and redirected requests will fail. The
+# internal UIs (Argo CD included) are on athena-internal, which has no HTTP
+# listener and comes up only with its certificates; during a rebuild, reach
+# Argo CD by port-forward (bootstrap/kubernetes/argocd-gateway.yaml).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
