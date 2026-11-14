@@ -3,7 +3,8 @@ set's cap changes, a change that comes from sharing alone waits
 shareDwellSeconds. Every cap change rebuilds the set's listener, and under
 contention the hold yielded and returned within a pass, so Simplytics' cap
 went down and back up every 34-72 s. The deployed config, through LiveRig,
-with its own sets' labels."""
+with its own sets' labels, pinned to the nodes, floor and ceiling of the
+trace (trace_world)."""
 import os
 import sys
 import unittest
@@ -18,6 +19,18 @@ from test_sharing import CI, SIM, LiveRig  # noqa: E402
 # Where the replayed runners sit: zagreus-ci across 01, 02 and the VM as on
 # 14 Nov; Simplytics' on 02.
 CI_NODES = ["zag-amd64-01"] * 3 + ["zag-amd64-02"] * 4 + ["zag-amd64vm-01"]
+VM = "zag-amd64vm-01"
+
+
+def trace_world(cfg):
+    """The deployed config as it stood when the trace was logged (14 Nov
+    2026, 00:35Z): one always-on VM, zagreus-ci's floor 8 and ceiling 10.
+    zag-amd64vm-02 joined later that day (floor 9, ceiling 11); with its
+    slot the recorded counts are no longer contention, so the replay keeps
+    the world they were recorded in."""
+    sets = [dict(s, floor=8) if s["name"] == CI else s for s in cfg["sets"]]
+    nodes = [n for n in cfg["nodes"] if not n.get("alwaysOn") or n["name"] == VM]
+    return dict(cfg, sets=sets, nodes=nodes)
 
 # (spritz queued, Simplytics queued, spritz runners, Simplytics runners), one
 # 30 s pass each: the opening of the 14 Nov contention (00:35:48-00:36:58Z,
@@ -30,7 +43,9 @@ TOGGLE = [(1, 0, 8, 1), (0, 1, 7, 1)] * 8
 
 class Replay:
     def __init__(self, dwell=None):
-        self.r = LiveRig(always_on=True)
+        self.r = LiveRig(always_on=True, world=trace_world)
+        apps = self.r.kube.apps
+        apps["zagreus-spritz-ci"]["spec"]["source"]["helm"]["valuesObject"]["maxRunners"] = 10
         if dwell is not None:
             self.r.cfg["shareDwellSeconds"] = dwell
         self.r.tick()

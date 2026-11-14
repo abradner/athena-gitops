@@ -646,8 +646,11 @@ def live_set_labels(name):
 # folded zagreus-ci-x64 into zagreus-ci: x64 with its own slot on 01 and 02,
 # a pinned floor of 2, and the always-on VM's one slot shared between the
 # two ("slotsShared"). The waker still supports all of it; the regression
-# tests for the shared slot and its relief run here.
+# tests for the shared slot and its relief run here. That world had one VM,
+# zag-amd64vm-01: zag-amd64vm-02 (14 Nov 2026) came after the fold, so it is
+# left out here.
 PRE_FOLD_CEILINGS = {CI: 8, X64: 3}
+PRE_FOLD_VM = "zag-amd64vm-01"
 
 
 def pre_fold_config(cfg):
@@ -662,6 +665,8 @@ def pre_fold_config(cfg):
     slots = {"zag-amd64-01": {CI: 2, X64: 1, BUILDER: 1}, "zag-amd64-02": {CI: 3, X64: 1}}
     nodes = []
     for n in cfg["nodes"]:
+        if n.get("alwaysOn") and n["name"] != PRE_FOLD_VM:
+            continue
         n = dict(n, slots=dict(slots.get(n["name"], n["slots"])))
         if n.get("alwaysOn"):
             n.update(slotsShared=True, slots={CI: 1, X64: 1})
@@ -673,10 +678,14 @@ class LiveRig(SharedRig):
     """The deployed waker.conf (three nodes, live allocatable), with the
     taints the node controller and Cilium put on a sleeping node."""
 
-    def __init__(self, mode="full", always_on=False, pre_fold=False):
+    def __init__(self, mode="full", always_on=False, pre_fold=False, world=None):
         self.cfg = live_config()
         if pre_fold:
             self.cfg = pre_fold_config(self.cfg)
+        if world:
+            # A recorded world the live file has since moved on from
+            # (test_dwell's replay, say).
+            self.cfg = world(self.cfg)
         self.cfg.update(mode=mode)
         if not always_on:
             # The Talos nodes alone, as before the always-on pilot (9 Nov
