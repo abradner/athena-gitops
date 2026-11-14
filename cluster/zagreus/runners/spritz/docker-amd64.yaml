@@ -19,7 +19,7 @@ spec:
   source:
     repoURL: ghcr.io/actions/actions-runner-controller-charts
     chart: gha-runner-scale-set
-    targetRevision: 0.15.0
+    targetRevision: 0.15.1
     helm:
       releaseName: spritz-docker-amd64
       valuesObject:
