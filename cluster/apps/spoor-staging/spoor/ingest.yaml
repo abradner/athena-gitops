@@ -1,0 +1,175 @@
+---
+# Spoor ingest (staging): the public event endpoint, per Simplytics/spoor
+# docs/ingest.md at the pinned commit. Its own minimal Rails app and image,
+# never part of the portal: puma on 3200, Prometheus on 9394 (not routed),
+# uid 1000, configuration from the environment only. The image refuses to boot
+# without any required setting, or with ClickHouse's `default` user.
+#
+# Public at ingest-staging.spoor.observer (HTTPRoute below), through the tunnel
+# only. Hosts send events with an `ingest`-scope credential issued in the
+# portal; there are no browser keys.
+#
+# Postgres: the portal's database, read through its own role
+# (spoor_staging_ingest: SELECT on the credential, tenancy and registry tables,
+# UPDATE of credentials.last_used_at only; Simplytics/spoor
+# apps/ingest/db/ingest_role.sql). ClickHouse: the collector's user and secret
+# (spoor-clickhouse-collector, external-secrets.yaml: INSERT only, no SELECT). Host, database and the CA come
+# from 1Password, never from this repo.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spoor-ingest
+  namespace: spoor-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spoor-ingest
+  template:
+    metadata:
+      labels:
+        app: spoor-ingest
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ingest
+          image: ghcr.io/simplytics/spoor-ingest:sha-e86c0d7f9254959366295f2a2a3dcff8a060bdcb
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3200
+            - name: metrics
+              containerPort: 9394
+          env:
+            # Proxies allowed to name the client in X-Forwarded-For: the pod
+            # range, as for the portal (Simplytics/spoor docs/ingest.md). The
+            # image refuses to boot without it.
+            - name: SPOOR_TRUSTED_PROXIES
+              value: "10.244.0.0/16"
+            - name: SSL_CERT_FILE
+              value: /etc/spoor/clickhouse/ca.crt
+            # CLICKHOUSE_HOST must come before the URL that interpolates it.
+            - name: CLICKHOUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-collector
+                  key: CLICKHOUSE_HOST
+            - name: SPOOR_CLICKHOUSE_URL
+              value: "https://$(CLICKHOUSE_HOST):8443"
+            - name: SPOOR_CLICKHOUSE_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-collector
+                  key: CLICKHOUSE_DATABASE
+            - name: CLICKHOUSE_INSERT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-collector
+                  key: CLICKHOUSE_USERNAME
+            - name: CLICKHOUSE_INSERT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spoor-clickhouse-collector
+                  key: CLICKHOUSE_PASSWORD
+          # DATABASE_URL and SECRET_KEY_BASE.
+          envFrom:
+            - secretRef:
+                name: spoor-ingest
+          # /ready checks Postgres and ClickHouse; /up only the process, so a
+          # store outage takes the pod out of the Service without restarts.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 3200
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: clickhouse-ca
+              mountPath: /etc/spoor/clickhouse
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: clickhouse-ca
+          secret:
+            secretName: spoor-clickhouse-collector
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spoor-ingest
+  namespace: spoor-staging
+  labels:
+    app: spoor-ingest
+spec:
+  selector:
+    app: spoor-ingest
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3200
+    - name: metrics
+      port: 9394
+      targetPort: 9394
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: spoor-ingest
+  namespace: spoor-staging
+spec:
+  # Tunnel only, as for the portal (portal.yaml): Cloudflare's edge serves the
+  # public certificate and cloudflared reaches the https-tunnel listener.
+  parentRefs:
+    - name: homelab-gateway
+      namespace: default
+      sectionName: https-tunnel
+  hostnames:
+    - "ingest-staging.spoor.observer"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/
+      backendRefs:
+        - name: spoor-ingest
+          port: 80
+---
+# vmagent scrape for ingest's own metrics (events accepted/refused by code,
+# batches by status, ClickHouse insert latency and errors).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: spoor-ingest
+  namespace: spoor-staging
+spec:
+  selector:
+    matchLabels:
+      app: spoor-ingest
+  endpoints:
+    - port: metrics
+      path: /metrics
