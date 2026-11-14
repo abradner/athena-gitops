@@ -1717,6 +1717,7 @@ class Waker:
         self.share_sticky = {}  # pool set -> the most it wanted in all over shareHoldSeconds
         self.blind_sets = set()  # sets whose queue could not be read on the last pass
         self.pass_held = set()  # shared pools lowered this pass: their raises wait for the next
+        self.pass_raised = {}  # shared pool -> the set raised in it this pass
         self.raised_at = {}  # pool set -> when its cap was last raised
         self.cap_changed_at = {}  # pool set -> when its cap was last written
         self.pool_nodes_at_change = {}  # pool -> its nodes' states at that pool's last write
@@ -2183,10 +2184,24 @@ class Waker:
             # A raise up to the set's floor is not held: a floor claims
             # beyond the room on purpose ("Floor"), so being offered a slot
             # the pool's held lower still offers too is its normal case.
-            to_floor = live is not None and live < int(s.get("floor", 0))
-            if live is not None and want > live and pool_of.get(name) in held_back and not to_floor:
-                LOG.info("%s maxRunners %s -> %s wanted; held until its pool's lower goes through",
-                         name, live, want)
+            floor = int(s.get("floor", 0))
+            to_floor = live is not None and live < floor
+            if live is not None and want > live and pool_of.get(name) in held_back:
+                if not to_floor:
+                    LOG.info("%s maxRunners %s -> %s wanted; held until its pool's lower goes through",
+                             name, live, want)
+                    continue
+                # Up to the floor only: past it, the slot would be offered
+                # to both sets while the pool's lower is held.
+                want = min(want, floor)
+            # One set raised per pool per pass: a second set raised in the
+            # pass's other apply would make the first give the slot straight
+            # back, two listener rebuilds for nothing (seen in the dwell's
+            # replay: 8 -> 9 -> 8 in one pass). It waits for the next pass.
+            raised_here = self.pass_raised.get(pool_of.get(name))
+            if live is not None and want > live and raised_here not in (None, name) and not to_floor:
+                LOG.info("%s maxRunners %s -> %s wanted; held: %s was raised in this pool this pass",
+                         name, live, want, raised_here)
                 continue
             if live is not None and want < live and not force and snap.get("uncertain"):
                 if recount:
@@ -2215,6 +2230,7 @@ class Waker:
                                                                                pool_of[name], pool_of)
                 if name in pool_of and (live is None or want > live):
                     self.raised_at[name] = self.clock()
+                    self.pass_raised[pool_of[name]] = name
         for name, (old, new) in changed.items():
             LOG.info("%s maxRunners %s -> %s%s", name, old, new,
                      "" if self.may_patch_caps else " (observe: not applied)")
@@ -2230,6 +2246,20 @@ class Waker:
                             for n in self.cfg["nodes"]
                             if any(node_slots(self.cfg, n, m) > 0 for m in members)))
 
+    @staticmethod
+    def nodes_changed(before, now):
+        """Whether a pool's nodes changed state between its last write and
+        now. A node read as "unknown" (its GET failed this pass, or that
+        pass) is no evidence either way, so it neither releases the dwell
+        nor, back again next pass, releases it a second time. No record yet
+        (no write since the start) counts as changed: there is no dwell."""
+        if before is None:
+            return True
+        b, n = dict(before), dict(now)
+        if set(b) != set(n):
+            return True
+        return any(b[k] != n[k] for k in b if "unknown" not in (b[k], n[k]))
+
     def dwell_holds(self, snap, target, states, pool_of, force):
         """The pool sets whose cap change this pass waits out the share
         dwell, with the time it ends. A change waits only when it comes
@@ -2242,7 +2272,11 @@ class Waker:
             "neither starves" rule): the whole pool moves now;
           - a set in the pool has its queue unread ("A set whose queue is
             unread gives its share back"): its share goes now;
-          - the live cap is outside its floor or ceiling."""
+          - the live cap is outside its floor or ceiling;
+          - it is a lower, and another set of the pool has been raised
+            since this set's own last write: that slot has already been
+            offered to the other set, so giving it up is not optional
+            (the waker applies twice a pass, so the raise can come first)."""
         dwell = self.cfg["shareDwellSeconds"]
         if force or dwell <= 0 or not pool_of:
             return {}
@@ -2254,10 +2288,12 @@ class Waker:
         held = {}
         for key in set(pool_of.values()):
             members = [m for m, k in pool_of.items() if k == key]
-            if self.pool_nodes(states, key, pool_of) != self.pool_nodes_at_change.get(key):
+            if self.nodes_changed(self.pool_nodes_at_change.get(key), self.pool_nodes(states, key, pool_of)):
                 continue
-            if any(self.share.get(m, 0) > 0 and runners.get(m, 0) == 0 and unstarted.get(m, 0) == 0
-                   for m in members):
+            # A set missing from runners (its scale set unreadable, a
+            # degraded pass) is not known to hold nothing: not starving.
+            if any(m in runners and self.share.get(m, 0) > 0
+                   and runners[m] == 0 and unstarted.get(m, 0) == 0 for m in members):
                 continue
             if any(m in self.blind_sets for m in members):
                 continue
@@ -2268,6 +2304,9 @@ class Waker:
                     continue
                 ceiling = (snap.get("ceilings") or {}).get(m)
                 if cap < floors.get(m, 0) or (ceiling is not None and cap > ceiling):
+                    continue
+                if want < cap and any(self.raised_at.get(o, float("-inf")) >= since
+                                      for o in members if o != m):
                     continue
                 held[m] = since + dwell
         return held
@@ -2364,6 +2403,7 @@ class Waker:
     def tick(self):
         now = self.clock()
         self.pass_held = set()
+        self.pass_raised = {}
         snap = self.observe()
         self.first_pass = False
         states = snap["states"]
