@@ -1,18 +1,24 @@
 ---
-# Spoor portal (production). PLACEHOLDER: replicas 0 until the Spoor night shift
-# pushes ghcr.io/simplytics/spoor-portal and sets the tag, the env and the
-# replica count here. At 0 the Deployment is Healthy with nothing to pull, so
-# the app syncs before the first image exists.
+# Spoor portal (production). Image and configuration per Simplytics/spoor
+# docs/deploy.md at the pinned commit: puma on 3000 (no Thruster), uid 1000,
+# configuration from the environment only. The image refuses to boot without
+# any required setting, or with ClickHouse's `default` user or database.
 #
-# Public at app.spoor.observer (HTTPRoute below), through the tunnel only. Until the portal has
-# replicas the route has no endpoints, and the Gateway answers 503.
+# Public at app.spoor.observer (HTTPRoute below), through the tunnel only.
+#
+# ClickHouse: the host comes from 1Password (spoor-clickhouse-app), never from
+# this repo; the URL is built from it with Kubernetes env interpolation. The
+# portal uses the app user for now; a read-only portal user is a follow-up.
+# SSL_CERT_FILE points OpenSSL (Net::HTTP) at the ClickHouse CA: the app has no
+# CA-file option of its own. It replaces the system roots for this process,
+# which is fine while ClickHouse is the portal's only outbound TLS peer.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: spoor-portal
   namespace: spoor-production
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app: spoor-portal
@@ -23,55 +29,73 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: portal
-          image: ghcr.io/simplytics/spoor-portal:placeholder
+          image: ghcr.io/simplytics/spoor-portal:sha-2b3dc339b0b43fe065b8b376bbcfbec064fad74a
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: 3000
           env:
-            - name: HTTP_PORT
-              value: "8080"
-            # Passkey sign-in (Simplytics/spoor docs/deploy.md). The origin and
-            # relying-party id must equal the public host exactly, or every
-            # WebAuthn ceremony fails; they change only with the hostname.
+            - name: SPOOR_PORTAL_HOSTS
+              value: "app.spoor.observer"
+            # Passkey sign-in. The origin and relying-party id must equal the
+            # public host exactly, or every WebAuthn ceremony fails. Changing
+            # the rp id orphans every passkey: it changes only with the host.
             - name: SPOOR_WEBAUTHN_ORIGIN
               value: "https://app.spoor.observer"
             - name: SPOOR_WEBAUTHN_RP_ID
               value: "app.spoor.observer"
-            - name: CLICKHOUSE_CA_FILE
+            - name: SSL_CERT_FILE
               value: /etc/spoor/clickhouse/ca.crt
             # Named keys, not envFrom, for the ClickHouse secret: it also holds
             # ca.crt, which is not a valid variable name (mounted below).
+            # CLICKHOUSE_HOST must come before the URL that interpolates it.
             - name: CLICKHOUSE_HOST
               valueFrom:
                 secretKeyRef:
                   name: spoor-clickhouse-app
                   key: CLICKHOUSE_HOST
-            - name: CLICKHOUSE_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: spoor-clickhouse-app
-                  key: CLICKHOUSE_PORT
-            - name: CLICKHOUSE_DATABASE
+            - name: SPOOR_CLICKHOUSE_URL
+              value: "https://$(CLICKHOUSE_HOST):8443"
+            - name: SPOOR_CLICKHOUSE_DATABASE
               valueFrom:
                 secretKeyRef:
                   name: spoor-clickhouse-app
                   key: CLICKHOUSE_DATABASE
-            - name: CLICKHOUSE_USERNAME
+            - name: SPOOR_CLICKHOUSE_USER
               valueFrom:
                 secretKeyRef:
                   name: spoor-clickhouse-app
                   key: CLICKHOUSE_USERNAME
-            - name: CLICKHOUSE_PASSWORD
+            - name: SPOOR_CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: spoor-clickhouse-app
                   key: CLICKHOUSE_PASSWORD
+          # DATABASE_URL and SECRET_KEY_BASE.
           envFrom:
             - secretRef:
                 name: spoor-portal
+          # /up is exempt from host authorisation and needs no Host header.
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
           volumeMounts:
             - name: clickhouse-ca
               mountPath: /etc/spoor/clickhouse
@@ -82,15 +106,14 @@ spec:
               memory: 256Mi
             limits:
               memory: 512Mi
-          # Pod Security "restricted". If the image needs a writable root or a
-          # specific uid, the Spoor night shift says so here, with the reason.
+          # Pod Security "restricted". The root filesystem stays writable: the
+          # app writes tmp/ and log/ under its directory and shells out to Bun
+          # (registry validation), and a read-only root is not yet verified
+          # against all three. Two-way door: emptyDirs on tmp/ and log/ later.
           securityContext:
-            runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-            seccompProfile:
-              type: RuntimeDefault
       volumes:
         - name: clickhouse-ca
           secret:
@@ -112,7 +135,7 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: 8080
+      targetPort: 3000
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
