@@ -224,7 +224,8 @@ spec:
   #
   # This port is not reachable from the internet (checked 2026-09-04): the
   # proxy in front forwards only 443 and 80 here. Inside the network it is
-  # reachable wherever the Gateway's address is, and since 2026-11-14 it
+  # reachable wherever the Gateway's address is, and on every node's address
+  # too (the default class allocates NodePorts), and since 2026-11-14 it
   # serves no internal host there, only the public ones.
   #
   # It has to live on its own port. Two listeners on 443 where one has no
