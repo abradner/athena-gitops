@@ -1,0 +1,110 @@
+---
+# The internal Gateway: operator UIs (*.athena.asn.casa) and apps that are
+# live in-cluster but not yet public (kaff). Its routes name it in
+# parentRefs; homelab-gateway (gateway.yaml) carries only public hosts.
+#
+# Why a second Gateway rather than more listeners on the first: Cilium builds
+# ONE Envoy listener per Gateway, and every HTTPS listener on it shares one
+# route table (see the measured note on https-tunnel in gateway.yaml). A
+# route's sectionName does not keep it off the Gateway's other listeners, so
+# separation by listener is not a boundary. Separation by Gateway is: each
+# Gateway gets its own Envoy listener and its own LoadBalancer Service, and
+# traffic to one Service's address is redirected only to that Gateway's
+# listener. Re-check that on a Cilium or Gateway API upgrade (same caveat as
+# gateway.yaml): a request to homelab-gateway's address with SNI and Host set
+# to a host served here must 404, and the same request to this Gateway's
+# address must not.
+#
+# Deliberately absent:
+# - an http (:80) listener. Nothing here is served in plaintext, so there is
+#   no redirect route to maintain and no plaintext path to these hosts.
+# - a listener without a hostname (like https-tunnel). TLS to this address
+#   with any SNI other than the hostnames below fails the handshake, and the
+#   tunnel never reaches this Gateway.
+#
+# The address is pinned (infrastructure annotation, read by LB-IPAM), so a
+# rebuild or a re-created Service cannot hand it to another LoadBalancer and
+# leave whatever fronts this Gateway pointing at the wrong thing. It is an
+# address from homelab-pool (bootstrap/kubernetes/gateway-homelab-pool.yaml).
+#
+# Own GatewayClass so the generated Service can carry its own settings
+# (CiliumGatewayClassConfig below): no NodePorts, so this Gateway answers only
+# on its LoadBalancer address, not on every node's address as well.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: athena-internal
+  namespace: default
+  annotations:
+    # Wave 4, as homelab-gateway: the listeners reference certificate
+    # Secrets that cert-manager issues in an earlier wave.
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  gatewayClassName: cilium-internal
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/ips: "10.10.80.242"
+  listeners:
+  - name: https-athena
+    port: 443
+    protocol: HTTPS
+    hostname: "*.athena.asn.casa"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: athena-wildcard-tls
+  - name: https-kaff
+    port: 443
+    protocol: HTTPS
+    hostname: "kaff.asn.casa"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: kaff-asn-casa-tls
+  - name: https-kaff-staging
+    port: 443
+    protocol: HTTPS
+    hostname: "staging.kaff.asn.casa"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: staging-kaff-asn-casa-tls
+---
+# The class athena-internal uses: Cilium's controller, with the generated
+# Service's NodePorts turned off. homelab-gateway stays on the default
+# `cilium` class.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cilium-internal
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  controllerName: io.cilium/gateway-controller
+  description: Cilium, generated Service without NodePorts (internal Gateway)
+  parametersRef:
+    group: cilium.io
+    kind: CiliumGatewayClassConfig
+    name: internal
+    namespace: default
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumGatewayClassConfig
+metadata:
+  name: internal
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  service:
+    type: LoadBalancer
+    allocateLoadBalancerNodePorts: false

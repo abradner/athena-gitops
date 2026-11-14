@@ -5,6 +5,12 @@ metadata:
   namespace: default
 spec:
   gatewayClassName: cilium
+  # Pinned from the first apply, so a rebuilt cluster gets the same address
+  # whatever else asks for one first. Must match
+  # cluster/core/networking/gateway.yaml, which adopts this Gateway.
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/ips: "10.10.80.240"
   listeners:
   - name: http
     port: 80
@@ -14,6 +20,14 @@ spec:
       namespaces:
         from: All
 ---
+# The Argo CD UI route names athena-internal, which bootstrap does NOT create:
+# cluster-core does (cluster/core/networking/gateway-internal.yaml), and it is
+# HTTPS-only, so it is programmed only once cert-manager has issued the
+# certificates. Until then the route is unattached and the UI has no Gateway
+# path at all. During bootstrap, reach it with
+#   kubectl -n argocd port-forward svc/argocd-server 8080:80
+# (http://localhost:8080). The HTTP-only homelab-gateway above carries no
+# internal host and never should.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
