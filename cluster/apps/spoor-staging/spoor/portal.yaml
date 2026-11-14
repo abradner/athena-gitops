@@ -9,7 +9,7 @@
 # ClickHouse: the host comes from 1Password (spoor-clickhouse-portal), never from
 # this repo; the URL is built from it with Kubernetes env interpolation. The
 # portal reads with its own user: SELECT on spoor_events and spoor_ingest_rejects
-# only, under a read-only profile (readonly = 1, 10 s, 100,000 rows); no writes.
+# only, under a read-only profile (readonly = 1, 10 s, 100,000 rows, 1 GiB); no writes.
 # The ClickHouse CA is trusted for ClickHouse connections only
 # (CLICKHOUSE_CA_FILE, Simplytics/spoor #71), never through SSL_CERT_FILE, which
 # would replace OpenSSL's system roots for the whole process and break every
