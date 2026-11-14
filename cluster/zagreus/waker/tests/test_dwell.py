@@ -134,7 +134,7 @@ class PingPong(unittest.TestCase):
 
     def test_with_the_dwell_neither_pool_set_goes_back_within_a_window(self):
         out = Replay().run_all(OPENING + TOGGLE)
-        self.assertEqual((len(out[SIM]), len(out[CI])), (2, 5), out)
+        self.assertEqual((len(out[SIM]), len(out[CI])), (3, 5), out)
         for name in (CI, SIM):
             self.assertEqual(ping_pongs(out[name], self.WINDOW), 0, (name, out[name]))
             # Nor two writes to one set in one pass (its two applies).
@@ -261,9 +261,26 @@ class Exceptions(unittest.TestCase):
         self.assertEqual(rp.r.kube.caps()[CI], floor)
 
     def test_a_raise_past_the_pools_hold_goes_only_to_the_floor(self):
-        # zagreus-ci's change is held by the dwell, so the pool's raises
-        # wait. Simplytics, put below its floor (1) by hand, is raised at
-        # once, but only to its floor, not to the 2 its share would give.
+        # zagreus-ci's lower is held by the dwell (its live cap is above
+        # what sharing gives it), so the pool's raises wait. Simplytics, put
+        # below its floor (1) by hand, is raised at once, but only to its
+        # floor, not to the 2 its share would give.
+        rp = Replay()
+        rp.run_all((OPENING + TOGGLE)[:3])
+        rp.r.waker.cap_changed_at[CI] = rp.r.clock()
+        rp.r.waker.raised_at = {}
+        rp.r.kube.ars[("arc-runners", CI)]["spec"]["maxRunners"] = 10
+        rp.r.kube.ars[("arc-runners", SIM)]["spec"]["maxRunners"] = 0
+        rp.set_pass(1, 3, 8, 1)
+        mark = len(rp.r.kube.writes)
+        with rp.capture() as logs:
+            rp.r.tick(advance=30)
+        self.assertTrue([m for m in logs if m.startswith(CI) and "held by the share dwell" in m], logs)
+        self.assertEqual(rp.writes(SIM, mark), [1])
+
+    def test_a_held_raise_does_not_hold_a_siblings_raise(self):
+        # Only a held lower holds the pool's raises: a held raise leaves its
+        # set at the lower cap, so the sibling is offered nothing twice.
         rp = Replay()
         rp.run_all((OPENING + TOGGLE)[:3])
         rp.r.waker.cap_changed_at[CI] = rp.r.clock()
@@ -273,8 +290,9 @@ class Exceptions(unittest.TestCase):
         mark = len(rp.r.kube.writes)
         with rp.capture() as logs:
             rp.r.tick(advance=30)
-        self.assertTrue([m for m in logs if m.startswith(CI) and "held by the share dwell" in m], logs)
-        self.assertEqual(rp.writes(SIM, mark), [1])
+        held = [m for m in logs if m.startswith(CI) and "held by the share dwell" in m]
+        self.assertTrue(held and int(held[0].split()[4].rstrip(";")) > int(held[0].split()[2]), logs)
+        self.assertEqual(rp.writes(SIM, mark), [2])
 
     def test_a_forced_lower_is_not_held(self):
         # The sleep procedure lowers with force before a cordon: never held.
