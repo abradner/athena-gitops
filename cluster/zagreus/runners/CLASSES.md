@@ -1,10 +1,11 @@
 # Runner classes: one way to ask for a runner (design, 12 Nov 2026)
 
-**Status: approved 12 Nov 2026. Steps 1 and 2 are live (13 Nov 2026); this file's step 3 is the change that folds the x64 set; step 4 is not built.** Asked for by the operator on 12 Nov 2026, once
+**Status: approved 12 Nov 2026. Steps 1 and 2 are live (13 Nov 2026), step 3 since 14 Nov 2026. Step 4's agent is built (spritz#1654, `deploy/ci-runner/overflow/`, not merged) and not yet installed on any Mac.** Asked for by the operator on 12 Nov 2026, once
 the classic LXC runners were stopped: every runner can run any job, light and
 heavy stay apart, and each job says which architectures it accepts. The Macs
-are to take work only when zagreus has not picked it up (today they take it
-first: below). This file is the design; each
+are to take work only when zagreus has not picked it up. Until step 4 is
+installed they take none: their standing runners carry neither class label,
+and every job asks for one. This file is the design; each
 step below lands as its own PR, and this file is updated as they land.
 
 ## Before (12 Nov 2026, when this was designed)
@@ -90,7 +91,12 @@ Mac that is simply registered with `heavy, ARM64` would be preferred. Instead:
   with it (`ACTIONS_RUNNER_INPUT_JITCONFIG`: the image's ARC mode, already
   built). The runner takes one job and is gone.
 - **Not from a bot** uses the rule spritz's step 2 implements
-  (`script/ci_bot_decision.sh`), and the agent applies the same script.
+  (`script/ci_bot_decision.sh`). *Corrected 14 Nov 2026:* this said the
+  agent applies the same script. It does not need to: the script's verdict
+  already decides `runs-on`, and a bot run's heavy jobs name `zagreus-ci`, a
+  label no Mac carries, so its jobs never match the agent's filter nor any
+  Mac runner. A second check in the agent would change nothing that could
+  happen (AGENTS.md's deletion test).
   **The line is merging.** A person merging a bot's pull request is the
   review; after that the code is main's, and every later run builds on it.
   So it looks for *unmerged* bot code: the run's actor, a pull request's
