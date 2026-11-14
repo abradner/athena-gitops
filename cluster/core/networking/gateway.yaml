@@ -224,6 +224,9 @@ spec:
   #   kaff.asn.casa              -> 200   (does NOT name it — served anyway)
   #   nosuch.example             -> 404
   #
+  # (2026-11-14: argo and kaff have since been detached from this gateway, so
+  # they now 404 here; the probe above records what was seen on that date.)
+  #
   # So the second parentRef on the eleven public routes is documentation and
   # future-proofing, NOT a security control: it keeps those routes working if
   # Cilium ever tightens to spec, and it makes route status read Accepted. Do

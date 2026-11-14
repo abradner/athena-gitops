@@ -10,7 +10,9 @@ metadata:
   namespace: argocd
 spec:
   parentRefs:
-  - name: homelab-gateway
+  # Detached from the shared gateway 2026-11-14. Internal hosts move to their own
+  # internal-only Gateway (athena-internal); until it exists this route is unattached.
+  - name: athena-internal
     namespace: default
     # HTTPS only — plaintext hits the catch-all redirect route instead
     sectionName: https-athena
