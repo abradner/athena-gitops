@@ -9,9 +9,11 @@
 # ClickHouse: the host comes from 1Password (spoor-clickhouse-portal), never from
 # this repo; the URL is built from it with Kubernetes env interpolation. The
 # portal reads with its own user (SELECT on spoor_<env>.* only; no writes).
-# SSL_CERT_FILE points OpenSSL (Net::HTTP) at the ClickHouse CA: the app has no
-# CA-file option of its own. It replaces the system roots for this process,
-# which is fine while ClickHouse is the portal's only outbound TLS peer.
+# The ClickHouse CA is trusted for ClickHouse connections only
+# (CLICKHOUSE_CA_FILE, Simplytics/spoor #71), never through SSL_CERT_FILE, which
+# would replace OpenSSL's system roots for the whole process and break every
+# other TLS peer (the portal's own events go to public ingest, a public
+# certificate). Images from #71 on refuse to boot with SSL_CERT_FILE set.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -83,7 +85,7 @@ spec:
             # without it; older images ignore it.
             - name: SPOOR_TRUSTED_PROXIES
               value: "10.244.0.0/16"
-            - name: SSL_CERT_FILE
+            - name: CLICKHOUSE_CA_FILE
               value: /etc/spoor/clickhouse/ca.crt
             # Named keys, not envFrom, for the ClickHouse secret: it also holds
             # ca.crt, which is not a valid variable name (mounted below).
