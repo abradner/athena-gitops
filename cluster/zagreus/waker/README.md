@@ -643,21 +643,31 @@ These still act at once, as before:
 
 A held lower still holds the pool's raises, so a slot is never offered to
 both, except a raise up to a floor, which goes to the floor and no
-further. And one set is raised per pool per pass: a second raise in the
+further. A held raise holds nothing else: its set stays at the lower cap,
+so a sibling's raise (a set turning starving in the pass's second apply,
+say) is offered nothing twice and goes at once. That holds because a held
+raise always targets the set's share: a target the floor lifted starts
+below the floor, which the dwell never holds. And one set is raised per pool per pass: a second raise in the
 pass's other apply made the first give its slot straight back (8 -> 9 ->
 8 in one pass). A held change logs once: "held by the share dwell until
 HH:MM:SS".
 
 `test_dwell.py` replays the 14 Nov opening and the shape that
-ping-ponged. Without the dwell: 15 Simplytics writes with 13 back-and-forth
-pairs (A -> B -> A within 120 s), and 19 zagreus-ci writes with 17. With it:
-2 and 5 writes, no pairs, and no set written twice in a pass. Each
+ping-ponged. Without the dwell (`shareDwellSeconds` 0, every other rule
+here in place, the one raise per pool per pass included): 15 Simplytics
+writes with 13 back-and-forth pairs (A -> B -> A within 120 s), and 19
+zagreus-ci writes with 17. With it: 3 and 5 writes, no pairs, and no set
+written twice in a pass. Each
 exception and rule, removed, fails a test.
 
 **What the dwell costs.** A set that holds a runner and has a backlog is
 not "starving", so a slot moving to it by the fair share waits up to 120 s
 behind the other set's held lower. The same for a slot moving back. A set
-holding nothing is still served at once.
+holding nothing is still served at once. Two deliberate edges: a node read
+as "unknown" does not count as a change, so a lower it would have caused
+waits out the dwell; and a lower that comes from room shrinking on paper
+(runner pods coming and going, no node changing state) is sharing as far
+as the dwell can tell, so it waits too, up to 120 s.
 
 **What it costs.** Every slot that moves between the sets is a cap change
 on both, so a listener rebuild on both, and it reaches the set getting it
