@@ -230,9 +230,11 @@ spec:
   # So the second parentRef on the eleven public routes is documentation and
   # future-proofing, NOT a security control: it keeps those routes working if
   # Cilium ever tightens to spec, and it makes route status read Accepted. Do
-  # not treat it as a boundary. The only thing keeping internal hostnames off
-  # the tunnel is the asn.casa deny rule in cluster/core/cloudflared/config.yaml,
-  # which is verified and single — so treat that rule as load-bearing.
+  # not treat it as a boundary. Internal hostnames are kept off the tunnel by
+  # not being attached to this Gateway at all: they live on athena-internal
+  # (gateway-internal.yaml), which has no tunnel listener. The asn.casa deny
+  # rule in cluster/core/cloudflared/config.yaml is the second layer; keep it.
+  # Never attach an internal-only route here, whatever sectionName it names.
   #
   # This port is not reachable from the internet (checked), only from the LAN
   # and the mesh, where those hostnames are already reachable via HAProxy.
