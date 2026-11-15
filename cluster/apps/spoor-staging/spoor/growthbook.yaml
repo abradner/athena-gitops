@@ -1,0 +1,167 @@
+---
+# GrowthBook (staging): the feature-flag and experiment service behind Spoor's flags
+# (Simplytics' L10). The app runs here; its state does not: the store is a FerretDB
+# server on the hypervisor tier, outside this cluster (Placement Doctrine rule 1), reached
+# over TLS with a private CA. Everything about the
+# store (address, user, password, CA) comes from 1Password (external-secrets.yaml,
+# `growthbook`).
+#
+# No route: reached by `kubectl port-forward` only (the front end on 3000 and the API on
+# 3100, which is why APP_ORIGIN and API_HOST name localhost). Moving it onto the
+# athena-internal Gateway is a follow-up: both origins change together then, because
+# GrowthBook's auth cookies need APP_ORIGIN and API_HOST to share a root domain.
+#
+# First boot: restart the Deployment once after GrowthBook's first start
+# (`kubectl -n spoor-staging rollout restart deployment/growthbook`). On FerretDB its
+# concurrent index creation hits a few deadlocks in the backing database and loses those
+# indexes;
+# GrowthBook creates its indexes again at every start, so one restart puts them back
+# (measured in the store's container test).
+#
+# One replica, Recreate: GrowthBook's background jobs (agenda) take their locks in the
+# store, and staging needs no second pod during a rollout.
+#
+# The image runs two Node processes (front end on 3000, back end on 3100) under its own
+# supervisor (scripts/run-apps.js), which by default restarts neither and exits only when
+# both have stopped: a dead front end would leave the pod Running and Ready. Hence
+# PM2_AUTORESTART (a crashed process restarts; more than 5 restarts in 60 s and the
+# supervisor exits, so the kubelet restarts the pod), readiness on the front end's port,
+# and liveness on the back end's health check.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: growthbook
+  namespace: spoor-staging
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: growthbook
+  template:
+    metadata:
+      labels:
+        app: growthbook
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: growthbook
+          # 5.2.0, pinned to the multi-arch index (amd64 and arm64).
+          image: growthbook/growthbook:5.2.0@sha256:74844e961f4fb65785ddb351bb2417a33a9cbcf0b1aa73774709aee986324afb
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: api
+              containerPort: 3100
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: APP_ORIGIN
+              value: "http://localhost:3000"
+            - name: API_HOST
+              value: "http://localhost:3100"
+            # No usage telemetry (hashed ids, IP address, user agent) to GrowthBook.
+            - name: DISABLE_TELEMETRY
+              value: "true"
+            # No SMTP: invites and password resets are done by an admin in the UI.
+            - name: EMAIL_ENABLED
+              value: "false"
+            - name: PM2_AUTORESTART
+              value: "true"
+            # Memory: two Node processes share the 2Gi limit, and each would size its heap
+            # from the whole limit. Cap each heap, and let the supervisor restart a process
+            # past 900M (its default, 6G, is above the limit, so the OOM killer would act
+            # first and take the whole pod).
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=768"
+            - name: PM2_MAX_MEMORY_RESTART
+              value: "900M"
+            # Named keys, not envFrom: the secret also holds ca.crt (mounted below).
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: growthbook
+                  key: MONGODB_URI
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: growthbook
+                  key: JWT_SECRET
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: growthbook
+                  key: ENCRYPTION_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          # The back end's /healthcheck (port 3100) answers 200 once it is up; the first
+          # start creates ~40 collections and ~350 indexes, so the startup probe allows
+          # 10 minutes before liveness takes over. Readiness is the front end's port (the
+          # UI people port-forward to); liveness is the back end's health check.
+          startupProbe:
+            httpGet:
+              path: /healthcheck
+              port: api
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: api
+            periodSeconds: 30
+            failureThreshold: 4
+          volumeMounts:
+            - name: mongo-ca
+              mountPath: /etc/growthbook/mongo-ca
+              readOnly: true
+            # UPLOAD_METHOD defaults to local: screenshots and uploads land here and are
+            # lost with the pod. Accepted for staging.
+            - name: uploads
+              mountPath: /usr/local/src/app/packages/back-end/uploads
+      volumes:
+        - name: mongo-ca
+          secret:
+            secretName: growthbook
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: uploads
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: growthbook
+  namespace: spoor-staging
+spec:
+  type: ClusterIP
+  selector:
+    app: growthbook
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+    - name: api
+      port: 3100
+      targetPort: api
