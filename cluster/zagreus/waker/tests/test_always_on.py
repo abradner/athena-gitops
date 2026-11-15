@@ -228,6 +228,17 @@ class FloorWithAlwaysOn(unittest.TestCase):
         self.assertEqual(self.floor, want)
         self.assertEqual(self.floor, 9)
 
+    def test_a_ready_node_that_runs_no_ci_holds_no_floor_back(self):
+        # 15 Nov 2026: zag-amd64vm-01 is always on, Ready and slotless (it
+        # hosts Argo). A slotless awake runner node switches the floors off
+        # (a claim could land there); a node that runs no CI must not, or
+        # zagreus-ci's floor of 9 and Simplytics' of 1 vanish while it is up.
+        _, caps = self.caps(**self.world(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                                            "zag-amd64-03": self.ASLEEP}))
+        self.assertTrue(w.runs_no_ci(next(n for n in self.cfg["nodes"] if n["name"] == "zag-amd64vm-01")))
+        self.assertEqual(caps["zagreus-ci"], self.floor)
+        self.assertEqual(caps["zagreus-simplytics-ci"], 1)
+
     def test_the_cap_does_not_change_from_asleep_to_01_and_02_awake(self):
         _, asleep = self.caps(**self.world(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
                                               "zag-amd64-03": self.ASLEEP}))
@@ -679,6 +690,36 @@ class LiveFiles(unittest.TestCase):
         self.assertEqual({n: vm["slots"] for n, vm in vms.items()}, want)
         for vm in vms.values():
             self.assertFalse(vm.get("slotsShared", False), vm["name"])
+
+    def test_every_scale_set_that_could_land_on_a_no_ci_node_excludes_it(self):
+        # A node waker.conf declares runs no CI (always on, empty slots) must
+        # be kept off by every scale set whose pods tolerate the always-on
+        # taint, by name (kubernetes.io/hostname NotIn): the waker's floors
+        # count on no claim landing there (floor_caps, runs_no_ci). Read as
+        # text, as the other manifest checks are (CI has no YAML library).
+        no_ci = [n["name"] for n in live_config()["nodes"] if w.runs_no_ci(n)]
+        if not no_ci:
+            self.skipTest("no node declared to run no CI")
+        checked = 0
+        for sub in ("spritz", "simplytics"):
+            d = os.path.join(self.RUNNERS, sub)
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".yaml"):
+                    continue
+                with open(os.path.join(d, f)) as fh:
+                    docs = fh.read().split("\n---\n")
+                for doc in docs:
+                    if "kind: Application\n" not in doc or f"- key: {TAINT}\n" not in doc:
+                        continue
+                    name = re.search(r"^  name: (\S+)$", doc, re.M).group(1)
+                    excluded = set()
+                    for m in re.finditer(r"- key: kubernetes\.io/hostname\n\s+operator: NotIn\n\s+values: \[([^\]]*)\]", doc):
+                        excluded |= {v.strip() for v in m.group(1).split(",")}
+                    for node in no_ci:
+                        self.assertIn(node, excluded, f"{name} ({sub}/{f}) may land on {node}")
+                    checked += 1
+        # spritz ci, simplytics ci, services, builder-amd64.
+        self.assertGreaterEqual(checked, 4)
 
     def test_the_waker_tolerates_the_always_on_taint(self):
         if not self.always_on_nodes():

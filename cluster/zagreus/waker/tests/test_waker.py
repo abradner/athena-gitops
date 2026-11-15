@@ -2583,8 +2583,9 @@ class Floor(unittest.TestCase):
         # zagreus-ci's floor is the always-on VMs' slots plus the room of 01
         # and 02: 8 after the fold of 13 Nov 2026 (the old zagreus-ci 6 and
         # x64 2), 9 once zag-amd64vm-02 joined and 10 since zag-amd64vm-03
-        # joined, both on 14 Nov (README, "zagreus-ci's floor").
-        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 10, "zagreus-simplytics-ci": 1})
+        # joined, both on 14 Nov (README, "zagreus-ci's floor"); 9 again
+        # since 15 Nov, when zag-amd64vm-01 stopped running CI (it hosts Argo).
+        self.assertEqual(floors, {"zagreus-docker-amd64": 1, "zagreus-ci": 9, "zagreus-simplytics-ci": 1})
 
     def test_a_negative_floor_is_refused(self):
         cfg = production_config()

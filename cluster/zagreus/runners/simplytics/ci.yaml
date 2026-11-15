@@ -70,6 +70,12 @@ spec:
                         - key: zagreus.asn.casa/role
                           operator: In
                           values: [amd64-runner]
+                        # zag-amd64vm-01 runs Argo, not CI (15 Nov 2026): its
+                        # waker.conf entry has no slots, and the waker's
+                        # floors count on no claim landing there.
+                        - key: kubernetes.io/hostname
+                          operator: NotIn
+                          values: [zag-amd64vm-01]
                 preferredDuringSchedulingIgnoredDuringExecution:
                   - weight: 50
                     preference:

@@ -30,6 +30,9 @@ def trace_world(cfg):
     the world they were recorded in."""
     sets = [dict(s, floor=8) if s["name"] == CI else s for s in cfg["sets"]]
     nodes = [n for n in cfg["nodes"] if not n.get("alwaysOn") or n["name"] == VM]
+    # zag-amd64vm-01 had its one zagreus-ci slot then; it runs Argo, not CI,
+    # since 15 Nov 2026 (slots {} in waker.conf).
+    nodes = [dict(n, slots={CI: 1}) if n["name"] == VM else n for n in nodes]
     return dict(cfg, sets=sets, nodes=nodes)
 
 # (spritz queued, Simplytics queued, spritz runners, Simplytics runners), one
