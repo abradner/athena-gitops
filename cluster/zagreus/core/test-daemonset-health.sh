@@ -4,7 +4,7 @@
 
 set -u
 T=$(mktemp -d)
-ruby -ryaml -e 'd=YAML.load_file("cluster/zagreus/core/argocd.yaml"); cm={"apiVersion"=>"v1","kind"=>"ConfigMap","metadata"=>{"name"=>"argocd-cm","namespace"=>"argocd"},"data"=>d.dig("spec","source","helm","valuesObject","configs","cm")}; File.write(ARGV[0], cm.to_yaml)' "$T/cm.yaml"
+ruby -ryaml -e 'd=YAML.load_file("cluster/zagreus/core/argocd.yaml", aliases: true); cm={"apiVersion"=>"v1","kind"=>"ConfigMap","metadata"=>{"name"=>"argocd-cm","namespace"=>"argocd"},"data"=>d.dig("spec","source","helm","valuesObject","configs","cm")}; File.write(ARGV[0], cm.to_yaml)' "$T/cm.yaml"
 mkds() { cat > "$T/$1.yaml" <<EOF
 apiVersion: apps/v1
 kind: DaemonSet
