@@ -1,0 +1,151 @@
+# Simplytics CI jobs that need a Docker daemon (`runs-on:
+# zagreus-simplytics-services`, through Simplytics' RUNNER_CI_SERVICES
+# repository variable): spoor's ci.yml jobs with `services:` containers
+# (Postgres 18, ClickHouse) and its docker build checks (`collector`,
+# `image`). Org-level, like ci.yaml. Added 15 Nov 2026, when GitHub stopped
+# starting hosted jobs on the Simplytics org.
+#
+# What is different from ci.yaml, and why:
+#
+# - A privileged dind sidecar, as spritz's builders (spritz/docker-amd64.yaml)
+#   have. A privileged container is root on its node, so a job here can reach
+#   anything on the node it lands on. Hence the next two points.
+# - The always-on VMs only (zagreus.asn.casa/class=always-on), never the
+#   metal nodes. A VM holds one heavy pod at a time, so a job here shares its
+#   node with no other tenant's live job, and it is a KVM guest, so a node
+#   escape lands in a VM that runs only CI. It also keeps this set off
+#   zag-amd64-01 and zag-arm64-02, where spritz's release builders keep their
+#   docker data roots (hostPath /var/lib/arc-docker): a job that could write
+#   there could poison spritz's published images.
+# - No hostPath at all, and the dind data root on an emptyDir: every job
+#   starts from an empty daemon, and nothing it pulls or builds outlives it
+#   (the "fresh VM" property the hosted runners gave). The cost: Postgres and
+#   ClickHouse are pulled from Docker Hub on every job.
+# - The runner image's entrypoint is bypassed. It starts its own Postgres on
+#   127.0.0.1:5432, which is the port the jobs' Postgres service publishes
+#   (dind's published ports live in the pod's network namespace, shared with
+#   the runner container), so the service would fail to bind. The command
+#   below is the entrypoint's ARC-mode tail: run.sh as the runner user, which
+#   reads ACTIONS_RUNNER_INPUT_JITCONFIG itself.
+# - Not in the node waker's config. The VMs never sleep, so there is nothing
+#   to wake for this set, and a pool slot it does not count is a slot the
+#   waker may offer zagreus-ci; such a spritz pod waits Pending until the VM
+#   frees, or lands on metal once awake. maxRunners is the static ceiling:
+#   one per VM in service.
+#
+# Bot and fork PRs never reach this set: spoor's ci.yml sends them to
+# RUNNER_BOT instead of the class variables. Keep RUNNER_BOT off this set.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-simplytics-services
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: simplytics-services
+      valuesObject:
+        runnerScaleSetName: zagreus-simplytics-services
+        # ARC writes labels only when it CREATES the scale set (ci.yaml).
+        scaleSetLabels: [self-hosted, linux, simplytics-services]
+        githubConfigUrl: https://github.com/Simplytics
+        githubConfigSecret: arc-github-app-simplytics
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 0
+        # One per always-on VM that can take it: zag-amd64vm-01 and -02
+        # (zag-amd64vm-03 is stopped, 15 Nov 2026). Spritz's first, no-wake
+        # jobs use the same VMs, so keep this modest.
+        maxRunners: 2
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 60
+            nodeSelector:
+              zagreus.asn.casa/class: always-on
+            tolerations:
+              - key: zagreus.asn.casa/always-on
+                operator: Exists
+                effect: NoSchedule
+            initContainers:
+              - name: init-dind-externals
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                command: ["cp", "-r", "/opt/actions-runner/externals/.", "/tmpDir/"]
+                volumeMounts:
+                  - {name: dind-externals, mountPath: /tmpDir}
+              - name: dind
+                image: docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
+                restartPolicy: Always # native sidecar
+                args: ["dockerd", "--host=unix:///var/run/dind/docker.sock", "--group=$(DOCKER_GROUP_GID)"]
+                env:
+                  - {name: DOCKER_GROUP_GID, value: "1000"}
+                securityContext:
+                  privileged: true
+                startupProbe:
+                  exec: {command: ["docker", "-H", "unix:///var/run/dind/docker.sock", "info"]}
+                  periodSeconds: 5
+                  failureThreshold: 24
+                # Postgres, ClickHouse and the image builds run in here.
+                # Requests: with the runner's, one heavy slot (6 GiB, 1.5 CPU),
+                # what a VM holds.
+                resources:
+                  requests: {cpu: 500m, memory: 3Gi, ephemeral-storage: 10Gi}
+                  limits: {memory: 5Gi, ephemeral-storage: 30Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: dind-externals, mountPath: /opt/actions-runner/externals}
+                  - {name: docker-data, mountPath: /var/lib/docker}
+            containers:
+              - name: runner
+                # spritz's runner image, as ci.yaml (mise for the toolchain
+                # action, the docker CLI). Pinned by digest; move with ci.yaml.
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                imagePullPolicy: IfNotPresent
+                # The entrypoint's ARC-mode tail without its Postgres (header).
+                command: ["/usr/bin/tini", "--", "gosu", "runner", "env", "HOME=/home/runner", "USER=runner", "LOGNAME=runner", "/opt/actions-runner/run.sh"]
+                env:
+                  - {name: DOCKER_HOST, value: unix:///var/run/dind/docker.sock}
+                resources:
+                  requests: {cpu: 1000m, memory: 3Gi, ephemeral-storage: 5Gi}
+                  limits: {memory: 4Gi, ephemeral-storage: 20Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+            volumes:
+              - {name: work, emptyDir: {}}
+              - {name: dind-sock, emptyDir: {}}
+              - {name: dind-externals, emptyDir: {}}
+              - {name: docker-data, emptyDir: {}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

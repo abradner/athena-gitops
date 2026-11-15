@@ -72,6 +72,7 @@ code runs, above).
 | `zagreus-docker-amd64` | `self-hosted, linux, X64, docker-amd64` | none once ci-builder-core retires | amd64 | 0–1 | amd64 release legs, registry jobs, transcoder |
 | `zagreus-simplytics-light` | `self-hosted, linux, simplytics-light` | none | as `zagreus-ci-light` | 1 warm, up to 2 | Simplytics' gating jobs (org-level) |
 | `zagreus-simplytics-ci` | `self-hosted, linux, simplytics-ci` | none | amd64 only | 0–3, from the slots it shares with `zagreus-ci` | Simplytics CI (org-level) |
+| `zagreus-simplytics-services` | `self-hosted, linux, simplytics-services` | none | the always-on VMs only (privileged dind; `runners/simplytics/services.yaml` says why) | 0–2, static, not in the waker | Simplytics jobs that need a Docker daemon: `services:` containers and docker builds without a push (org-level; since 15 Nov 2026) |
 
 Two rules keep the overflow honest:
 
