@@ -1,0 +1,256 @@
+# Simplytics image builders: spoor's docker.yml build legs, which build one
+# platform natively and push it to GHCR with a packages:write token, on main
+# only. Two org-level sets, one per architecture, reached by name:
+# `zagreus-simplytics-builder-amd64` and `zagreus-simplytics-builder-arm64`.
+# Added 15 Nov 2026, when GitHub stopped starting hosted jobs on the Simplytics
+# org (the workflow ran on GitHub-hosted runners until then, on purpose).
+#
+# "main only" is the workflow's to keep, not these sets'. GitHub Free has
+# only the Default runner group, and restricting a group to workflows or refs
+# needs Team or Enterprise, so GitHub will hand any Simplytics job that names
+# these labels to them. What keeps PR code off them:
+#   - docker.yml's build job runs only when github.ref is refs/heads/main;
+#   - no class variable (RUNNER_CI, RUNNER_CI_SERVICES, RUNNER_BOT) names
+#     them, so no ci.yml job reaches them;
+#   - bot and fork PRs read RUNNER_BOT in ci.yml.
+# NOT covered: a person with write access opening a PR whose own workflow
+# names these labels (a pull_request run uses the PR's workflow file). That
+# is the residual on Free; the per-job emptyDir below at least means nothing
+# such a job leaves in the docker daemon survives into a main build.
+#
+# Placement:
+#   - amd64 on the always-on VMs, not zag-amd64-01 beside spritz's amd64
+#     builder: that node sleeps, and the waker cannot wake it for this set
+#     (spritz's builder slot there is pinned, and a pinned slot cannot be
+#     shared, waker validate_config). The VMs never sleep. They also already
+#     run Simplytics' privileged services set (services.yaml), so Simplytics'
+#     privileged work stays on nodes away from spritz's builders.
+#   - arm64 on zag-arm64-02, the only arm64 worker, beside spritz's arm64
+#     builder (same nodeSelector and toleration). Its pod may wait while
+#     spritz's builder holds the node's memory.
+#
+# Pod shape: spritz's builder pod (spritz/docker-arm64.yaml has the traps),
+# except the dind data root is an emptyDir, not a host path: every build
+# starts from an empty daemon (no layer cache; the "fresh VM" property the
+# hosted runners gave), and nothing touches spritz's /var/lib/arc-docker.
+# maxRunners 1 each: the three images of a platform build one after another.
+# Not in the node waker: neither placement sleeps.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-simplytics-builder-amd64
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: simplytics-builder-amd64
+      valuesObject:
+        runnerScaleSetName: zagreus-simplytics-builder-amd64
+        # No class labels, deliberately: reached by name only, so no job that
+        # asks for generic labels (self-hosted, X64) can land on a set that
+        # holds a GHCR write token.
+        githubConfigUrl: https://github.com/Simplytics
+        githubConfigSecret: arc-github-app-simplytics
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 0
+        maxRunners: 1
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 120
+            nodeSelector:
+              zagreus.asn.casa/class: always-on
+            tolerations:
+              - key: zagreus.asn.casa/always-on
+                operator: Exists
+                effect: NoSchedule
+            initContainers:
+              - name: init-dind-externals
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                command: ["cp", "-r", "/opt/actions-runner/externals/.", "/tmpDir/"]
+                volumeMounts:
+                  - {name: dind-externals, mountPath: /tmpDir}
+              - name: dind
+                image: docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
+                restartPolicy: Always # native sidecar
+                args: ["dockerd", "--host=unix:///var/run/dind/docker.sock", "--group=$(DOCKER_GROUP_GID)"]
+                env:
+                  - {name: DOCKER_GROUP_GID, value: "1000"}
+                securityContext:
+                  privileged: true
+                startupProbe:
+                  exec: {command: ["docker", "-H", "unix:///var/run/dind/docker.sock", "info"]}
+                  periodSeconds: 5
+                  failureThreshold: 24
+                resources:
+                  requests: {cpu: "1", memory: 3Gi, ephemeral-storage: 10Gi}
+                  limits: {memory: 6Gi, ephemeral-storage: 40Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: dind-externals, mountPath: /opt/actions-runner/externals}
+                  - {name: docker-data, mountPath: /var/lib/docker}
+            containers:
+              - name: runner
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                env:
+                  - {name: DOCKER_HOST, value: unix:///var/run/dind/docker.sock}
+                resources:
+                  requests: {cpu: 250m, memory: 768Mi}
+                  limits: {memory: 2Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: pg, mountPath: /var/lib/postgresql}
+            volumes:
+              - {name: work, emptyDir: {}}
+              - {name: dind-sock, emptyDir: {}}
+              - {name: dind-externals, emptyDir: {}}
+              - {name: pg, emptyDir: {}}
+              - {name: docker-data, emptyDir: {}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-builders
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zagreus-simplytics-builder-arm64
+  namespace: argocd
+spec:
+  project: zagreus-core-project
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.0
+    helm:
+      releaseName: simplytics-builder-arm64
+      valuesObject:
+        runnerScaleSetName: zagreus-simplytics-builder-arm64
+        # No class labels: reached by name only (as the amd64 set).
+        githubConfigUrl: https://github.com/Simplytics
+        githubConfigSecret: arc-github-app-simplytics
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        minRunners: 0
+        maxRunners: 1
+        listenerTemplate:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: listener
+                resources:
+                  requests: {cpu: 20m, memory: 64Mi}
+        template:
+          spec:
+            automountServiceAccountToken: false
+            terminationGracePeriodSeconds: 120
+            # As spritz's arm64 builder (spritz/docker-arm64.yaml).
+            nodeSelector:
+              zagreus.asn.casa/role: arm-builder
+            tolerations:
+              - key: zagreus.asn.casa/role
+                operator: Equal
+                value: arm-builder
+                effect: NoSchedule
+            initContainers:
+              - name: init-dind-externals
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                command: ["cp", "-r", "/opt/actions-runner/externals/.", "/tmpDir/"]
+                volumeMounts:
+                  - {name: dind-externals, mountPath: /tmpDir}
+              - name: dind
+                image: docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
+                restartPolicy: Always # native sidecar
+                args: ["dockerd", "--host=unix:///var/run/dind/docker.sock", "--group=$(DOCKER_GROUP_GID)"]
+                env:
+                  - {name: DOCKER_GROUP_GID, value: "1000"}
+                securityContext:
+                  privileged: true
+                startupProbe:
+                  exec: {command: ["docker", "-H", "unix:///var/run/dind/docker.sock", "info"]}
+                  periodSeconds: 5
+                  failureThreshold: 24
+                # Smaller than spritz's (1 CPU / 3 GiB), so the two builders
+                # have a chance of fitting the CM5's 6.8 GiB together.
+                resources:
+                  requests: {cpu: 750m, memory: 2Gi, ephemeral-storage: 10Gi}
+                  limits: {memory: 4Gi, ephemeral-storage: 40Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: dind-externals, mountPath: /opt/actions-runner/externals}
+                  - {name: docker-data, mountPath: /var/lib/docker}
+            containers:
+              - name: runner
+                image: ghcr.io/abradner/spritz-ci-runner:sha-b1a67c5ba30b@sha256:1d31d1b554ef0cb8ee9ac102b509afcc6f4c44603f3113bf3362844bf6ef568b
+                imagePullPolicy: IfNotPresent
+                command: ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+                env:
+                  - {name: DOCKER_HOST, value: unix:///var/run/dind/docker.sock}
+                resources:
+                  requests: {cpu: 250m, memory: 512Mi}
+                  limits: {memory: 2Gi}
+                volumeMounts:
+                  - {name: work, mountPath: /opt/actions-runner/_work}
+                  - {name: dind-sock, mountPath: /var/run/dind}
+                  - {name: pg, mountPath: /var/lib/postgresql}
+            volumes:
+              - {name: work, emptyDir: {}}
+              - {name: dind-sock, emptyDir: {}}
+              - {name: dind-externals, emptyDir: {}}
+              - {name: pg, emptyDir: {}}
+              - {name: docker-data, emptyDir: {}}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-builders
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
