@@ -92,10 +92,30 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {memory: 768Mi}
+        # repo-server and redis run on zag-amd64vm-01, not the control plane
+        # (15 Nov 2026). cp1 is a 4 GB CM5 that sat at 0.2-0.4 GiB free; the
+        # repo-server's manifest renders pushed it over, its liveness probe
+        # timed out, it crash-looped, and every Application went Unknown. The
+        # VM never sleeps. It is pinned by name because the always-on VMs also
+        # run privileged CI pods (runners/simplytics/services.yaml,
+        # builders.yaml), and a privileged pod beside the repo-server or redis
+        # could change the manifests Argo applies to the whole cluster: those
+        # sets carry a matching rule that keeps them off this VM. Undo: delete
+        # the two nodeSelector/tolerations blocks below (back to global's
+        # control plane).
         repoServer:
+          nodeSelector: &argo-vm
+            kubernetes.io/hostname: zag-amd64vm-01
+          tolerations: &argo-vm-tol
+            - key: zagreus.asn.casa/always-on
+              operator: Exists
+              effect: NoSchedule
           resources:
             requests: {cpu: 50m, memory: 128Mi}
-            limits: {memory: 512Mi}
+            limits: {memory: 768Mi}
+        redis:
+          nodeSelector: *argo-vm
+          tolerations: *argo-vm-tol
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
