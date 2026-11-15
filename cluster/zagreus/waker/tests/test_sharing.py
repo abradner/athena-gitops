@@ -1006,9 +1006,24 @@ class Manifests(unittest.TestCase):
         self.assertEqual(app, next(s for s in live_config()["sets"] if s["name"] == SIM)["application"])
 
     def test_the_credential_reaches_every_namespace_its_sets_use(self):
+        # Every namespace a Simplytics scale set deploys into gets the
+        # credential, and no other namespace does (zagreus-waker reads its
+        # own copy, checked above). The namespaces come from the scale sets
+        # themselves, so a new set in a new namespace fails here until the
+        # credential follows it (arc-builders since 15 Nov 2026: builders.yaml).
         text = self.read("core", "github-app.yaml")
         found = re.findall(r"name: arc-github-app-simplytics\n  namespace: (\S+)", text)
-        self.assertEqual(found, ["arc-runners"])
+        runners = os.path.join(os.path.dirname(WAKER_DIR), "runners", "simplytics")
+        used = set()
+        for f in sorted(os.listdir(runners)):
+            if not f.endswith(".yaml"):
+                continue
+            with open(os.path.join(runners, f)) as fh:
+                for doc in fh.read().split("\n---\n"):
+                    if "githubConfigSecret: arc-github-app-simplytics\n" in doc:
+                        used.add(re.search(r"^  destination:\n(?:    .*\n)*?    namespace: (\S+)$", doc, re.M).group(1))
+        self.assertGreaterEqual(used, {"arc-runners", "arc-builders"})
+        self.assertEqual(sorted(found), sorted(used))
 
 
 if __name__ == "__main__":
