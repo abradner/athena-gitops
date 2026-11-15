@@ -36,7 +36,12 @@ description: Throwaway experiments. First to go.
 # A CI job that must never be killed mid-run, and never kills anyone either
 # (15 Nov 2026). Value 0, the general CI tier, so the default-priority spritz
 # heavy pods cannot preempt it (preemption needs a strictly higher priority);
-# preemptionPolicy Never, so it waits for room instead of evicting. At
+# preemptionPolicy Never, so it waits for room instead of evicting. Never
+# says nothing about being preempted: the protection is the value alone, and
+# it holds only while nothing that can land beside it outranks 0. For the
+# always-on VMs, where the services set runs, test_always_on checks that
+# every workload tolerating their taint stays at or below this class
+# (system-node-critical DaemonSets excepted). At
 # ci-light (-100) Simplytics' services runners on zag-amd64vm-02 were
 # preempted by spritz heavy pods 31 s to minutes into their jobs, and GitHub
 # timed the jobs out with no steps run.

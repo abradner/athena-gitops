@@ -81,9 +81,11 @@ spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 60
             # ci-queued (core/priority-classes.yaml): the same priority as
-            # spritz's heavy pods, so neither preempts the other, and
-            # preemptionPolicy Never, so a services pod waits for room and never
-            # evicts anyone. At ci-light (15 Nov 2026, #451) spritz heavy pods
+            # spritz's heavy pods, so neither preempts the other (the value is
+            # the protection; Never only stops this pod evicting others, and a
+            # test keeps everything that can land on the VMs at or below it),
+            # and preemptionPolicy Never, so a services pod waits for room and
+            # never evicts anyone. At ci-light (15 Nov 2026, #451) spritz heavy pods
             # preempted running services jobs on zag-amd64vm-02 and GitHub timed
             # them out. They cannot share a VM with a heavy pod anyway (6 GiB +
             # 3 GiB > 6.97 GiB allocatable), so a guest OOM on a VM can only take

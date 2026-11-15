@@ -721,6 +721,43 @@ class LiveFiles(unittest.TestCase):
         # spritz ci, simplytics ci, services, builder-amd64.
         self.assertGreaterEqual(checked, 4)
 
+    def test_nothing_on_the_always_on_vms_outranks_ci_queued(self):
+        # The services set (ci-queued, value 0) is protected from preemption by
+        # its value alone: preemptionPolicy Never only stops it evicting
+        # others. That holds while nothing that can land on the always-on VMs
+        # outranks it, so every manifest tolerating their taint must run at or
+        # below ci-queued. system-node-critical DaemonSets are excepted: they
+        # are node plumbing, not jobs (15 Nov 2026, after #451's ci-light let
+        # spritz heavy pods kill running services jobs).
+        root = os.path.join(WAKER_DIR, "..")
+        with open(os.path.join(root, "core", "priority-classes.yaml")) as fh:
+            classes = {m.group(1): int(m.group(2)) for m in re.finditer(
+                r"^  name: (\S+)\nvalue: (-?\d+)$", fh.read(), re.M)}
+        self.assertIn("ci-queued", classes)
+        ceiling = classes["ci-queued"]
+        checked = 0
+        for sub in ("core", "runners"):
+            for dirpath, _, files in os.walk(os.path.join(root, sub)):
+                for f in sorted(files):
+                    if not f.endswith(".yaml"):
+                        continue
+                    with open(os.path.join(dirpath, f)) as fh:
+                        docs = fh.read().split("\n---\n")
+                    for doc in docs:
+                        if f"- key: {TAINT}\n" not in doc:
+                            continue
+                        name = re.search(r"^  name: (\S+)$", doc, re.M).group(1)
+                        for cls in re.findall(r"^\s+priorityClassName: (\S+)$", doc, re.M) or [None]:
+                            if cls == "system-node-critical":
+                                continue
+                            value = 0 if cls is None else classes.get(cls)
+                            self.assertIsNotNone(value, f"{name}: unknown PriorityClass {cls}")
+                            self.assertLessEqual(value, ceiling, f"{name} ({f}) runs at {cls}={value} beside ci-queued")
+                        checked += 1
+        # spritz ci, bundle-cache, ci-cache-prune; simplytics ci, services,
+        # builders; Argo.
+        self.assertGreaterEqual(checked, 7)
+
     def test_the_waker_tolerates_the_always_on_taint(self):
         if not self.always_on_nodes():
             self.skipTest("no always-on node configured")
