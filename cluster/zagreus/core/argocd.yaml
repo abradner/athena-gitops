@@ -88,7 +88,22 @@ spec:
         # The control plane has 4 GB for etcd, the API server and every
         # credential holder; give the two heavy Argo parts real requests so
         # the scheduler and the kubelet account for them.
+        # The application-controller joins them on zag-amd64vm-01 (15 Nov
+        # 2026, after cp1's apiserver went down at 12:13Z and its scheduler
+        # crash-looped): it was cp1's third-largest pod. Trade-off: vm-01 is
+        # now a credential node (the controller's cluster-admin service
+        # account) beside unprivileged spritz CI pods, a kernel-escape risk
+        # only (no privileged pod may land there), and vm-01 gives up its CI
+        # slot (a heavy pod no longer fits beside Argo; waker.conf follows in
+        # its own change) until zag-amd64vm-03 returns or the control plane
+        # grows. Undo: delete the nodeSelector and tolerations below.
         controller:
+          nodeSelector: &argo-vm
+            kubernetes.io/hostname: zag-amd64vm-01
+          tolerations: &argo-vm-tol
+            - key: zagreus.asn.casa/always-on
+              operator: Exists
+              effect: NoSchedule
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {memory: 768Mi}
@@ -104,12 +119,8 @@ spec:
         # the two nodeSelector/tolerations blocks below (back to global's
         # control plane).
         repoServer:
-          nodeSelector: &argo-vm
-            kubernetes.io/hostname: zag-amd64vm-01
-          tolerations: &argo-vm-tol
-            - key: zagreus.asn.casa/always-on
-              operator: Exists
-              effect: NoSchedule
+          nodeSelector: *argo-vm
+          tolerations: *argo-vm-tol
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits: {memory: 768Mi}
