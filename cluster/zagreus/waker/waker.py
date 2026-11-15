@@ -1033,6 +1033,15 @@ def pinned_to_slots(s):
     return bool(s.get("pinnedToSlots"))
 
 
+def runs_no_ci(node):
+    """An always-on node whose slots map is empty: waker.conf's explicit
+    "runs no CI" (zag-amd64vm-01 since 15 Nov 2026, which hosts Argo). The
+    sets that could land there exclude it by name (their nodeAffinity,
+    checked in test_always_on), so it cannot take a claim and does not hold
+    the floors back the way a slotless awake runner node does."""
+    return bool(node.get("alwaysOn")) and not node.get("slots")
+
+
 def floor_caps(cfg, target, live, ceilings, node_states=None):
     """Lift each set to its floor: the least maxRunners the waker writes,
     offered while its nodes sleep (README, "Floor"). Never past the
@@ -1044,7 +1053,8 @@ def floor_caps(cfg, target, live, ceilings, node_states=None):
     Not while an awake node has no slots for the set: the runner pods'
     nodeSelector takes every amd64 node, so a claim with no room on its own
     nodes would land there (and the builder, at ci-release priority, would
-    preempt CI to do it). That is only 01 down with 02 or 03 up.
+    preempt CI to do it). That is only 01 down with 02 or 03 up. A node
+    that runs no CI (runs_no_ci) does not count: no set's pods may land there.
 
     The floor is not room: unmet, spare and orphans read spare_caps, which
     takes it back off."""
@@ -1056,7 +1066,8 @@ def floor_caps(cfg, target, live, ceilings, node_states=None):
         want = out.get(name)
         if floor <= 0 or want is None:
             continue
-        if not pinned_to_slots(s) and any(node_slots(cfg, n, name) <= 0 for n in awake):
+        if not pinned_to_slots(s) and any(node_slots(cfg, n, name) <= 0 for n in awake
+                                          if not runs_no_ci(n)):
             continue
         bound = ceilings.get(name)
         if bound is None:

@@ -190,7 +190,9 @@ class FloorWithAlwaysOn(unittest.TestCase):
     """The pilot's point (9 Nov 2026): zagreus-ci's floor equals the always-on
     slots plus the room of 01+02, so a burst that fits there changes no cap,
     and so restarts no listener, across the wake. Three VMs since 14 Nov 2026
-    (zag-amd64vm-02 and -03): every always-on node is Ready in these worlds."""
+    (zag-amd64vm-02 and -03): every always-on node is Ready in these worlds.
+    15 Nov 2026: zag-amd64vm-01 hosts Argo, no CI slot; it stays always on
+    (and Ready here), so these worlds also show it counts for nothing."""
 
     ASLEEP = {"ready": False, "asleep": True}
 
@@ -203,6 +205,8 @@ class FloorWithAlwaysOn(unittest.TestCase):
         self.floor = next(s["floor"] for s in self.cfg["sets"] if s["name"] == "zagreus-ci")
         self.vm_slots = sum(w.node_slots(self.cfg, n, "zagreus-ci")
                             for n in self.cfg["nodes"] if n.get("alwaysOn"))
+        self.ci_vms = [n["name"] for n in self.cfg["nodes"]
+                       if n.get("alwaysOn") and w.node_slots(self.cfg, n, "zagreus-ci") > 0]
 
     def world(self, vm_state=None, **talos):
         """The Talos nodes as given, every always-on node in vm_state."""
@@ -217,8 +221,23 @@ class FloorWithAlwaysOn(unittest.TestCase):
         talos = {n["name"]: n for n in self.cfg["nodes"]}
         want = self.vm_slots + sum(w.node_slots(self.cfg, talos[n], "zagreus-ci")
                                    for n in ("zag-amd64-01", "zag-amd64-02"))
-        self.assertEqual(self.vm_slots, len(self.vms))  # one slot each
+        # One slot on each CI VM; zag-amd64vm-01 has none (Argo, 15 Nov 2026).
+        self.assertEqual(self.ci_vms, ["zag-amd64vm-02", "zag-amd64vm-03"])
+        self.assertIn("zag-amd64vm-01", self.vms)
+        self.assertEqual(self.vm_slots, len(self.ci_vms))
         self.assertEqual(self.floor, want)
+        self.assertEqual(self.floor, 9)
+
+    def test_a_ready_node_that_runs_no_ci_holds_no_floor_back(self):
+        # 15 Nov 2026: zag-amd64vm-01 is always on, Ready and slotless (it
+        # hosts Argo). A slotless awake runner node switches the floors off
+        # (a claim could land there); a node that runs no CI must not, or
+        # zagreus-ci's floor of 9 and Simplytics' of 1 vanish while it is up.
+        _, caps = self.caps(**self.world(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
+                                            "zag-amd64-03": self.ASLEEP}))
+        self.assertTrue(w.runs_no_ci(next(n for n in self.cfg["nodes"] if n["name"] == "zag-amd64vm-01")))
+        self.assertEqual(caps["zagreus-ci"], self.floor)
+        self.assertEqual(caps["zagreus-simplytics-ci"], 1)
 
     def test_the_cap_does_not_change_from_asleep_to_01_and_02_awake(self):
         _, asleep = self.caps(**self.world(**{"zag-amd64-01": self.ASLEEP, "zag-amd64-02": self.ASLEEP,
@@ -247,7 +266,7 @@ class FloorWithAlwaysOn(unittest.TestCase):
         st = states(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP}))
         self.assertEqual(w.choose_wakes(self.cfg, {"zagreus-ci": 1}, st, {}, T0), ["zag-amd64-03"])
         _, caps = self.caps(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": {}}))
-        self.assertEqual(caps["zagreus-ci"], 12)
+        self.assertEqual(caps["zagreus-ci"], 11)
 
     def test_the_floor_wins_over_the_pools_fair_share_squeeze(self):
         # Review of 710b204, kept on purpose: with spritz holding the whole
@@ -258,7 +277,7 @@ class FloorWithAlwaysOn(unittest.TestCase):
         # spritz pod created after it, so it takes the next free slot
         # (README, "Simplytics' floor").
         node_states = states(**self.world(**{"zag-amd64-01": {}, "zag-amd64-02": {}, "zag-amd64-03": self.ASLEEP}))
-        room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 12, "zagreus-simplytics-ci": 1},
+        room = w.compute_caps(self.cfg, node_states, want={"zagreus-ci": 11, "zagreus-simplytics-ci": 1},
                               ceilings=self.ceilings)
         # Positive control: fair share does squeeze spritz below the floor.
         self.assertLess(room["zagreus-ci"], self.floor, room)
@@ -296,7 +315,7 @@ class LiveBurst(unittest.TestCase):
 
     def test_asleep_the_cap_sits_at_the_floor(self):
         r = self.rig()
-        self.assertEqual(self.ci_cap(r), 10)
+        self.assertEqual(self.ci_cap(r), 9)
         for vm in r.always_on:
             self.assertNotIn(vm, r.kube.asleep())
 
@@ -314,10 +333,11 @@ class LiveBurst(unittest.TestCase):
         for _ in range(8):
             r.spritz_job(age=5)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Five beyond the three VMs' one each: 02 covers four, then 01 one.
+        # Six beyond the two CI VMs' one each (zag-amd64vm-01 has no slot
+        # since 15 Nov 2026): 02 covers four, then 01 two.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(self.ci_cap(r), 10)
+        self.assertEqual(self.ci_cap(r), 9)
         self.assertEqual(self.ci_cap_writes(r, mark), [])
 
 
@@ -364,10 +384,11 @@ class ClassLabelBurst(unittest.TestCase):
         for _ in range(3):
             r.spritz_job(age=age, labels=self.X64)
         r.tick(advance=r.cfg["wakeCooldownSeconds"])
-        # Five beyond the three VMs' one each: 02 covers four, then 01 one.
+        # Six beyond the two CI VMs' one each (zag-amd64vm-01 has no slot
+        # since 15 Nov 2026): 02 covers four, then 01 two.
         self.assertEqual(r.woken(), ["zag-amd64-02", "zag-amd64-01"])
         r.tick(advance=120)
-        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 10)
+        self.assertEqual(r.kube.ars[("arc-runners", "zagreus-ci")]["spec"]["maxRunners"], 9)
         writes = [p for v, p, b in r.kube.writes[mark:] if v == "PATCH" and "/autoscalingrunnersets/" in p]
         self.assertEqual(writes, [])
 
@@ -658,14 +679,47 @@ class LiveFiles(unittest.TestCase):
     def always_on_nodes(self):
         return [n["name"] for n in live_config()["nodes"] if n.get("alwaysOn")]
 
-    def test_the_live_vm_is_one_plain_zagreus_ci_slot(self):
+    def test_each_live_vm_is_one_plain_zagreus_ci_slot_or_none(self):
         # Since the fold of zagreus-ci-x64 (13 Nov 2026): no shared slot.
-        vms = [n for n in live_config()["nodes"] if n.get("alwaysOn")]
+        # 15 Nov 2026: zag-amd64vm-01 hosts Argo, no CI slot; still listed
+        # and always on, so the waker reads its state and never powers it.
+        vms = {n["name"]: n for n in live_config()["nodes"] if n.get("alwaysOn")}
         if not vms:
             self.skipTest("no always-on node configured")
-        for vm in vms:
-            self.assertEqual(vm["slots"], {"zagreus-ci": 1}, vm["name"])
+        want = {"zag-amd64vm-01": {}, "zag-amd64vm-02": {"zagreus-ci": 1}, "zag-amd64vm-03": {"zagreus-ci": 1}}
+        self.assertEqual({n: vm["slots"] for n, vm in vms.items()}, want)
+        for vm in vms.values():
             self.assertFalse(vm.get("slotsShared", False), vm["name"])
+
+    def test_every_scale_set_that_could_land_on_a_no_ci_node_excludes_it(self):
+        # A node waker.conf declares runs no CI (always on, empty slots) must
+        # be kept off by every scale set whose pods tolerate the always-on
+        # taint, by name (kubernetes.io/hostname NotIn): the waker's floors
+        # count on no claim landing there (floor_caps, runs_no_ci). Read as
+        # text, as the other manifest checks are (CI has no YAML library).
+        no_ci = [n["name"] for n in live_config()["nodes"] if w.runs_no_ci(n)]
+        if not no_ci:
+            self.skipTest("no node declared to run no CI")
+        checked = 0
+        for sub in ("spritz", "simplytics"):
+            d = os.path.join(self.RUNNERS, sub)
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".yaml"):
+                    continue
+                with open(os.path.join(d, f)) as fh:
+                    docs = fh.read().split("\n---\n")
+                for doc in docs:
+                    if "kind: Application\n" not in doc or f"- key: {TAINT}\n" not in doc:
+                        continue
+                    name = re.search(r"^  name: (\S+)$", doc, re.M).group(1)
+                    excluded = set()
+                    for m in re.finditer(r"- key: kubernetes\.io/hostname\n\s+operator: NotIn\n\s+values: \[([^\]]*)\]", doc):
+                        excluded |= {v.strip() for v in m.group(1).split(",")}
+                    for node in no_ci:
+                        self.assertIn(node, excluded, f"{name} ({sub}/{f}) may land on {node}")
+                    checked += 1
+        # spritz ci, simplytics ci, services, builder-amd64.
+        self.assertGreaterEqual(checked, 4)
 
     def test_the_waker_tolerates_the_always_on_taint(self):
         if not self.always_on_nodes():
