@@ -176,6 +176,13 @@ DEFAULTS = {
     # with queued jobs and nothing held, and floors and ceilings still act
     # at once.
     "shareDwellSeconds": 120,
+    # Delete a driven set's EphemeralRunner whose pod sits on a node that has
+    # been NotReady for longer than this (README, "Reaper"). None (or the key
+    # absent): never. On 15 Nov 2026 a runner whose pod was stranded on
+    # zag-amd64vm-03, NotReady since 14:42Z, counted as zagreus-ci's one
+    # current runner, so the listener never scaled up and spritz's jobs
+    # waited for hours until a human deleted it.
+    "reapNotReadyMinutes": None,
 }
 
 
@@ -221,6 +228,9 @@ def validate_config(cfg):
             # is a claim on top of the room, not room, README "Floor".)
             if by_name[m].get("pinnedToSlots"):
                 raise ValueError(f"set {m}: no pinnedToSlots in a shared pool")
+    reap = cfg.get("reapNotReadyMinutes")
+    if reap is not None and (isinstance(reap, bool) or not isinstance(reap, (int, float)) or reap <= 0):
+        raise ValueError(f"reapNotReadyMinutes must be a positive number of minutes, not {reap!r}")
     nodes = [n["name"] for n in cfg["nodes"]]
     if len(set(nodes)) != len(nodes):
         raise ValueError("duplicate node in nodes")
@@ -420,6 +430,70 @@ def is_runner_pod(pod):
                for o in (pod.get("metadata", {}).get("ownerReferences") or []))
 
 
+def runner_pod_index(pods):
+    """Runner pods by the EphemeralRunner that owns them: (namespace, name)."""
+    out = {}
+    for p in pods:
+        md = p.get("metadata") or {}
+        for o in md.get("ownerReferences") or []:
+            if o.get("kind") == "EphemeralRunner" and o.get("name"):
+                out[(md.get("namespace"), o["name"])] = p
+    return out
+
+
+def stale_runners(runner_ers, nodes, now_s, minutes):
+    """EphemeralRunners to reap (README, "Reaper"): each one whose pod is
+    bound to a node that has been NotReady for more than `minutes`. Returns
+    [(runner, node name, seconds NotReady)].
+
+    runner_ers: observe's "runner_ers" (live runners of the driven sets).
+    nodes: node objects read this pass, by name (the configured nodes; a
+    runner on a node the waker cannot read is left alone).
+
+    Never a runner already being deleted, one with no pod or whose pod is not
+    yet bound (unplaced: the wake logic's business), nor one on a node the
+    waker is waking (waker-state "waking"): that node is NotReady because it
+    is booting, and its NotReady transition is as old as its last sleep.
+    A node the waker put to sleep is not exempt: it was cordoned and checked
+    empty of runner pods before the shutdown, and stays cordoned while it
+    sleeps, so a runner pod bound to it is one no node will ever run, and
+    holds a slot of its set's count for nothing."""
+    if not minutes:
+        return []
+    out = []
+    for r in runner_ers:
+        pod = r.get("pod")
+        if r.get("deleting") or not r.get("name") or not pod:
+            continue
+        node_name = (pod.get("spec") or {}).get("nodeName")
+        node = nodes.get(node_name) if node_name else None
+        if node is None:
+            continue
+        ann = (node.get("metadata") or {}).get("annotations") or {}
+        if ann.get(ANNOTATION_STATE) == "waking":
+            continue
+        since = not_ready_since(node)
+        if since is None or now_s - since <= minutes * 60:
+            continue
+        out.append((r, node_name, now_s - since))
+    return out
+
+
+def oldest_running_runner(runner_ers, read_sets, now_s):
+    """Per set in read_sets (those whose runners were read this pass): age
+    in seconds of its oldest EphemeralRunner whose pod is Running (a pod
+    Terminating on a dead node is still Running), 0 when it has none. A set
+    whose runners could not be read is absent, never 0."""
+    out = {name: 0 for name in read_sets}
+    for r in runner_ers:
+        if r["set"] not in out:
+            continue
+        pod = r.get("pod")
+        if pod and (pod.get("status") or {}).get("phase") == "Running" and r.get("created") is not None:
+            out[r["set"]] = max(out[r["set"]], int(max(0.0, now_s - r["created"])))
+    return out
+
+
 def node_state_name(st):
     """One word for a listed node's state, for the slot metrics. None (the
     node could not be read this pass) is "unknown", never "awake"."""
@@ -438,7 +512,7 @@ def _label(v):
     return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-def slot_usage(cfg, states, pods_by_node, offered, runner_jobs):
+def slot_usage(cfg, states, pods_by_node, offered, runner_jobs, oldest_runner=None):
     """What the slot metrics say, as data (render_slot_metrics writes it).
 
     used: runner pods (any scale set, light ones included) on each node,
@@ -448,7 +522,9 @@ def slot_usage(cfg, states, pods_by_node, offered, runner_jobs):
     offered: per listed node and driven set, what the waker would offer now
     (compute_caps per_node, own runners included); 0 on a node that is not
     awake. A listed node that could not be read gets no row.
-    jobs: one row per runner pod whose EphemeralRunner names a job."""
+    jobs: one row per runner pod whose EphemeralRunner names a job.
+    oldest_runner: per set whose runners were read, the age of its oldest
+    runner with a Running pod (oldest_running_runner); passed through."""
     driven = [s["name"] for s in cfg["sets"]]
     listed = [n["name"] for n in cfg["nodes"]]
     used = {}
@@ -479,7 +555,8 @@ def slot_usage(cfg, states, pods_by_node, offered, runner_jobs):
             if node and job and p.get("status", {}).get("phase") not in ("Succeeded", "Failed"):
                 jobs.append(dict(job, node=node, runner=name))
     return {"used": used, "state": state, "configured": configured, "offered": offer,
-            "jobs": sorted(jobs, key=lambda j: (j["node"], j["runner"]))}
+            "jobs": sorted(jobs, key=lambda j: (j["node"], j["runner"])),
+            "oldest_runner": dict(oldest_runner or {})}
 
 
 def render_slot_metrics(usage, sampled_at):
@@ -508,6 +585,13 @@ def render_slot_metrics(usage, sampled_at):
     for j in usage["jobs"]:
         lines.append('zagreus_runner_job_info{runner_node="%s",set="%s",runner="%s",repo="%s",workflow_run="%s",job="%s"} 1'
                      % tuple(_label(j[k]) for k in ("node", "set", "runner", "repo", "workflow_run", "job")))
+    # 15 Nov 2026: a runner stranded on a dead node held its set's count for
+    # hours and nothing said so. A runner older than any job should run is
+    # that, or a stuck job (README, "Reaper").
+    lines += ["# HELP zagreus_runner_oldest_runner_seconds Age of the set's oldest EphemeralRunner whose pod is Running (0 when none).",
+              "# TYPE zagreus_runner_oldest_runner_seconds gauge"]
+    lines += [f'zagreus_runner_oldest_runner_seconds{{set="{n}"}} {int(v)}'
+              for n, v in sorted((usage.get("oldest_runner") or {}).items())]
     lines += ["# HELP zagreus_runner_slots_sampled_timestamp_seconds When the waker last wrote the slot metrics (epoch seconds).",
               "# TYPE zagreus_runner_slots_sampled_timestamp_seconds gauge",
               f"zagreus_runner_slots_sampled_timestamp_seconds {int(sampled_at)}"]
@@ -1214,6 +1298,9 @@ class Kube:
     def create(self, path, body):
         return self.request("POST", path, body)
 
+    def delete(self, path, body=None):
+        return self.request("DELETE", path, body)
+
 
 ARS = "/apis/actions.github.com/v1alpha1/namespaces/{ns}/autoscalingrunnersets/{name}"
 ERS = "/apis/actions.github.com/v1alpha1/namespaces/{ns}/ephemeralrunners"
@@ -1232,6 +1319,19 @@ def ready_transition(node):
     """Epoch seconds of the Ready condition's last transition, or None."""
     for c in node.get("status", {}).get("conditions", []):
         if c.get("type") == "Ready" and c.get("lastTransitionTime"):
+            return parse_time(c["lastTransitionTime"]).timestamp()
+    return None
+
+
+def not_ready_since(node):
+    """Epoch seconds since which the node has been NotReady (its Ready
+    condition not True, by that condition's last transition), or None: Ready,
+    or no Ready condition or transition time to count from (not known, so
+    never old enough to act on)."""
+    for c in (node or {}).get("status", {}).get("conditions", []) or []:
+        if c.get("type") == "Ready":
+            if c.get("status") == "True" or not c.get("lastTransitionTime"):
+                return None
             return parse_time(c["lastTransitionTime"]).timestamp()
     return None
 
@@ -1722,6 +1822,7 @@ class Waker:
         self.cap_changed_at = {}  # pool set -> when its cap was last written
         self.pool_nodes_at_change = {}  # pool -> its nodes' states at that pool's last write
         self.dwell_logged = {}  # pool set -> the held cap last logged, so each hold logs once
+        self.would_reap = set()  # (namespace, runner) already logged as "would reap" (observe mode)
 
     def wakeable(self):
         """Nodes the waker can power on again; it puts no other to sleep. Never
@@ -1833,7 +1934,7 @@ class Waker:
             compute_caps(self.cfg, snap["states"], self.cap_requests(snap), snap.get("unplaced"), per_node=offered,
                          **self.share_args(snap))
             usage = slot_usage(self.cfg, snap["states"], snap.get("pods_by_node") or {}, offered,
-                               snap.get("runner_jobs") or {})
+                               snap.get("runner_jobs") or {}, snap.get("oldest_runner"))
             text = render_slot_metrics(usage, self.clock())
         except Exception as e:  # a gauge must never stop the controller
             LOG.warning("could not compute slot metrics: %s", e)
@@ -1892,6 +1993,7 @@ class Waker:
         ips = {}
         now = self.clock()
         self.lease_uncertain = set()
+        node_objs = {}  # the configured nodes read this pass, for the reaper
         for n in cfg["nodes"]:
             try:
                 node = self.kube.get(f"/api/v1/nodes/{n['name']}")
@@ -1902,6 +2004,7 @@ class Waker:
                 continue
             if node is None:
                 continue
+            node_objs[n["name"]] = node
             ann = node["metadata"].get("annotations", {}) or {}
             ready = node_fresh_ready(node, now, self._lease_age(n["name"]))
             taint = untolerated_taint(node, cfg["toleratedTaintKeys"])
@@ -1942,6 +2045,9 @@ class Waker:
 
         live, labels, ceilings, runners, unstarted, unplaced, requests = {}, {}, {}, {}, {}, {}, {}
         runner_jobs = {}  # runner pod name (= its EphemeralRunner's) -> the job it runs
+        pod_of = runner_pod_index(pods)
+        runner_ers = []  # live runners of the driven sets, with their pods (reaper, oldest-runner gauge)
+        ers_read = set()
         degraded, blind = set(), set()
         stuck = {}
         for s in cfg["sets"]:
@@ -1991,9 +2097,16 @@ class Waker:
             # demand (athena-gitops#239).
             live_ers = [e for e in ers if (e.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
             runners[s["name"]] = len(live_ers)
+            ers_read.add(s["name"])
             for e in live_ers:
                 st = e.get("status") or {}
-                er_name = (e.get("metadata") or {}).get("name")
+                md = e.get("metadata") or {}
+                er_name = md.get("name")
+                runner_ers.append({
+                    "set": s["name"], "namespace": s["namespace"], "name": er_name, "uid": md.get("uid"),
+                    "created": parse_time(md["creationTimestamp"]).timestamp() if md.get("creationTimestamp") else None,
+                    "deleting": bool(md.get("deletionTimestamp")),
+                    "pod": pod_of.get((s["namespace"], er_name)) if er_name else None})
                 if er_name and (st.get("jobDisplayName") or st.get("jobRequestId")):
                     runner_jobs[er_name] = {
                         "set": s["name"], "repo": st.get("jobRepositoryName") or "",
@@ -2027,6 +2140,9 @@ class Waker:
                 # Sets whose runners could not be read: claims unknown.
                 "blind": blind,
                 "runner_jobs": runner_jobs,
+                "runner_ers": runner_ers,
+                "node_objs": node_objs,
+                "oldest_runner": oldest_running_runner(runner_ers, ers_read, now),
                 "requests": requests if len(requests) == len(live) else None}
 
     def queues(self):
@@ -2428,6 +2544,8 @@ class Waker:
                 LOG.error("GitHub unreadable for %ss: no longer vouching for sleeping nodes, "
                           "so their heartbeat alerts fire", int(now - self.last_demand_ok))
 
+        self.reap_stale_runners(snap)
+
         # Idle and awake clocks.
         for name, st in states.items():
             if node_awake(st):
@@ -2575,6 +2693,41 @@ class Waker:
                 self.idle_since[sleep], dt.timezone.utc).isoformat())
             if self.may_power:
                 self.put_to_sleep(sleep, snap)
+
+    def reap_stale_runners(self, snap):
+        """Delete the driven sets' EphemeralRunners stranded on nodes NotReady
+        past reapNotReadyMinutes (stale_runners; README, "Reaper"). ARC then
+        deregisters the runner from GitHub and deletes its pod, and the set's
+        count drops, so its listener can scale up again. Caps and full modes
+        only (a runner is the waker's to delete as much as a cap is its to
+        write); observe logs "would reap". Never stops the controller."""
+        minutes = self.cfg.get("reapNotReadyMinutes")
+        if not minutes:
+            return
+        try:
+            stale = stale_runners(snap.get("runner_ers") or [], snap.get("node_objs") or {}, self.clock(), minutes)
+        except Exception as e:  # a malformed object must never stop the controller
+            LOG.warning("could not look for stale runners: %s", e)
+            return
+        for r, node, secs in stale:
+            what = f"{r['set']} runner {r['namespace']}/{r['name']} on {node} (NotReady {int(secs)}s)"
+            if not self.may_patch_caps:
+                key = (r["namespace"], r["name"])
+                level = logging.INFO if key not in self.would_reap else logging.DEBUG
+                LOG.log(level, "would reap %s", what)
+                self.would_reap.add(key)
+                continue
+            body = None
+            if r.get("uid"):
+                # This runner, not a later one of the same name.
+                body = {"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": r["uid"]}}
+            try:
+                self.kube.delete(ERS.format(ns=r["namespace"]) + "/" + r["name"], body)
+            except Exception as e:
+                LOG.error("could not reap %s: %s", what, e)
+                continue
+            LOG.warning("reaped %s", what)
+            self.record_event("reaped", node, set=r["set"], runner=r["name"], not_ready_seconds=int(secs))
 
     def _wish(self, kind, node, detail):
         """Log a wake or sleep the waker wants, once per change: in observe
