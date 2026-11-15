@@ -32,3 +32,20 @@ value: -200
 preemptionPolicy: Never
 globalDefault: false
 description: Throwaway experiments. First to go.
+---
+# A CI job that must never be killed mid-run, and never kills anyone either
+# (15 Nov 2026). Value 0, the general CI tier, so the default-priority spritz
+# heavy pods cannot preempt it (preemption needs a strictly higher priority);
+# preemptionPolicy Never, so it waits for room instead of evicting. At
+# ci-light (-100) Simplytics' services runners on zag-amd64vm-02 were
+# preempted by spritz heavy pods 31 s to minutes into their jobs, and GitHub
+# timed the jobs out with no steps run.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ci-queued
+value: 0
+preemptionPolicy: Never
+globalDefault: false
+description: CI jobs that queue behind others for room but are never preempted mid-job.
+

@@ -80,12 +80,15 @@ spec:
           spec:
             automountServiceAccountToken: false
             terminationGracePeriodSeconds: 60
-            # Below spritz's heavy pods (priority 0), so if the two contend for
-            # a VM, these lose: the scheduler may preempt a services pod for a
-            # pending spritz heavy pod. They cannot share a VM with one anyway
-            # (6 GiB + 3 GiB > 6.97 GiB allocatable), so a guest OOM on a VM can
-            # only take a services pod or a node pod, never a spritz job.
-            priorityClassName: ci-light
+            # ci-queued (core/priority-classes.yaml): the same priority as
+            # spritz's heavy pods, so neither preempts the other, and
+            # preemptionPolicy Never, so a services pod waits for room and never
+            # evicts anyone. At ci-light (15 Nov 2026, #451) spritz heavy pods
+            # preempted running services jobs on zag-amd64vm-02 and GitHub timed
+            # them out. They cannot share a VM with a heavy pod anyway (6 GiB +
+            # 3 GiB > 6.97 GiB allocatable), so a guest OOM on a VM can only take
+            # a services pod or a node pod, never a spritz job.
+            priorityClassName: ci-queued
             nodeSelector:
               zagreus.asn.casa/class: always-on
             # Never on zag-amd64vm-01, which runs Argo's repo-server and redis
