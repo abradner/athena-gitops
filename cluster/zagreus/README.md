@@ -73,6 +73,7 @@ code runs, above).
 | `zagreus-simplytics-light` | `self-hosted, linux, simplytics-light` | none | as `zagreus-ci-light` | 1 warm, up to 2 | Simplytics' gating jobs (org-level) |
 | `zagreus-simplytics-ci` | `self-hosted, linux, simplytics-ci` | none | amd64 only | 0–3, from the slots it shares with `zagreus-ci` | Simplytics CI (org-level) |
 | `zagreus-simplytics-services` | `self-hosted, linux, simplytics-services` | none | the always-on VMs only (privileged dind; `runners/simplytics/services.yaml` says why) | 0–2, static, not in the waker | Simplytics jobs that need a Docker daemon: `services:` containers and docker builds without a push (org-level; since 15 Nov 2026) |
+| `zagreus-simplytics-builder-amd64`, `-arm64` | none: name only | none | amd64 on the always-on VMs, arm64 on zag-arm64-02 (privileged dind; `runners/simplytics/builders.yaml`) | 0–1 each, static, not in the waker | spoor's docker.yml build legs, main only (the workflow keeps that, not GitHub: Free has no runner-group restrictions); since 15 Nov 2026 |
 
 Two rules keep the overflow honest:
 
