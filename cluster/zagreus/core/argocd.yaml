@@ -32,6 +32,53 @@ spec:
         configs:
           params:
             server.insecure: true
+          cm:
+            # DaemonSet health. Argo's default: Healthy only when every scheduled
+            # pod is updated and available. That never holds while the waker has a
+            # node asleep, and the sync-wave wait blocks every zagreus-core sync on
+            # it. A DaemonSet annotated zagreus.asn.casa/health: rollout-observed is
+            # Healthy once the controller has observed its spec (the per-node
+            # DaemonSets in core/); every other DaemonSet keeps the default rules,
+            # restated here because a Lua override replaces them. Undo: delete
+            # this key.
+            resource.customizations.health.apps_DaemonSet: |
+              local hs = {}
+              if obj.status == nil then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the DaemonSet's status"
+                return hs
+              end
+              local st = obj.status
+              if (obj.metadata.generation or 0) > (st.observedGeneration or 0) then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the rollout to be observed"
+                return hs
+              end
+              local desired = st.desiredNumberScheduled or 0
+              local updated = st.updatedNumberScheduled or 0
+              local available = st.numberAvailable or 0
+              local ann = obj.metadata.annotations or {}
+              if ann["zagreus.asn.casa/health"] == "rollout-observed" then
+                hs.status = "Healthy"
+                hs.message = available .. " of " .. desired .. " pods available; nodes the waker has put to sleep are tolerated"
+                return hs
+              end
+              if obj.spec ~= nil and obj.spec.updateStrategy ~= nil and obj.spec.updateStrategy.type == "OnDelete" then
+                hs.status = "Healthy"
+                return hs
+              end
+              if updated < desired then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the rollout: " .. updated .. " of " .. desired .. " pods updated"
+                return hs
+              end
+              if available < desired then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the rollout: " .. available .. " of " .. desired .. " pods available"
+                return hs
+              end
+              hs.status = "Healthy"
+              return hs
         dex:
           enabled: false
         notifications:
