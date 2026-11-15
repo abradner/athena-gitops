@@ -78,6 +78,17 @@ spec:
             terminationGracePeriodSeconds: 120
             nodeSelector:
               zagreus.asn.casa/class: always-on
+            # Never on zag-amd64vm-01, which runs Argo's repo-server and redis
+            # (core/argocd.yaml): a privileged pod there could change what Argo
+            # applies cluster-wide.
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: kubernetes.io/hostname
+                          operator: NotIn
+                          values: [zag-amd64vm-01]
             tolerations:
               - key: zagreus.asn.casa/always-on
                 operator: Exists

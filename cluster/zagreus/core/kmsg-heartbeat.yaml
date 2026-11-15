@@ -26,6 +26,18 @@ kind: DaemonSet
 metadata:
   name: kmsg-heartbeat
   namespace: log-heartbeat
+  annotations:
+    # Healthy once its rollout is observed, however many nodes are up: the
+    # health override in argocd.yaml (configs.cm) reads this. A node the
+    # waker has put to sleep keeps a pod this DaemonSet can never make ready,
+    # and Argo's default health held every zagreus-core sync at "waiting for
+    # healthy" before the later waves (15 Nov 2026: the Simplytics builders'
+    # ExternalSecret, wave 2, had to be applied by hand). Whether the per-node
+    # pods run is watched from outside, by obs-metrics. (argocd.argoproj.io/
+    # ignore-healthcheck was tried live first: it drops the resource from the
+    # app's health but the sync-wave wait still blocks on it.) Undo: delete
+    # this annotation.
+    zagreus.asn.casa/health: rollout-observed
 spec:
   selector:
     matchLabels:

@@ -32,6 +32,53 @@ spec:
         configs:
           params:
             server.insecure: true
+          cm:
+            # DaemonSet health. Argo's default: Healthy only when every scheduled
+            # pod is updated and available. That never holds while the waker has a
+            # node asleep, and the sync-wave wait blocks every zagreus-core sync on
+            # it. A DaemonSet annotated zagreus.asn.casa/health: rollout-observed is
+            # Healthy once the controller has observed its spec (the per-node
+            # DaemonSets in core/); every other DaemonSet keeps the default rules,
+            # restated here because a Lua override replaces them. Undo: delete
+            # this key.
+            resource.customizations.health.apps_DaemonSet: |
+              local hs = {}
+              if obj.status == nil then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the DaemonSet's status"
+                return hs
+              end
+              local st = obj.status
+              if (obj.metadata.generation or 0) > (st.observedGeneration or 0) then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the rollout to be observed"
+                return hs
+              end
+              local desired = st.desiredNumberScheduled or 0
+              local updated = st.updatedNumberScheduled or 0
+              local available = st.numberAvailable or 0
+              local ann = obj.metadata.annotations or {}
+              if ann["zagreus.asn.casa/health"] == "rollout-observed" then
+                hs.status = "Healthy"
+                hs.message = available .. " of " .. desired .. " pods available; nodes the waker has put to sleep are tolerated"
+                return hs
+              end
+              if obj.spec ~= nil and obj.spec.updateStrategy ~= nil and obj.spec.updateStrategy.type == "OnDelete" then
+                hs.status = "Healthy"
+                return hs
+              end
+              if updated < desired then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the rollout: " .. updated .. " of " .. desired .. " pods updated"
+                return hs
+              end
+              if available < desired then
+                hs.status = "Progressing"
+                hs.message = "Waiting for the rollout: " .. available .. " of " .. desired .. " pods available"
+                return hs
+              end
+              hs.status = "Healthy"
+              return hs
         dex:
           enabled: false
         notifications:
@@ -45,10 +92,30 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {memory: 768Mi}
+        # repo-server and redis run on zag-amd64vm-01, not the control plane
+        # (15 Nov 2026). cp1 is a 4 GB CM5 that sat at 0.2-0.4 GiB free; the
+        # repo-server's manifest renders pushed it over, its liveness probe
+        # timed out, it crash-looped, and every Application went Unknown. The
+        # VM never sleeps. It is pinned by name because the always-on VMs also
+        # run privileged CI pods (runners/simplytics/services.yaml,
+        # builders.yaml), and a privileged pod beside the repo-server or redis
+        # could change the manifests Argo applies to the whole cluster: those
+        # sets carry a matching rule that keeps them off this VM. Undo: delete
+        # the two nodeSelector/tolerations blocks below (back to global's
+        # control plane).
         repoServer:
+          nodeSelector: &argo-vm
+            kubernetes.io/hostname: zag-amd64vm-01
+          tolerations: &argo-vm-tol
+            - key: zagreus.asn.casa/always-on
+              operator: Exists
+              effect: NoSchedule
           resources:
             requests: {cpu: 50m, memory: 128Mi}
-            limits: {memory: 512Mi}
+            limits: {memory: 768Mi}
+        redis:
+          nodeSelector: *argo-vm
+          tolerations: *argo-vm-tol
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
