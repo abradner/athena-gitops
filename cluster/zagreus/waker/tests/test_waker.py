@@ -328,6 +328,17 @@ class FakeKube:
             return {}
         raise AssertionError(f"unexpected POST {path}")
 
+    def delete(self, path, body=None):
+        self._record("DELETE", path, body)
+        m = re.fullmatch(r"/apis/actions.github.com/v1alpha1/namespaces/([^/]+)/ephemeralrunners/([^/]+)", path)
+        if m:
+            before = self.ers.get(m.group(1), [])
+            uid = ((body or {}).get("preconditions") or {}).get("uid")
+            self.ers[m.group(1)] = [e for e in before if not (
+                e["metadata"].get("name") == m.group(2) and (uid is None or e["metadata"].get("uid") == uid))]
+            return {}
+        raise AssertionError(f"unexpected DELETE {path}")
+
     # --- helpers for assertions
 
     def caps(self):

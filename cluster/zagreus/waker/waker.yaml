@@ -47,7 +47,11 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: zagreus-
 subjects:
   - {kind: ServiceAccount, name: zagreus-waker, namespace: zagreus-waker}
 ---
-# The scale sets it drives, by name; their runners, to count claims.
+# The scale sets it drives, by name; their runners, to count claims, and to
+# delete one stranded on a node NotReady past reapNotReadyMinutes (README,
+# "Reaper"; 15 Nov 2026). Runner names are generated, so delete cannot be
+# scoped by resourceNames: it covers every runner in the namespace, and the
+# waker deletes only its driven sets' (it lists them by scale-set label).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -60,7 +64,7 @@ rules:
     verbs: [get, patch]
   - apiGroups: [actions.github.com]
     resources: [ephemeralrunners]
-    verbs: [list]
+    verbs: [list, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -83,7 +87,7 @@ rules:
     verbs: [get, patch]
   - apiGroups: [actions.github.com]
     resources: [ephemeralrunners]
-    verbs: [list]
+    verbs: [list, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

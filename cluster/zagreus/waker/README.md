@@ -805,7 +805,8 @@ leaves the node awake, and its idle clock starts again.
   the same change that adds it to `waker.conf`.
 - **Pods:** list, cluster-wide.
 - **The four driven AutoscalingRunnerSets:** get and patch, by name, plus
-  listing their EphemeralRunners.
+  listing their EphemeralRunners, and deleting one stranded on a dead node
+  (see "Reaper"; namespace-wide, as runner names are generated).
 - **The four Applications:** get, by name, to read the ceilings.
 - **Its two ConfigMaps:** get, patch and create.
 
@@ -1005,6 +1006,7 @@ modes), as a second file in the same ConfigMap (key `slots.prom`):
 | `zagreus_runner_slots_offered{runner_node,set}` | what the waker would offer the set there now, its running runners included; 0 unless awake |
 | `zagreus_runner_slots_configured{runner_node,set}` | the node's slots in `waker.conf`; for both sets of a shared pool, the pool's slots (the same slots, so never sum them) |
 | `zagreus_runner_job_info{runner_node,set,runner,repo,workflow_run,job}` | 1 per runner pod running a job: which job is in which slot (driven sets only; their EphemeralRunners are the ones the waker reads) |
+| `zagreus_runner_oldest_runner_seconds{set}` | age of the set's oldest EphemeralRunner whose pod is Running (a pod Terminating on a dead node still is); 0 when none; no row when its runners were unreadable. See "Reaper" |
 | `zagreus_runner_slots_sampled_timestamp_seconds` | when the waker last wrote the file |
 
 Absence is never written as zero, and zero is never left as absence:
@@ -1023,6 +1025,61 @@ exporter's own host). Every awake node serves the same file, so take `max by
 are not driven, so only `used` covers them.
 Gate on the sample time as well: the exporters keep serving a stopped waker's
 last file, so without the gate stale numbers read as live.
+
+## Reaper
+
+15 Nov 2026: zag-amd64vm-03 (always on) went NotReady at 14:42Z with a
+zagreus-ci runner pod on it. The pod sat Terminating, its EphemeralRunner
+lived on, and ARC counted it as the set's one current runner, so the
+listener's every decision was "assigned 1, decision 1, current 1": it never
+scaled up, and spritz's jobs waited for hours until a human deleted the
+EphemeralRunner (which deregistered the GitHub runner) and force-deleted the
+pod. The waker had the cap right throughout; ARC's count was what was wrong.
+
+So each pass, with `reapNotReadyMinutes` set in `waker.conf` (10 in the tracked file),
+the waker deletes any driven set's EphemeralRunner whose pod is bound to a
+configured node that has been NotReady (Ready condition not `True`, timed
+from its `lastTransitionTime`) for longer than that. It logs `reaped …` and
+records a `reaped` event in `waker-events` (set, runner, seconds NotReady).
+ARC then removes the runner from GitHub and deletes the pod; the delete
+carries the runner's uid as a precondition. What it leaves alone:
+
+- a runner already being deleted, or whose pod is not bound to a node (an
+  unplaced claim, which the wake logic handles);
+- a runner on a node the waker cannot read (only the nodes in `waker.conf`:
+  its RBAC names no other);
+- a runner on a node annotated `waker-state=waking`: a node mid-wake is
+  NotReady because it is booting, and its NotReady transition dates from its
+  last sleep, so it would always look old enough. (A wake runs inside one
+  pass, so the reaper never runs during one; the annotation covers a waker
+  restarted mid-wake.)
+
+A node the waker **put to sleep** is not exempt, by decision: the sleep
+cordons it, re-checks that no runner pod is on it twice (`_busy`, before and
+after the asleep lead), and it stays cordoned until a wake. A runner pod
+bound to a sleeping node is therefore one no node will ever run, holding its
+set's count exactly as on 15 Nov. Always-on nodes count too: vm-03 was one.
+
+Modes: `caps` and `full` delete; `observe` logs `would reap …` (once per
+runner) and deletes nothing. RBAC: `delete` on `ephemeralrunners` in each
+managed set's namespace. Runner names are generated, so it cannot be scoped
+by `resourceNames`; the waker only ever deletes runners of its driven sets.
+
+Not done: force-deleting the pod. ARC's EphemeralRunner controller removes
+its finalizers without waiting for the pod, and ARC counts runners, not
+pods, so the count drops as soon as the runner goes. The orphaned pod stays
+Terminating on the dead node until the node returns (or someone
+force-deletes it); the waker's `slots_used` still counts it there.
+
+The gauge `zagreus_runner_oldest_runner_seconds{set}` (Slot metrics) is the
+backstop for what the reaper does not catch, a job stuck on a live node or a
+reaper switched off: the alert rule lives in asn-infra beside the queue
+watchdog's. The age is the runner's, from its creation; the driven sets run
+`minRunners: 0`, so a runner exists only for a job. A driven set given
+`minRunners` above 0 would keep idle runners and age this gauge.
+
+To undo: remove `reapNotReadyMinutes` from `waker.conf` (absent means never)
+and merge; the RBAC verb can go with it.
 
 ## Asleep label
 
@@ -1085,6 +1142,7 @@ The waker records these in `zagreus-waker/waker-events`:
 - `first-job`, with `seconds` from the wake to the first driven runner pod
   Running on the node, which is wake-to-first-job latency;
 - `slept`, with `awake_seconds`;
+- `reaped`, with `set`, `runner` and `not_ready_seconds` (see "Reaper");
 - failures.
 
 Awake hours per day can also be read from the log store: one heartbeat per
