@@ -23,7 +23,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: web
-          image: ghcr.io/abradner/kaff:sha-779a65c852893a8b9d68aabfaec5d9e7d5ce8df8
+          image: ghcr.io/abradner/kaff:sha-a05bd3fad9b928a661eb24c51b4ad0d214596f67@sha256:5cdab52dd81aad9673799f63398877e12bb764922d31e9c27882aa54f3c0793c
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -90,7 +90,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: worker
-          image: ghcr.io/abradner/kaff:sha-779a65c852893a8b9d68aabfaec5d9e7d5ce8df8
+          image: ghcr.io/abradner/kaff:sha-a05bd3fad9b928a661eb24c51b4ad0d214596f67@sha256:5cdab52dd81aad9673799f63398877e12bb764922d31e9c27882aa54f3c0793c
           imagePullPolicy: IfNotPresent
           args: ["./bin/temporal-worker"]
           ports:
