@@ -43,7 +43,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: server
-          image: ghcr.io/abradner/atmosphere/server:v202608292349@sha256:08618429dac5dca16013abbee2488ffbdbd1be3e7c7347529e5cc58f7fb5f2b1
+          image: ghcr.io/abradner/atmosphere/server:v202611181338@sha256:0c69b986cc46926f951bf3b1739464f8e992a73a3902793bc98f936f50f3d312
           args:
             - "-lat=-33.87"
             - "-lon=151.21"
