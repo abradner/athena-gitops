@@ -279,7 +279,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gpurenderd
-          image: ghcr.io/abradner/atmosphere/gpurenderd:v202608292349@sha256:a3ad34980f431de01160f96aaa729a29ed77695597c9c251681046bd1495ca04
+          image: ghcr.io/abradner/atmosphere/gpurenderd:v202611181338@sha256:b8260179c3f837da5a65f6c0f370fa729ba41679bb0c6bc081fa44374e2074e7
           args:
             - "-max-inflight=2"
             - "-queue-wait=2s"
