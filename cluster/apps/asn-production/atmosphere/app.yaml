@@ -155,7 +155,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: conductor
-          image: ghcr.io/abradner/atmosphere/conductor:v202608292349@sha256:968224593d239d54d72e72ed0b28f7315ae38f6c6003045c40d196d1a2f93b1c
+          image: ghcr.io/abradner/atmosphere/conductor:v202611181338@sha256:add56cff6116310c3d7b747a81b898b27bf1a53dbbeb08a7621dab745f8d2ed2
           args:
             - "-mqtt-broker=$(MQTT_BROKER)"
             - "-mdns=false"
