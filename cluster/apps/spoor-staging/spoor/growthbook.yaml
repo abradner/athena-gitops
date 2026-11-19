@@ -85,8 +85,10 @@ spec:
             - name: PM2_MAX_MEMORY_RESTART
               value: "900M"
             # Node trusts this file's CAs as well as its bundled ones, in both processes:
-            # ClickHouse's private CA, for the data source (external-secrets.yaml). That CA
-            # signs only CT 148's server certificate.
+            # ClickHouse's private CA, for the data source (external-secrets.yaml). It is
+            # trusted for every TLS connection GrowthBook makes (webhooks included). By
+            # practice it signs only CT 148's server certificate; that is not enforced
+            # (no nameConstraints; its key is on CT 148 and in 1Password).
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/growthbook/clickhouse-ca/ca.crt
             # Named keys, not envFrom: the secret also holds ca.crt (mounted below).
