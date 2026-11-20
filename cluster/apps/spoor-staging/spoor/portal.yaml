@@ -64,7 +64,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: portal
-          image: ghcr.io/simplytics/spoor-portal:sha-336756a1454a609604362f41f9df2843243b5a9b
+          image: ghcr.io/simplytics/spoor-portal:sha-d58eb0ffcd4b501e0b92513341c02d0c7595d3bf
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
