@@ -134,12 +134,19 @@ spec:
             preStop:
               sleep:
                 seconds: 10
+          # /ready (spoor d58eb0f+) checks the portal's dependencies; /up only
+          # that Rails booted. /ready starts its refresher lazily, so a pod's
+          # first probe answers 503 and ~5 s later 200: the pod simply stays
+          # NotReady until the next probe. failureThreshold 3 rides out two
+          # transient misses in steady state. Liveness stays on /up so a
+          # dependency outage takes pods out of rotation, never restarts them.
           readinessProbe:
             httpGet:
-              path: /up
+              path: /ready
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /up
