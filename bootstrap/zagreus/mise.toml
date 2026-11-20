@@ -3,7 +3,7 @@
 # domains back. So zagreus pins its own 1.14 client rather than athena's
 # bootstrap/mise.toml (still 1.13 for athena's nodes).
 [tools]
-kubectl = "1.37.0"
+kubectl = "1.37.2"
 talosctl = "1.14.5"
 
 [env]
