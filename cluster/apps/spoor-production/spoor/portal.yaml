@@ -126,7 +126,6 @@ spec:
                 name: spoor-portal
             - secretRef:
                 name: spoor-portal-dogfood
-          # /up is exempt from host authorisation and needs no Host header.
           # Endpoint removal reaches the gateway asynchronously; without the
           # wait, requests still routed to a stopping pod get 503. Native sleep
           # action (no binary needed in the image); within the 30 s grace period.
@@ -134,12 +133,22 @@ spec:
             preStop:
               sleep:
                 seconds: 10
+          # /up and /ready are exempt from host authorisation and need no Host
+          # header. /ready (spoor d58eb0f+) reports a background check of
+          # Postgres AND ClickHouse; /up only that Rails booted. The check
+          # starts on the first /ready request, so a new pod's first probe
+          # answers 503 and the next (10 s later) 200: ready ~15 s after start.
+          # failureThreshold 3 (the default, stated) rides out two misses.
+          # A ClickHouse-only outage takes the whole portal out of rotation,
+          # though only its analytics need ClickHouse. Liveness stays on /up
+          # so a dependency outage never restarts pods.
           readinessProbe:
             httpGet:
-              path: /up
+              path: /ready
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /up
