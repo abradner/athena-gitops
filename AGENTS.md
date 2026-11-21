@@ -325,6 +325,17 @@ different bug; all are Argo behaving as designed in ways that mislead.
    nothing for 20+ minutes while Argo retries an old revision. Fix:
    `kubectl patch application <app> -n argocd --type json -p '[{"op":"remove","path":"/operation"}]'`
 
+   The operation also snapshots the Application's **source spec**, not only its revision. Seen
+   2026-11-14 (#400): one commit both added a new subtree under `cluster/apps/` and added that
+   subtree to `cluster-apps.yaml`'s `directory.exclude`. `cluster-apps` auto-synced first, at the
+   new revision but with the old exclude in its operation's snapshot. `cluster-root` applied the new
+   exclude 15 s later. Every retry then applied the subtree's raw manifests under project `core`, and
+   each was refused as "not valid" (trap 5). The live spec was right throughout, and the patch above
+   cleared it. To avoid it, land a new excluded subtree in two commits: first the `cluster-apps.yaml`
+   exclude, then (once `cluster-root` has synced it) the subtree. Or expect the patch. Read
+   `.status.operationState.operation.sync.source` against `.spec.source` to tell this from a real
+   project denial.
+
 2. **The Application CRD schema silently prunes unknown fields.** Asserting a
    field this Argo version's schema lacks (e.g. `spec.source.helm.kubeVersion`)
    creates a permanent sync loop: git asserts it, the live object can never
