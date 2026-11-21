@@ -60,7 +60,7 @@ spec:
         # with the release or chart name.
         fullnameOverride: otel-collector
 
-        # StatefulSet, not Deployment, with exactly ONE replica.
+        # Deployment with exactly ONE replica.
         #
         # One replica: tail sampling decides per TRACE, so every span of a
         # trace must reach the same collector. Two replicas behind a
@@ -68,15 +68,24 @@ spec:
         # fragments. Scaling out needs a load-balancing exporter tier keyed
         # on trace id first; at Spritz's volume one replica is ample.
         #
-        # StatefulSet: the disk queue (file_storage below) is a bbolt file
-        # that one process holds a lock on. A Deployment's rolling update
-        # starts the new pod before stopping the old, and both would want the
-        # same file; a StatefulSet stops the old pod first. It is also the
-        # chart's own way to get a PVC per pod (volumeClaimTemplates), the
-        # same pattern vmagent's statefulMode uses for its remote-write
-        # buffer.
-        mode: statefulset
+        # Deployment, not StatefulSet: a StatefulSet does not replace a pod
+        # whose node has died until someone deletes that pod by hand, and the
+        # node-local PVC it used pinned the pod to that node anyway. Node
+        # losses left the collector down that way (2026-11-07, 2026-11-08). A
+        # Deployment's ReplicaSet starts a replacement elsewhere once the dead
+        # node's pod is evicted. The disk queue is an emptyDir (below), so each pod
+        # has its own bbolt file and two pods never share one.
+        mode: deployment
         replicaCount: 1
+        # Rolling, new pod first, so something always accepts spans during a
+        # deploy. The cost: for about one decision_wait (30s) both pods take
+        # spans, so a few traces are sampled as fragments. Errors are still
+        # kept either way; nothing is dropped.
+        rollout:
+          strategy: RollingUpdate
+          rollingUpdate:
+            maxSurge: 1
+            maxUnavailable: 0
 
         image:
           # contrib, not core: tail_sampling, transform, filter and
@@ -101,26 +110,50 @@ spec:
         # default true), so the Go GC works before the kernel OOM-kills.
 
         # The disk queue. Disposable, like vmagent's buffer: losing it costs
-        # at most the queued window, never history. local-path (the default
-        # StorageClass) does NOT enforce this size: the byte caps on the two
-        # sending queues are what bound it. Budget, worst case:
+        # at most the queued window, never history. An emptyDir rather than a
+        # node-local PVC: a PVC pins the pod to one node and strands it there
+        # when that node dies, and the queue would be lost with the node
+        # anyway. Budget, worst case:
         #   traces queue 384 MiB + product queue 128 MiB = 512 MiB live data,
         #   plus bbolt page overhead, x2 while bbolt compacts at startup (it
-        #   writes a compacted copy beside the original): about 1.5 GiB peak,
-        #   the budget for a node-local volume on a shared worker. See
-        #   file_storage.
-        statefulset:
-          volumeClaimTemplates:
-            - metadata:
-                name: queue
-              spec:
-                accessModes: ["ReadWriteOnce"]
-                resources:
-                  requests:
-                    storage: 2Gi
+        #   writes a compacted copy beside the original): about 1.5 GiB peak.
+        #   See file_storage. The byte caps on the two sending queues bound
+        #   it; sizeLimit is the kubelet's backstop above that peak (going
+        #   over it evicts the pod), and it counts against the node's
+        #   ephemeral storage.
+        extraVolumes:
+          - name: queue
+            emptyDir:
+              sizeLimit: 2Gi
         extraVolumeMounts:
           - name: queue
             mountPath: /var/lib/otelcol/queue
+
+        # Placement. Prefer the workers whose ephemeral storage is a large
+        # NVMe (label athena.asn.casa/scratch=nvme), and prefer a different
+        # node from vmagent: the two are independent (this exports straight
+        # to the trace store; vmagent only scrapes this collector's own
+        # metrics), so apart, one node loss takes at most one of them. Both
+        # soft: a running collector anywhere beats a Pending one.
+        affinity:
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 50
+                preference:
+                  matchExpressions:
+                    - key: athena.asn.casa/scratch
+                      operator: In
+                      values: ["nvme"]
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  namespaces: ["observability"]
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: vmagent
+                      app.kubernetes.io/instance: vmk8s
 
         # Only the two OTLP ports, plus the self-metrics port for vmagent.
         # The chart's defaults also open Jaeger and Zipkin receivers; nothing
@@ -163,7 +196,7 @@ spec:
               # briefly needs the file's size again in free space. on_start
               # only: a backlog's high-water file is reclaimed at the next pod
               # start; with the queue at its fullest the peak is about 2 x
-              # 512 MiB plus overhead (see the PVC note above). on_rebound is
+              # 512 MiB plus overhead (see the queue volume note above). on_rebound is
               # OFF: it would compact while the store is recovering and data
               # still arrives,
               # which is when disk is tightest. Between restarts the file
@@ -625,18 +658,6 @@ spec:
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: observability
-  # The StatefulSet's volumeClaimTemplates come back from the API server
-  # with fields the chart never sets (volumeMode: Filesystem, and a
-  # status: {phase: Pending} stub), so without this the app sits at
-  # OutOfSync/Healthy for ever and a real drift would hide behind it.
-  # RespectIgnoreDifferences keeps a sync from writing those fields back.
-  ignoreDifferences:
-  - group: apps
-    kind: StatefulSet
-    name: otel-collector
-    jqPathExpressions:
-    - .spec.volumeClaimTemplates[]?.status
-    - .spec.volumeClaimTemplates[]?.spec.volumeMode
   syncPolicy:
     automated:
       prune: true
@@ -667,7 +688,9 @@ spec:
     matchLabels:
       app.kubernetes.io/name: opentelemetry-collector
       app.kubernetes.io/instance: otel-collector
-      component: statefulset-collector
+      # The chart labels the Service by mode: standalone-collector for a
+      # Deployment (it was statefulset-collector before the move).
+      component: standalone-collector
   endpoints:
     - port: metrics
       path: /metrics
