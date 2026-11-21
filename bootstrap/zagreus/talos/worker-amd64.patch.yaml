@@ -21,7 +21,7 @@ machine:
         # intel-ucode and the SOL console; the same schematic as athena's
         # bare-metal GPU workers). Secure Boot variant; see that file. This IS
         # the installer to `talosctl upgrade` amd64 nodes with (bump the tag).
-        image: factory.talos.dev/metal-installer-secureboot/462290b86991b5b5327ca8799c8e7cc45e4b721c3aa84415b8bcf9f1e160456e:v1.14.4
+        image: factory.talos.dev/metal-installer-secureboot/462290b86991b5b5327ca8799c8e7cc45e4b721c3aa84415b8bcf9f1e160456e:v1.14.6
     nodeLabels:
         zagreus.asn.casa/role: amd64-runner
 ---
