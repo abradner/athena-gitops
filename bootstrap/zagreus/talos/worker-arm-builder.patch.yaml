@@ -1,25 +1,15 @@
-# zagreus arm64 image builder (today zag-arm64-02): a CM5 8 GB Lite whose /var
-# lives on a 256 GB NVMe SSD in a USB 3 enclosure (UASP-capable; UAS is turned off, below) (Realtek RTL9210B),
-# until an NVMe HAT replaces it. Always on, so
-# arm64 image builds no longer wait for a Mac to be awake. It runs the
-# docker-arm64 dind scale set and the light lane (unprivileged, no docker
-# socket), which it shares with any arm64 runner nodes.
+# zagreus arm64 image builder (today zag-arm64-02): a CM5 8 GB Lite on a
+# dual-NVMe carrier. It boots from SD, because the overlay's U-Boot cannot boot
+# a CM5 from NVMe, and /var lives on a 250 GB NVMe SSD. Always on, so arm64
+# image builds no longer wait for a Mac to be awake. It runs the docker-arm64
+# dind scale set and the light lane (unprivileged, no docker socket), which it
+# shares with any arm64 runner nodes.
 #
-# Why a USB SSD and not a USB flash stick: dind and containerd do heavy small
-# random writes, and a builder's cache grows to tens of GB (28 GB after two
-# weeks on an existing builder). Flash sticks are slow at that and wear
-# out. If the enclosure drops off the bus, the node loses /var and goes down;
-# what runs here is the builder and the light lane, so that is the whole blast radius.
-#
-# Why NVMe in the enclosure and not the SATA SSD it started with (23 Oct
-# 2026): the SATA drive stalled writes for seconds at a time, which matches it
-# flushing its SLC cache under build load. A UAS write timed out, the abort
-# path left the CM5's xHCI controller unresponsive ("HC died"), and every USB
-# device on it dropped, /var included. It did so twice in an hour, the second
-# time about a minute after boot. No under-voltage was logged. Talos then
-# cannot finish a reset either, because it waits on the vanished EPHEMERAL
-# volume; power-cycle the node instead. It recurred with this drive on 26 Oct,
-# once at idle, so UAS is now off for this enclosure (worker-cm5.schematic.yaml).
+# Why NVMe on the carrier and not USB (21 Nov 2026): on a USB enclosure, a write
+# that stalled for 5 s sent UAS into its abort path, the CM5's xHCI controller
+# died, and /var went with it (23 and 26 Oct 2026, on a SATA and an NVMe drive).
+# The carrier's ASM1182e PCIe switch tops out at 5.0 GT/s (read from sysfs), so
+# `pciex1_gen=3` would gain nothing here.
 #
 # Contains no secrets; committed as-is, never hydrated.
 machine:
@@ -37,15 +27,14 @@ machine:
                   value: arm-builder
                   effect: NoSchedule
 ---
-# Replace the base selector (the NVMe, which this board has none of).
+# Replace the base selector. The size guard keeps /var off a small Optane if
+# one is ever fitted in the carrier's second slot.
 apiVersion: v1alpha1
 kind: VolumeConfig
 name: EPHEMERAL
 provisioning:
     diskSelector:
-        # Transport only: many USB-SATA bridges report an SSD as rotational,
-        # so `!disk.rotational` could match nothing and leave /var unprovisioned.
-        match: disk.transport == "usb"
+        match: disk.transport == "nvme" && disk.size > 200u * GB
     minSize: 32GiB
     grow: true
 ---
