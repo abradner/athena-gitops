@@ -6,13 +6,19 @@ kind: HTTPRoute
 metadata:
   name: hubble-ui
   namespace: kube-system
+  annotations:
+    # Wave 5: after athena-internal (wave 4). Argo waits for each wave to be
+    # healthy, and a route whose Gateway does not exist yet never is, so at
+    # the default wave 0 it held back the Gateway it was waiting for.
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   parentRefs:
-  # Detached from the shared gateway 2026-11-14. Internal hosts move to their own
-  # internal-only Gateway (athena-internal); until it exists this route is unattached.
+  # Internal host: served only by the internal-only Gateway (athena-internal,
+  # cluster/core/networking/gateway-internal.yaml). Never add homelab-gateway here.
   - name: athena-internal
     namespace: default
-    # HTTPS only — plaintext hits the catch-all redirect route instead
+    # HTTPS only: athena-internal has no plaintext listener, and the proxy in
+    # front answers :80 for these hosts with a redirect to https.
     sectionName: https-athena
   hostnames:
   - hubble.athena.asn.casa

@@ -70,10 +70,16 @@ kind: HTTPRoute
 metadata:
   name: temporal-ui
   namespace: spritz-staging
+  annotations:
+    # Wave 3: last in this app. Argo health-checks HTTPRoutes and waits for
+    # each wave to be healthy; a route whose Gateway (athena-internal, made by
+    # cluster-core) does not exist yet is never healthy, so at wave 0 it held
+    # back the schema hook and the server behind it.
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   parentRefs:
-    # Detached from the shared gateway 2026-11-14. Internal hosts move to their own
-    # internal-only Gateway (athena-internal); until it exists this route is unattached.
+    # Internal host: served only by the internal-only Gateway (athena-internal,
+    # cluster/core/networking/gateway-internal.yaml). Never add homelab-gateway here.
     - name: athena-internal
       namespace: default
       sectionName: https-athena

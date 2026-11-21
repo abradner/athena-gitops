@@ -211,8 +211,8 @@ metadata:
   namespace: asn-production
 spec:
   parentRefs:
-    # Detached from the shared gateway 2026-11-14. Internal hosts move to their own
-    # internal-only Gateway (athena-internal); until it exists this route is unattached.
+    # Internal host: served only by the internal-only Gateway (athena-internal,
+    # cluster/core/networking/gateway-internal.yaml). Never add homelab-gateway here.
     - name: athena-internal
       namespace: default
       sectionName: https-athena
