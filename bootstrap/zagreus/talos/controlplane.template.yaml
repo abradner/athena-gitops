@@ -56,15 +56,15 @@ machine:
         # Always upgrade with `-i` set to this ref: a bare `talosctl upgrade`
         # picks the vanilla installer, which has no Raspberry Pi overlay.
         disk: /dev/mmcblk0
-        # Image Factory schematic worker-cm5.schematic.yaml at v1.14.4 (the
+        # Image Factory schematic worker-cm5.schematic.yaml at v1.14.6 (the
         # tag, kept here because the ref below cannot carry it): pinned by
         # digest ONLY. A Talos 1.14.4 node fails `talosctl upgrade --image
         # repo:tag@sha256:…` with "installer image … not found in containerd
         # store" after pulling it; the digest-only form works (measured
-        # 2026-10-19). Flash image: the same schematic's v1.14.4
-        # metal-arm64.raw.xz, sha256
-        # 033a7141e4f13200d12dd791cdad3b4b165725adc9ea013fd4ac1dee73671208.
-        image: factory.talos.dev/metal-installer/b7f02f6cadf2c92bf3a7e11a615181c783522b51744f8082f743a4b79d3f5bac@sha256:46ff6e93903dde54f8b49db279d716733f77d5bba39000dd181f403894f8e7c9
+        # 2026-10-19). Flash image: the same schematic's v1.14.6
+        # metal-arm64.raw.xz (built on demand, so check the schematic,
+        # not a file hash).
+        image: factory.talos.dev/metal-installer/b7f02f6cadf2c92bf3a7e11a615181c783522b51744f8082f743a4b79d3f5bac@sha256:e6a3b09c7ef3b36cb7f7e666a259e7667f2df71c2a6ed35fb8b935ffb0d018a3
         wipe: false
         grubUseUKICmdline: true
     registries: {}

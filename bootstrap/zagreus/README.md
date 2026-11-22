@@ -25,7 +25,7 @@ All on Talos 1.14, ahead of athena: zagreus is the canary for Talos upgrades.
 The CM5s boot the Image Factory schematic in `talos/worker-cm5.schematic.yaml`:
 the official overlay plus the kernel argument `sdhci.debug_quirks2=4`, which
 keeps SD at 3.3 V High Speed (without it, mainline's switch to
-1.8 V fails on some carriers and the card never appears). Flash that schematic's v1.14.4
+1.8 V fails on some carriers and the card never appears). Flash that schematic's v1.14.6
 `metal-arm64.raw.xz`; its installer ref, pinned by digest only, is in the
 templates. A self-built equivalent (abradner/talos-builder v1.14.4-cm5l.1) is
 kept published as a fallback. The amd64
