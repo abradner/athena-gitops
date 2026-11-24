@@ -33,7 +33,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: migrate
-          image: ghcr.io/simplytics/spoor-portal:sha-d58eb0ffcd4b501e0b92513341c02d0c7595d3bf
+          image: ghcr.io/simplytics/spoor-portal:sha-5fd77d836e7ecf9ac9046e8f33c31076fc7efbb2
           imagePullPolicy: IfNotPresent
           command: ["bin/rails", "db:migrate"]
           # The portal's environment: Rails boots it in full, and production
@@ -130,7 +130,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: migrate
-          image: ghcr.io/simplytics/spoor-portal:sha-d58eb0ffcd4b501e0b92513341c02d0c7595d3bf
+          image: ghcr.io/simplytics/spoor-portal:sha-5fd77d836e7ecf9ac9046e8f33c31076fc7efbb2
           imagePullPolicy: IfNotPresent
           command: ["ruby", "/repo/infra/clickhouse/bin/migrate"]
           env:
