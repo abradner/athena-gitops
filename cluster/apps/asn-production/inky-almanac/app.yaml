@@ -1,0 +1,161 @@
+# Inky Almanac: the renderer behind a wall-mounted e-ink weather poster
+# (github.com/abradner/inky-almanac). The frame (a Pico W on the IoT VLAN)
+# wakes every so often and polls this server over plain HTTP on :8077 for
+# /frame.json, the poster PNG and, when there is one, a signed code update.
+#
+# Settings (ALMANAC_*) and the signed frame release come from
+# external-secrets.yaml. The image is generic and carries neither.
+#
+# State: none worth keeping. The cache is an emptyDir, so a restart refetches
+# the climate normals (they rebuild in the background; the poster uses a
+# placeholder meanwhile) and radar mode resets to off. Moving the cache to
+# object storage is a tracked follow-up, not part of this change.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inky-almanac
+  namespace: asn-production
+spec:
+  # Exactly one: the radar-mode and frame-last-seen state is per process (it
+  # lives in the pod's own cache), so a second replica would answer the frame
+  # with a different picture of the world. Recreate, not a surge pod, for the
+  # same reason.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: inky-almanac
+  template:
+    metadata:
+      labels:
+        app: inky-almanac
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        # The image's own user (useradd --uid 10001). Set explicitly so the
+        # non-root check does not depend on the image keeping a name.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: almanac
+          # PLACEHOLDER: this is not a real tag. CI (the app repo's
+          # .github/workflows/docker.yml) publishes the image only after the
+          # app PR merges; replace with `...:sha-<40 hex>@sha256:<digest>`
+          # from that run's summary before merging this change. Until then
+          # the pod cannot pull.
+          image: ghcr.io/abradner/inky-almanac:sha-TBD
+          env:
+            # Log timestamps and anything that reads the process timezone. The
+            # poster's own timezone is ALMANAC_TZ from the Secret.
+            - name: TZ
+              value: Australia/Sydney
+          envFrom:
+            - secretRef:
+                name: inky-almanac
+          ports:
+            - name: http
+              containerPort: 8077
+          # The server warms every feed cache BEFORE it listens (about 70-90 s
+          # measured on a cold cache, on a fast link; a Pi's pull is slower),
+          # so /healthz refuses connections until then. The startup probe
+          # holds liveness and readiness off for up to 5 minutes (60 x 5s) and
+          # then restarts the pod if it never came up.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8077
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8077
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8077
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              # About 75 MiB measured after warm-up and one render. Headroom
+              # for the background ERA5 normals build, whose peak was not
+              # measured: raise this if the pod is OOM-killed after a start.
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            # The only path the server writes (ALMANAC_CACHE's default): feed
+            # caches, radar-mode.json, frame-last-seen.json, photos, normals.
+            - name: cache
+              mountPath: /var/cache/almanac
+            # Not used by the server (verified: it runs read-only with no
+            # /tmp mount); here so a library that wants a temp file can't turn
+            # a read-only root into a crash.
+            - name: tmp
+              mountPath: /tmp
+            # The signed frame release. Read-only: the server only serves it.
+            # Replaces the (empty) /app/ota baked into the image.
+            - name: ota
+              mountPath: /app/ota
+              readOnly: true
+      volumes:
+        - name: cache
+          emptyDir:
+            # 9 MB after a warm start; room for the photo pool and radar frames.
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: ota
+          secret:
+            secretName: inky-almanac-ota
+            # No release is a valid state: the renderer then serves no code
+            # update (/frame.json has no `code`, /ota/almanac_frame.py is a
+            # 404) and everything else works. optional lets the pod start
+            # before the 1Password item exists or after it is emptied, and
+            # the kubelet fills the mount in once the Secret appears (no
+            # restart).
+            optional: true
+---
+# A LoadBalancer rather than an HTTPRoute, and plain HTTP: the frame is a
+# Pico W that fetches http://<name>:8077 and does no TLS, and the Gateways
+# here terminate HTTPS on 443 for named hosts. The frame dials a LAN name
+# (a local A record at the gateway resolver, like atmosphere.asn.casa) for this
+# address, so the address is pinned: a rebuild or a re-created Service must
+# not move it. It is the next free address in homelab-pool (.240-.242 are the
+# gateways and atmosphere-server; re-check before adding another pin).
+# Reachable from the IoT VLAN only through a firewall rule that allows the
+# frame's address to this one on TCP 8077; that rule lives outside this repo.
+apiVersion: v1
+kind: Service
+metadata:
+  name: inky-almanac
+  namespace: asn-production
+  annotations:
+    lbipam.cilium.io/ips: "10.10.80.243"
+spec:
+  type: LoadBalancer
+  selector:
+    app: inky-almanac
+  ports:
+    - name: http
+      port: 8077
+      targetPort: 8077
