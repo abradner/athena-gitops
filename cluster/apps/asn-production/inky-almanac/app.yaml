@@ -45,12 +45,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: almanac
-          # PLACEHOLDER: this is not a real tag. CI (the app repo's
-          # .github/workflows/docker.yml) publishes the image only after the
-          # app PR merges; replace with `...:sha-<40 hex>@sha256:<digest>`
-          # from that run's summary before merging this change. Until then
-          # the pod cannot pull.
-          image: ghcr.io/abradner/inky-almanac:sha-TBD
+          # Published by the app repo's .github/workflows/docker.yml
+          # (multi-arch index, amd64 + arm64); tag plus digest.
+          image: ghcr.io/abradner/inky-almanac:sha-cce3f6cf49d61c9c178431006c4ec0d3416bb399@sha256:2eb7f80f75acbe50af8e73fafe96647f7acf105ae295643fe48d485ce4fd4e5a
           env:
             # Log timestamps and anything that reads the process timezone. The
             # poster's own timezone is ALMANAC_TZ from the Secret.
