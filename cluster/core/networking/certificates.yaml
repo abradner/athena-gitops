@@ -243,3 +243,42 @@ spec:
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod
+---
+# spritz.rsvp — the guest host: every guest-facing Spritz link (/t/, /day/,
+# /n/, /s/) is built on it once GUEST_HOST names it (abradner/spritz
+# GuestHost). Simplytics Cloudflare account, like spritz.events, so it
+# needs the second DNS-01 solver; if issuance stalls, check that token's
+# zone scope includes spritz.rsvp before the manifest.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spritz-rsvp-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Wave 3: after the wave-2 ClusterIssuers (simplytics-account solver).
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: spritz-rsvp-tls
+  dnsNames:
+    - "spritz.rsvp"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: staging-spritz-rsvp-tls
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Wave 3: after the wave-2 ClusterIssuers (simplytics-account solver).
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: staging-spritz-rsvp-tls
+  dnsNames:
+    - "staging.spritz.rsvp"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
